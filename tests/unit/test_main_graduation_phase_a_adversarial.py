@@ -1279,6 +1279,47 @@ def test_ambiguous_restart_repairs_missing_reservation_only_from_active_fence(
     assert restarted._read_target_reservation(active).intent_digest == intent.intent_digest  # pyright: ignore[reportPrivateUsage]
 
 
+def test_ambiguous_restart_heals_stale_resolved_fence_before_reservation_repair(
+    tmp_path: Path,
+) -> None:
+    """A resolution wins over a stale active pointer after a closure crash."""
+    journal = _journal(tmp_path)
+    _disable_phase_prerequisites(journal)
+    intent = _intent()
+    journal.record_mutation_intent(intent)
+    receipt = _receipt(intent)
+    journal.record_mutation_receipt(receipt)
+    fence = _fence(receipt)
+    journal.record_unresolved_mutation_fence(fence)
+
+    # Inject the crash after resolution CAS but before active -> closed move,
+    # then model loss of the reservation file in that stale active slot.
+    journal._close_target_fence_if_resolved = lambda _resolution: None  # type: ignore[method-assign]
+    journal.record_mutation_fence_resolution(_resolution(fence))
+    active = journal._target_fence_path(intent)  # pyright: ignore[reportPrivateUsage]
+    journal._target_reservation_record_path(active).unlink()  # pyright: ignore[reportPrivateUsage]
+
+    restarted = _journal(tmp_path)
+    _disable_phase_prerequisites(restarted)
+    restarted.record_mutation_intent(intent)
+    assert not active.exists()
+    closed = restarted._target_fence_closed_path(fence)  # pyright: ignore[reportPrivateUsage]
+    assert closed.is_dir()
+    assert not restarted._target_reservation_record_path(closed).exists()  # pyright: ignore[reportPrivateUsage]
+
+    # The target is available for a distinct operation only after the stale
+    # resolved pointer is healed; no provider mutation is involved here.
+    next_intent = _intent(OP2, key="refs/heads/avo/candidate/op2")
+    restarted.record_mutation_intent(next_intent)
+    next_active = restarted._target_fence_path(next_intent)  # pyright: ignore[reportPrivateUsage]
+    assert (
+        restarted._read_target_reservation(  # pyright: ignore[reportPrivateUsage]
+            next_active
+        ).intent_digest
+        == next_intent.intent_digest
+    )
+
+
 @pytest.mark.parametrize("mode", ["missing-fence", "tampered-reservation", "foreign-reservation"])
 def test_ambiguous_restart_reservation_repair_fails_closed_without_exact_fence(
     tmp_path: Path, mode: str

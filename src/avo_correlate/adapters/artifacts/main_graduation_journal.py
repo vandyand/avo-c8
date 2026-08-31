@@ -1238,6 +1238,17 @@ class MainGraduationJournal:
                 "ambiguous mutation target fence differs"
             )
 
+        # Resolution publication and active-slot closure are separate durable
+        # steps.  A crash between them leaves record.json pointing at a
+        # logically closed fence.  Resolve that state before considering any
+        # reservation repair; otherwise we could recreate a lock for a fence
+        # that is already authoritative history and block the next operation.
+        resolution = self._read_fence_resolution_by_fence(fence.fence_digest)
+        if resolution is not None:
+            self._verify_fence_authority(resolution[0], self._source_receipt(resolution[0]))
+            self._close_target_fence_if_resolved(resolution[0])
+            return
+
         envelope = _TargetMutationReservationEnvelope(
             target_scope_digest=main_target_scope_digest(
                 intent.repository_digest, intent.target_ref
