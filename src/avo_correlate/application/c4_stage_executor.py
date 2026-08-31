@@ -488,6 +488,7 @@ class C4StageExecutor:
             )
 
         self._check_resolution_binding(resolution, durable_intent)
+        self._check_resolution_provider(resolution)
         self._check_resolution_source(resolution, source_receipt)
         if resolution.outcome == "observed":
             observed_outcome = resolution.observed_outcome
@@ -529,6 +530,7 @@ class C4StageExecutor:
         resolution = self._read_resolution_for_intent(durable_intent.intent_digest)
         if resolution is not None:
             self._check_resolution_binding(resolution, durable_intent)
+            self._check_resolution_provider(resolution)
             resolved = self.journal.read_mutation_receipt(resolution.resolved_receipt_digest)
             if resolved is None:
                 raise C4StageExecutionError("resolved mutation receipt is missing")
@@ -559,6 +561,7 @@ class C4StageExecutor:
         resolution = self._read_resolution(fence.fence_digest)
         if resolution is not None:
             self._check_resolution_binding(resolution, durable_intent)
+            self._check_resolution_provider(resolution)
             self._check_resolution_source(resolution, receipt)
             return receipt
 
@@ -922,6 +925,17 @@ class C4StageExecutor:
             or resolution.lease_identity != intent.lease_identity
         ):
             raise C4StageExecutionError("durable fence resolution differs from intent")
+
+    def _check_resolution_provider(self, resolution: MainMutationFenceResolution) -> None:
+        if not self.provider_identity or not self.provider_api_version:
+            raise C4StageExecutionError(
+                "provider identity/version is not controller configured"
+            )
+        if (
+            resolution.provider_identity != self.provider_identity
+            or resolution.provider_api_version != self.provider_api_version
+        ):
+            raise C4StageExecutionError("durable fence resolution provider differs")
 
     @staticmethod
     def _check_resolution_source(

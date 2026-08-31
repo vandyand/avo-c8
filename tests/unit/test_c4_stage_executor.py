@@ -39,6 +39,7 @@ from avo_correlate.contracts.main_graduation import (
 )
 from avo_correlate.contracts.main_graduation_phase_a import (
     MainLeaseEvidenceRecord,
+    MainMutationFenceResolution,
     MainMutationIntent,
 )
 from avo_correlate.domain.canonical import canonical_digest
@@ -733,6 +734,66 @@ print(json.dumps({
     assert result["parent_resolution_digest"].startswith("sha256:")
     source_prior = journal.read_mutation_receipt(result["receipt"])
     assert source_prior is not None and source_prior[0].outcome == "ambiguous"
+
+
+@pytest.mark.parametrize("consumer", ["effective", "recover"])
+@pytest.mark.parametrize("field", ["provider_identity", "provider_api_version"])
+def test_resolution_provider_binding_is_checked_before_success(
+    tmp_path: Path, consumer: str, field: str
+) -> None:
+    journal, intent, request, authority = _fixture(tmp_path)
+    executor = _executor(
+        journal, CandidateProvider(ambiguous=True), Clock(), Fence(), authority
+    )
+    receipt = executor.execute(intent, request)
+    observation_request = CandidateObservationRequest.build(
+        **request.model_dump(exclude={"request_digest", "external_key", "external_identity"}),
+        object_id=request.candidate_ref,
+    )
+    observation = CandidateObservationResult.build(
+        **observation_request.model_dump(
+            exclude={"request_digest", "external_key", "external_identity"}
+        ),
+        outcome="observed",
+        evidence_digest=D,
+        observed_at=NOW,
+    )
+    fence = executor._read_active_fence(intent)
+    assert fence is not None
+    values: dict[str, Any] = {
+        "repository_digest": fence.repository_digest,
+        "target_ref": fence.target_ref,
+        "fence_digest": fence.fence_digest,
+        "operation_id": fence.operation_id,
+        "intent_digest": fence.intent_digest,
+        "external_identity_digest": fence.external_identity_digest,
+        "lease_identity": fence.lease_identity,
+        "lease_digest": fence.lease_digest,
+        "target_scope_digest": fence.target_scope_digest,
+        "resolved_receipt_digest": receipt.receipt_digest,
+        "authoritative_observation_digest": observation.evidence_digest,
+        "provider_identity": authority.provider_identity,
+        "provider_api_version": authority.provider_api_version,
+        "outcome": "observed",
+        "observed_outcome": "already_applied",
+        "resolved_at": NOW + timedelta(minutes=1),
+    }
+    values[field] = "attacker" if field == "provider_identity" else "v999"
+    forged = c4_kernel._digest_record(
+        MainMutationFenceResolution, values, "resolution_digest"
+    )
+    journal.record_mutation_fence_resolution(forged)
+
+    consumer_executor = _executor(
+        journal, CandidateProvider(), Clock(), Fence(), authority, Observation(observation)
+    )
+    with pytest.raises(C4StageExecutionError, match="provider"):
+        if consumer == "effective":
+            consumer_executor.effective_result(intent, receipt)
+        else:
+            consumer_executor.recover(
+                intent, observation_request, original_request=request
+            )
 
 
 def test_fence_resolution_reader_fails_closed_when_authority_is_tampered(
