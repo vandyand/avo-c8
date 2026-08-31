@@ -568,10 +568,12 @@ class GitHubMainGraduationAdapter:
             for rule in rules:
                 rule_obj = _obj(rule, "effective main rule")
                 bypass = rule_obj.get("bypass_actors")
-                if bypass not in (None, []) and isinstance(bypass, list):
+                if not isinstance(bypass, list) or bypass:
                     raise _Precondition("main rules permit bypass actors")
-        elif isinstance(rules, dict) and rules.get("bypass_actors") not in (None, []):
-            raise _Precondition("main rules permit bypass actors")
+        elif isinstance(rules, dict):
+            bypass = rules.get("bypass_actors")
+            if not isinstance(bypass, list) or bypass:
+                raise _Precondition("main rules permit bypass actors")
         else:
             raise GitHubMainGraduationError("effective main rules are malformed")
         return raw
