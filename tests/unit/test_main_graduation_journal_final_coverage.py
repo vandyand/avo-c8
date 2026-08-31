@@ -38,6 +38,7 @@ from avo_correlate.contracts.main_graduation_phase_a import (
     main_target_scope_digest,
 )
 from avo_correlate.domain.canonical import canonical_bytes, canonical_digest
+from tests.unit.phase_a_test_support import TEST_PHASE_A_AUTHORITY
 from tests.unit.test_main_graduation_journal_coverage import (
     BASE,
     D2,
@@ -163,6 +164,10 @@ def test_all_public_record_and_read_wrappers_delegate(
         ("record_release_authorization", "release-authorization"),
         ("record_release_transition", "release-transition"),
         ("record_provider_receipt", "provider-receipt"),
+        (
+            "record_provider_post_state_observation",
+            "provider-post-state-observation",
+        ),
         ("record_reconciliation", "reconciliation"),
         ("record_rollback_authorization", "rollback-authorization"),
         ("record_inverse_delta", "inverse-delta"),
@@ -196,6 +201,7 @@ def test_all_public_record_and_read_wrappers_delegate(
         "read_release_authorization",
         "read_release_transition",
         "read_provider_receipt",
+        "read_provider_post_state_observation",
         "read_reconciliation",
         "read_rollback_authorization",
         "read_inverse_delta",
@@ -210,6 +216,57 @@ def test_all_public_record_and_read_wrappers_delegate(
     assert journal.read_package(D) is None
     assert journal.record_package(value).digest == D
     assert len(read_kinds) == len(read_methods) + 2
+
+
+def test_provider_post_state_survives_fresh_reload_and_rejects_conflict_or_tamper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Post-state publication is durable before completion closes the chain."""
+    package = completion()
+    journal = MainGraduationJournal(
+        tmp_path, phase_a_authority_verifier=TEST_PHASE_A_AUTHORITY
+    )
+
+    # Keep this test focused on the post-state boundary while still writing
+    # real provider/reconciliation records for the fresh reader to load.
+    monkeypatch.setattr(journal, "_require_provider_receipt", lambda _record: None)
+    monkeypatch.setattr(journal, "_require_reconciliation", lambda _record: None)
+    journal.record_provider_receipt(package.provider_receipt)
+    journal.record_reconciliation(package.reconciliation)
+    reference = journal.record_provider_post_state_observation(
+        package.provider_post_state_observation
+    )
+
+    restarted = MainGraduationJournal(
+        tmp_path, phase_a_authority_verifier=TEST_PHASE_A_AUTHORITY
+    )
+    monkeypatch.setattr(restarted, "_require_provider_receipt", lambda _record: None)
+    monkeypatch.setattr(restarted, "_require_reconciliation", lambda _record: None)
+    loaded = restarted.read_provider_post_state_observation(package.operation_id)
+    assert loaded == (package.provider_post_state_observation, reference)
+
+    conflicting = package.provider_post_state_observation.model_copy(
+        update={"response_digest": D2}
+    )
+    object.__setattr__(
+        conflicting,
+        "observation_digest",
+        canonical_digest(
+            conflicting.model_dump(exclude={"observation_digest"}, mode="json")
+        ),
+    )
+    monkeypatch.setattr(
+        restarted,
+        "_verify_provider_post_state_authority",
+        lambda observation, provider_receipt, reconciliation: None,
+    )
+    with pytest.raises(MainGraduationRecordConflictError, match="conflicting"):
+        restarted.record_provider_post_state_observation(conflicting)
+
+    artifact = restarted._store.path_for_digest(reference.digest)
+    artifact.write_bytes(b"{}")
+    with pytest.raises(MainGraduationJournalError, match="malformed or unverifiable"):
+        restarted.read_provider_post_state_observation(package.operation_id)
 
 
 def test_read_and_index_recovery_reject_malformed_or_tampered_state(tmp_path: Path) -> None:

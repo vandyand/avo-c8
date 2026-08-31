@@ -3644,6 +3644,12 @@ class MainGraduationJournal:
             self._read("claimed-release-transition", receipt_digest),
         )
 
+    # Keep the receipt-oriented spelling available to completion callers.  It
+    # is an alias over the same phase-A identity index; no second artifact or
+    # index is created.
+    record_claimed_release_transition_receipt = record_claimed_release_transition
+    read_claimed_release_transition_receipt = read_claimed_release_transition
+
     def record(self, kind: str, record: StrictModel) -> ArtifactRef:
         return self._record(kind, record)
 
@@ -3849,14 +3855,22 @@ class MainGraduationJournal:
 
     def read_attestation_manifest(
         self, operation_id: str
-    ) -> tuple[StrictModel, ArtifactRef] | None:
-        return self._read("attestations", operation_id)
+    ) -> tuple[MainAttestationManifest, ArtifactRef] | None:
+        return cast(
+            tuple[MainAttestationManifest, ArtifactRef] | None,
+            self._read("attestations", operation_id),
+        )
 
     def record_merge_group_checks(self, record: MainMergeGroupChecks) -> ArtifactRef:
         return self._record("merge-group-checks", record)
 
-    def read_merge_group_checks(self, operation_id: str) -> tuple[StrictModel, ArtifactRef] | None:
-        return self._read("merge-group-checks", operation_id)
+    def read_merge_group_checks(
+        self, operation_id: str
+    ) -> tuple[MainMergeGroupChecks, ArtifactRef] | None:
+        return cast(
+            tuple[MainMergeGroupChecks, ArtifactRef] | None,
+            self._read("merge-group-checks", operation_id),
+        )
 
     def record_intent(self, record: MainGraduationIntent) -> ArtifactRef:
         return self._record("intent", record)
@@ -3913,6 +3927,27 @@ class MainGraduationJournal:
 
     def read_provider_receipt(self, operation_id: str) -> tuple[StrictModel, ArtifactRef] | None:
         return self._read("provider-receipt", operation_id)
+
+    def record_provider_post_state_observation(
+        self, record: MainProviderPostStateObservation
+    ) -> ArtifactRef:
+        """Persist the provider-authoritative post-state exactly once.
+
+        The generic journal boundary performs the provider receipt,
+        reconciliation, and injected authority checks before publishing the
+        operation index.  Keeping this wrapper thin ensures completion callers
+        cannot accidentally bypass those checks or create a parallel store.
+        """
+
+        return self._record("provider-post-state-observation", record)
+
+    def read_provider_post_state_observation(
+        self, operation_id: str
+    ) -> tuple[MainProviderPostStateObservation, ArtifactRef] | None:
+        return cast(
+            tuple[MainProviderPostStateObservation, ArtifactRef] | None,
+            self._read("provider-post-state-observation", operation_id),
+        )
 
     def record_reconciliation(self, record: MainReconciliation) -> ArtifactRef:
         return self._record("reconciliation", record)
