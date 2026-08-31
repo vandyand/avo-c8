@@ -52,6 +52,7 @@ from avo_correlate.application.c4_capabilities import (
     ReleaseObservationRequest,
     ReleaseObservationResult,
 )
+from avo_correlate.contracts.main_graduation_phase_a import main_stage_nonce
 from avo_correlate.domain.canonical import canonical_digest
 
 _OBJECT = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
@@ -67,6 +68,7 @@ query AvoMainGraduationQueue($owner: String!, $name: String!, $branch: String!) 
     mergeQueue(branch: $branch) {
       id
       configuration {
+        maximumEntriesToBuild
         maximumEntriesToMerge
         mergeMethod
         mergingStrategy
@@ -166,6 +168,19 @@ def _nested(value: JsonObject, key: str, context: str) -> JsonObject:
     return _obj(value.get(key), f"{context}.{key}")
 
 
+def _stable_observation(value: JsonValue) -> JsonValue:
+    """Match the protected-main configuration projection exactly."""
+    if isinstance(value, list):
+        return [_stable_observation(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: _stable_observation(item)
+            for key, item in value.items()
+            if key.casefold() not in {"observed_at", "updated_at", "created_at", "timestamp"}
+        }
+    return value
+
+
 class _Precondition(GitHubMainGraduationRejected):
     def __init__(self, message: str, *, status: int | None = None) -> None:
         super().__init__(message)
@@ -194,9 +209,14 @@ class GitHubMainGraduationAdapter:
         observer_transport: GraduationTransport | None = None,
         observer_principal: GitHubPrincipalBinding | None = None,
         read_only_observer: Any | None = None,
-        mutation_authorize: Callable[[ReleaseIssueRequest], None]
-        | Callable[[], None]
-        | None = None,
+        mutation_authorize: Callable[[ReleaseIssueRequest], None],
+        trusted_clock: Callable[[], datetime],
+        release_freshness_cutoff: Callable[[ReleaseIssueRequest], datetime],
+        admission_request: Callable[[str], AdmissionIssueRequest],
+        admission_freshness_cutoff: Callable[[Any], datetime],
+        trusted_check_contexts: tuple[str, ...],
+        validation_app_id: int = 15368,
+        provider_identity: str = "github-protected-main",
         api_base: str = "https://api.github.com",
         provider_api_version: str = "2022-11-28",
     ) -> None:
@@ -240,16 +260,27 @@ class GitHubMainGraduationAdapter:
             raise ValueError("admission, hold, and release issuer identity is inconsistent")
         if issuers[0].app_id == 15368:
             raise ValueError("validation App 15368 cannot issue C4 authority")
-        if (observer_transport is None) == (read_only_observer is None):
-            raise ValueError("exactly one read-only observer transport or provider is required")
-        if observer_transport is not None and observer_principal is None:
-            raise ValueError("observer transport requires its principal binding")
+        if observer_transport is None or observer_principal is None:
+            raise ValueError("release-capable adapter requires observer transport and principal")
+        if read_only_observer is not None:
+            raise ValueError("injected observer cannot replace authoritative GitHub reads")
+        if not callable(mutation_authorize):
+            raise ValueError("release-capable adapter requires a mutation authorization callback")
         if (
-            observer_principal is not None
-            and observer_transport is None
-            and read_only_observer is None
+            not callable(trusted_clock)
+            or not callable(release_freshness_cutoff)
+            or not callable(admission_request)
+            or not callable(admission_freshness_cutoff)
         ):
-            raise ValueError("observer principal requires an observer")
+            raise ValueError("release admission freshness requires controller-bound callbacks")
+        if (
+            validation_app_id != 15368
+            or not trusted_check_contexts
+            or len(set(trusted_check_contexts)) != len(trusted_check_contexts)
+            or any(not item or item == "avo-main-release" for item in trusted_check_contexts)
+            or not provider_identity.strip()
+        ):
+            raise ValueError("protected-main check configuration is invalid")
         if observer_principal is not None and id(observer_principal) in {id(p) for p in principals}:
             raise ValueError("observer requires a distinct principal binding")
         self.owner, self.repo, self.repository_digest = owner, repo, repository_digest
@@ -262,7 +293,7 @@ class GitHubMainGraduationAdapter:
             "hold": group_hold_issuer_transport,
             "release": release_issuer_transport,
         }
-        self._principals = {
+        self._principals: dict[str, GitHubPrincipalBinding | None] = {
             "source": source_publisher_principal,
             "preparation": preparation_principal,
             "admission": admission_issuer_principal,
@@ -270,9 +301,20 @@ class GitHubMainGraduationAdapter:
             "release": release_issuer_principal,
             "observer": observer_principal,
         }
-        self._observer_transport = observer_transport
+        # Keep the observer in a read-only map: observation paths must never
+        # accidentally borrow a preparation or issuer credential.
+        self._read_only_transports = (
+            {"observer": observer_transport} if observer_transport is not None else {}
+        )
         self._observer = read_only_observer
         self._mutation_authorize = mutation_authorize
+        self._trusted_clock = trusted_clock
+        self._release_freshness_cutoff = release_freshness_cutoff
+        self._admission_request = admission_request
+        self._admission_freshness_cutoff = admission_freshness_cutoff
+        self.trusted_check_contexts = trusted_check_contexts
+        self.validation_app_id = validation_app_id
+        self.provider_identity = provider_identity
 
     @property
     def repository_path(self) -> str:
@@ -280,7 +322,7 @@ class GitHubMainGraduationAdapter:
 
     @staticmethod
     def _expected_nonce(external_identity: str) -> str:
-        return canonical_digest({"external_identity": external_identity})
+        return main_stage_nonce(external_identity)
 
     def _headers(
         self, principal: GitHubPrincipalBinding, *, graphql: bool = False
@@ -345,12 +387,16 @@ class GitHubMainGraduationAdapter:
                 body,
                 self._headers(principal, graphql=path == "/graphql"),
             )
-        except (GitHubRejected, GitHubTransportError) as exc:
+        except GitHubRejected as exc:
             status = getattr(exc, "status", None)
             if isinstance(status, int) and 400 <= status < 500:
                 return self._result(
                     result_cls, request, outcome="rejected", response=str(exc), dispatch=False
                 )
+            return self._result(
+                result_cls, request, outcome="ambiguous", response=str(exc), dispatch=True
+            )
+        except GitHubTransportError as exc:
             return self._result(
                 result_cls, request, outcome="ambiguous", response=str(exc), dispatch=True
             )
@@ -395,7 +441,9 @@ class GitHubMainGraduationAdapter:
 
     def _read(self, role: str, method: str, path: str, body: JsonBody | None = None) -> JsonValue:
         principal = cast(GitHubPrincipalBinding, self._principals[role])
-        transport = self._transports[role]
+        transport = self._read_only_transports.get(role, self._transports.get(role))
+        if transport is None:
+            raise GitHubMainGraduationError("read capability transport is unavailable")
         try:
             status, payload = transport(
                 method,
@@ -403,6 +451,17 @@ class GitHubMainGraduationAdapter:
                 body,
                 self._headers(principal, graphql=path == "/graphql"),
             )
+        except GitHubRejected as exc:
+            status = exc.status
+            if isinstance(status, int) and 400 <= status < 500:
+                # Callers may treat a 404 as exact-object absence only; all
+                # other 4xx values remain authoritative provider rejection.
+                raise _Precondition(str(exc), status=status) from exc
+            raise GitHubMainGraduationAmbiguous(
+                "GitHub observation rejection was malformed"
+            ) from exc
+        except GitHubTransportError as exc:
+            raise GitHubMainGraduationAmbiguous("GitHub observation transport failed") from exc
         except Exception as exc:
             raise GitHubMainGraduationAmbiguous("GitHub observation transport failed") from exc
         if not isinstance(status, int):
@@ -541,7 +600,15 @@ class GitHubMainGraduationAdapter:
         self._read_commit(role, base_commit, expected_tree=base_tree)
         return parsed
 
-    def _authoritative_protection(self, role: str) -> JsonObject:
+    def _authoritative_protection(
+        self, role: str, *, queue_configuration: JsonObject | None = None
+    ) -> tuple[str, str]:
+        """Return a digest of the active, no-bypass main queue protection.
+
+        GitHub's GraphQL queue configuration is not itself an authorization
+        policy.  Bind it to the effective ruleset GitHub says applies to
+        ``main`` and to branch protection before using it in queue generation.
+        """
         raw = _obj(
             self._read(role, "GET", self.repository_path + "/branches/main/protection"),
             "main protection",
@@ -549,34 +616,142 @@ class GitHubMainGraduationAdapter:
         required = _nested(raw, "required_status_checks", "main protection")
         contexts = required.get("contexts")
         checks = required.get("checks")
-        if not isinstance(contexts, list) or "avo-main-release" not in contexts:
-            raise _Precondition("main protection does not require the release check")
+        if not isinstance(contexts, list) or any(not isinstance(item, str) for item in contexts):
+            raise GitHubMainGraduationError("main protection contexts are malformed")
         if not isinstance(checks, list) or any(not isinstance(item, dict) for item in checks):
             raise GitHubMainGraduationError("main protection checks are malformed")
-        principal = cast(GitHubPrincipalBinding, self._principals[role])
+        principal = cast(GitHubPrincipalBinding, self._principals["release"])
         check_objects = cast(list[JsonObject], checks)
-        release_checks = [
-            item for item in check_objects if item.get("context") == "avo-main-release"
-        ]
-        if len(release_checks) != 1 or release_checks[0].get("app_id") != principal.app_id:
-            raise _Precondition("main release protection issuer differs")
+        expected_contexts = {*self.trusted_check_contexts, "avo-main-release"}
+        expected_apps = {
+            **{context: self.validation_app_id for context in self.trusted_check_contexts},
+            "avo-main-release": principal.app_id,
+        }
+        check_apps: dict[str, int] = {}
+        for item in check_objects:
+            context = _str(item, "context", "main protection check")
+            app_id = _int(item, "app_id", "main protection check")
+            if context in check_apps:
+                raise _Precondition("main protection check context is duplicated")
+            check_apps[context] = app_id
+        if len(contexts) != len(expected_contexts) or set(contexts) != expected_contexts:
+            raise _Precondition("main protection required contexts differ")
+        if check_apps != expected_apps:
+            raise _Precondition("main protection check issuer bindings differ")
         for key in ("allow_force_pushes", "allow_deletions"):
             if raw.get(key) is True:
                 raise _Precondition("main protection permits unsafe mutation")
-        rules = self._read(role, "GET", self.repository_path + "/rules/branches/main")
-        if isinstance(rules, list):
-            for rule in rules:
-                rule_obj = _obj(rule, "effective main rule")
-                bypass = rule_obj.get("bypass_actors")
-                if not isinstance(bypass, list) or bypass:
-                    raise _Precondition("main rules permit bypass actors")
-        elif isinstance(rules, dict):
-            bypass = rules.get("bypass_actors")
+        effective = self._read(role, "GET", self.repository_path + "/rules/branches/main")
+        if not isinstance(effective, list) or not effective:
+            raise _Precondition("active effective main rules are missing")
+        resolved: dict[tuple[str, str, int], JsonObject] = {}
+        merge_rules: list[JsonObject] = []
+        for value in effective:
+            rule = _obj(value, "effective main rule")
+            source_type = _str(rule, "ruleset_source_type", "effective main rule")
+            source = _str(rule, "ruleset_source", "effective main rule")
+            ident = _int(rule, "ruleset_id", "effective main rule")
+            if ident <= 0:
+                raise GitHubMainGraduationError("effective main rule ID is malformed")
+            key = (source_type.casefold(), source.casefold(), ident)
+            if key in resolved:
+                continue
+            if source_type.casefold() == "organization":
+                path = f"/orgs/{quote(source, safe='')}/rulesets/{ident}"
+            elif source_type.casefold() == "repository":
+                path = self.repository_path + f"/rulesets/{ident}"
+            else:
+                raise _Precondition("effective main rule source is unsupported")
+            full = _obj(self._read(role, "GET", path), "main ruleset")
+            if (
+                _int(full, "id", "main ruleset") != ident
+                or not _str(full, "name", "main ruleset")
+                or _str(full, "source_type", "main ruleset").casefold()
+                != source_type.casefold()
+                or _str(full, "source", "main ruleset").casefold() != source.casefold()
+                or _str(full, "target", "main ruleset") != "branch"
+                or _str(full, "enforcement", "main ruleset").casefold() != "active"
+            ):
+                raise _Precondition("effective main ruleset identity or state differs")
+            bypass = full.get("bypass_actors")
             if not isinstance(bypass, list) or bypass:
-                raise _Precondition("main rules permit bypass actors")
-        else:
-            raise GitHubMainGraduationError("effective main rules are malformed")
-        return raw
+                raise _Precondition("main ruleset permits bypass actors")
+            rules = full.get("rules")
+            if not isinstance(rules, list) or any(not isinstance(item, dict) for item in rules):
+                raise GitHubMainGraduationError("main ruleset rules are malformed")
+            resolved[key] = full
+            for full_rule in cast(list[JsonObject], rules):
+                if _str(full_rule, "type", "main ruleset rule") == "merge_queue":
+                    merge_rules.append(_nested(full_rule, "parameters", "merge queue rule"))
+        if len(merge_rules) != 1:
+            raise _Precondition("active effective merge_queue rule is missing or conflicting")
+        config = queue_configuration
+        if config is None:
+            raise GitHubMainGraduationError("queue configuration is required for protection")
+        parameters = merge_rules[0]
+        if (
+            _int(parameters, "max_entries_to_merge", "merge queue rule")
+            != _int(config, "maximumEntriesToMerge", "merge queue configuration")
+            or _str(parameters, "merge_method", "merge queue rule").casefold()
+            != _str(config, "mergeMethod", "merge queue configuration").casefold()
+            or _str(parameters, "grouping_strategy", "merge queue rule").casefold()
+            != _str(config, "mergingStrategy", "merge queue configuration").casefold()
+        ):
+            raise _Precondition("effective merge_queue rule differs from queue configuration")
+        normalized = [
+            {
+                key: value
+                for key, value in ruleset.items()
+                if key
+                in {
+                    "id",
+                    "name",
+                    "source_type",
+                    "source",
+                    "target",
+                    "enforcement",
+                    "conditions",
+                    "rules",
+                    "bypass_actors",
+                }
+            }
+            for ruleset in resolved.values()
+        ]
+        ruleset_epoch = canonical_digest(
+            {"rulesets": normalized, "graphql_queue_configuration": config}
+        )
+        protection_epoch = canonical_digest(
+            {
+                "branch_protection": _stable_observation(raw),
+                "ruleset_epoch": ruleset_epoch,
+            }
+        )
+        manifest = canonical_digest(
+            {
+                "repository_digest": self.repository_digest,
+                "target_ref": "refs/heads/main",
+                "operation_id": canonical_digest(
+                    {
+                        "repository_digest": self.repository_digest,
+                        "protection_epoch": protection_epoch,
+                    }
+                ),
+                "provider_identity": self.provider_identity,
+                "provider_api_version": self.provider_api_version,
+                "required": True,
+                "queue_required": True,
+                "max_entries_per_group": 1,
+                "bypass_allowed": False,
+                "direct_merge_allowed": False,
+                "isolated_release_issuer": principal.identity,
+                "release_issuer_app_id": principal.app_id,
+                "issuer_isolation_digest": principal.isolation_digest,
+                "validation_app_id": self.validation_app_id,
+                "release_context": "avo-main-release",
+                "protection_epoch": protection_epoch,
+            }
+        )
+        return manifest, protection_epoch
 
     def _authoritative_queue(
         self, role: str, request: Any, *, require_entry: bool = True
@@ -586,13 +761,13 @@ class GitHubMainGraduationAdapter:
             request.pull_request_number,
             request.pull_request_head,
             request.base_commit,
+            request.base_tree,
             require_entry=require_entry,
         )
         expected = request.queue_generation_digest
         observed = state.get("queue_generation_digest")
-        if observed is not None and observed != expected:
+        if not isinstance(expected, str) or not _DIGEST.fullmatch(expected) or observed != expected:
             raise _Precondition("queue generation differs from authorization")
-        self._authoritative_protection(role)
         return state
 
     def _authoritative_group(self, role: str, request: Any) -> JsonObject:
@@ -723,6 +898,8 @@ class GitHubMainGraduationAdapter:
                 or parsed["base_ref"] == "refs/heads/main"
             ):
                 raise _Precondition("foreign or conflicting pull request")
+        if len({item["number"] for item in exact}) != len(exact):
+            raise _Precondition("pull request search contains duplicate identities")
         if len(exact) > 1:
             raise _Precondition("ambiguous pull request identity")
         if exact:
@@ -793,27 +970,14 @@ class GitHubMainGraduationAdapter:
         )
         if request.repository_name != f"{self.owner}/{self.repo}":
             raise ValueError("pull request repository binding differs")
-        raw = self._read(
-            "observer" if self._observer_transport else "preparation",
-            "GET",
-            self.repository_path + f"/pulls/{request.pull_request_number}",
-        )
-        parsed = self._parse_pr(raw, request.pull_request_number)
-        if (
-            parsed["head_ref"] != request.candidate_ref
-            or parsed["head_commit"] != request.head_commit
-            or parsed["base_commit"] != request.base_commit
-        ):
-            raise _Precondition("pull request reconciliation identity differs")
-        self._read_commit(
-            "observer" if self._observer_transport else "preparation",
-            request.head_commit,
-            expected_tree=request.head_tree,
-        )
-        self._read_commit(
-            "observer" if self._observer_transport else "preparation",
-            request.base_commit,
-            expected_tree=request.base_tree,
+        parsed = self._authoritative_pr(
+            "observer" if self._read_only_transports else "preparation",
+            request.pull_request_number,
+            candidate_ref=request.candidate_ref,
+            head_commit=request.head_commit,
+            head_tree=request.head_tree,
+            base_commit=request.base_commit,
+            base_tree=request.base_tree,
         )
         values = request.model_dump()
         values.pop("repository_name", None)
@@ -854,6 +1018,7 @@ class GitHubMainGraduationAdapter:
         node_id = parsed.get("node_id")
         if not isinstance(node_id, str) or not node_id:
             raise _Precondition("pull request node identity is unavailable")
+        self._authoritative_admission("preparation", request)
         try:
             data = self._graphql(
                 "preparation",
@@ -891,11 +1056,9 @@ class GitHubMainGraduationAdapter:
             _str(entry, "id", "enqueuePullRequest")
             # Exact singleton observation is mandatory after enqueue.  It is
             # kept in the response digest and never inferred from the mutation.
-            queue = self._queue_state(
+            queue = self._authoritative_queue(
                 "preparation",
-                request.pull_request_number,
-                request.pull_request_head,
-                request.base_commit,
+                request,
             )
         except Exception as exc:
             return cast(
@@ -923,6 +1086,7 @@ class GitHubMainGraduationAdapter:
         number: int,
         head: str,
         base: str,
+        base_tree: str,
         *,
         require_entry: bool = True,
     ) -> JsonObject:
@@ -933,69 +1097,137 @@ class GitHubMainGraduationAdapter:
         queue = _nested(repository, "mergeQueue", "GraphQL data")
         config = _nested(queue, "configuration", "merge queue")
         max_entries = config.get("maximumEntriesToMerge")
+        max_build = config.get("maximumEntriesToBuild")
         method = config.get("mergeMethod")
         strategy = config.get("mergingStrategy")
         if (
             isinstance(max_entries, bool)
             or not isinstance(max_entries, int)
             or max_entries != 1
+            or isinstance(max_build, bool)
+            or not isinstance(max_build, int)
+            or max_build < 1
             or not isinstance(method, str)
             or method.casefold() != "squash"
             or not isinstance(strategy, str)
             or strategy.casefold() != "allgreen"
         ):
             raise _Precondition("queue configuration is not singleton squash all-green")
+        protection_digest, protection_epoch = self._authoritative_protection(
+            role, queue_configuration=config
+        )
+        main_ref = _obj(
+            self._read(role, "GET", self.repository_path + "/git/ref/heads/main"),
+            "main ref",
+        )
+        main_object = _nested(main_ref, "object", "main ref")
+        if (
+            main_ref.get("ref") != "refs/heads/main"
+            or main_object.get("type") != "commit"
+            or _git(_str(main_object, "sha", "main ref"), "main ref") != base
+        ):
+            raise _Precondition("queue main base differs")
+        self._read_commit(role, base, expected_tree=base_tree)
         entries = _nested(queue, "entries", "merge queue")
         total = _int(entries, "totalCount", "merge queue entries")
         nodes = entries.get("nodes")
         if not isinstance(nodes, list) or total != len(nodes) or total < 0:
             raise _Precondition("queue must contain exactly one entry")
         if total == 0 and not require_entry:
-            return {
-                "queue_id": _str(queue, "id", "merge queue"),
-                "entry_id": "empty",
-                "state": "EMPTY",
-                "solo": True,
-                "merge_method": method,
-                "merging_strategy": strategy,
+            entry_id, entry_base, entry_head, state, solo = "empty", base, base, "empty", True
+            pr_number = 0
+        else:
+            if total != 1:
+                raise _Precondition("queue must contain exactly one entry")
+            entry = _obj(nodes[0], "merge queue entry")
+            pr = _nested(entry, "pullRequest", "merge queue entry")
+            entry_base = _str(
+                _nested(entry, "baseCommit", "merge queue entry"), "oid", "queue base"
+            )
+            entry_head = _str(
+                _nested(entry, "headCommit", "merge queue entry"), "oid", "queue head"
+            )
+            pr_number = _int(pr, "number", "merge queue entry")
+            if (
+                pr_number != number
+                or _git(entry_base, "queue base") != base
+                or _git(entry_head, "queue head") != head
+            ):
+                raise _Precondition("queue singleton topology differs")
+            if entry.get("solo") is not True:
+                raise _Precondition("queue entry is not singleton")
+            entry_state = _str(entry, "state", "merge queue entry")
+            if entry_state not in {"QUEUED", "AWAITING_CHECKS", "PENDING"}:
+                raise _Precondition("queue entry is not in an accepted state")
+            entry_id = _str(entry, "id", "merge queue entry")
+            state, solo = entry_state.casefold(), True
+        queue_id = _str(queue, "id", "merge queue")
+        manifest = canonical_digest(
+            {
+                "enabled": True,
                 "max_entries_per_group": max_entries,
-                "queue_generation_digest": queue.get("queue_generation_digest"),
+                "bypass_allowed": False,
+                "direct_merge_allowed": False,
+                "expected_base_commit": base,
+                "expected_base_tree": base_tree,
+                "queue_id": queue_id,
+                "entry_id": entry_id,
+                "pull_request_number": pr_number,
+                "entry_base": entry_base,
+                "entry_head": entry_head,
+                "entry_state": state,
+                "entry_solo": solo,
+                "merge_method": method.casefold(),
+                "merging_strategy": strategy.casefold(),
+                "protection_manifest_digest": protection_digest,
+                "protection_epoch": protection_epoch,
+                "isolated_release_issuer": cast(
+                    GitHubPrincipalBinding, self._principals["release"]
+                ).identity,
+                "release_issuer_app_id": cast(
+                    GitHubPrincipalBinding, self._principals["release"]
+                ).app_id,
+                "issuer_isolation_digest": cast(
+                    GitHubPrincipalBinding, self._principals["release"]
+                ).isolation_digest,
             }
-        if total != 1:
-            raise _Precondition("queue must contain exactly one entry")
-        entry = _obj(nodes[0], "merge queue entry")
-        pr = _nested(entry, "pullRequest", "merge queue entry")
-        entry_base = _str(_nested(entry, "baseCommit", "merge queue entry"), "oid", "queue base")
-        entry_head = _str(_nested(entry, "headCommit", "merge queue entry"), "oid", "queue head")
-        if (
-            _int(pr, "number", "merge queue entry") != number
-            or _git(entry_base, "queue base") != base
-            or _git(entry_head, "queue head") != head
-        ):
-            raise _Precondition("queue singleton topology differs")
-        if entry.get("solo") is not True:
-            raise _Precondition("queue entry is not singleton")
-        state = entry.get("state")
-        if state not in {"QUEUED", "AWAITING_CHECKS", "PENDING"}:
-            raise _Precondition("queue entry is not in an accepted state")
-        generation = queue.get("queue_generation_digest")
-        if generation is not None and not isinstance(generation, str):
-            raise GitHubMainGraduationError("malformed queue generation digest")
+        )
+        generation = canonical_digest(
+            {
+                "queue_generation": canonical_digest({"queue_id": queue_id, "entry_id": entry_id}),
+                "queue_manifest_digest": manifest,
+            }
+        )
         return {
-            "queue_id": _str(queue, "id", "merge queue"),
-            "entry_id": _str(entry, "id", "merge queue entry"),
-            "state": _str(entry, "state", "merge queue entry"),
-            "solo": entry.get("solo"),
-            "merge_method": method,
-            "merging_strategy": strategy,
+            "queue_id": queue_id,
+            "entry_id": entry_id,
+            "state": state,
+            "solo": solo,
+            "merge_method": method.casefold(),
+            "merging_strategy": strategy.casefold(),
             "max_entries_per_group": max_entries,
+            "max_entries_to_build": max_build,
+            "protection_manifest_digest": protection_digest,
+            "protection_epoch": protection_epoch,
+            "queue_manifest_digest": manifest,
             "queue_generation_digest": generation,
         }
 
     def _check(
-        self, role: str, sha: str, run_id: str, nonce: str, *, status: str, conclusion: str
+        self,
+        role: str,
+        sha: str,
+        run_id: str,
+        nonce: str,
+        *,
+        status: str,
+        conclusion: str,
+        issuer: tuple[str, int, str] | None = None,
     ) -> JsonObject:
         runs = self._enumerate_checks(role, sha)
+        context_runs = [run for run in runs if run.get("name") == "avo-main-release"]
+        if len(context_runs) != 1:
+            raise _Precondition("check context is missing or duplicated")
         matches = [
             run for run in runs if str(run.get("id")) == run_id or run.get("external_id") == nonce
         ]
@@ -1003,8 +1235,18 @@ class GitHubMainGraduationAdapter:
             raise _Precondition("check run is missing or ambiguous")
         run = matches[0]
         principal = cast(GitHubPrincipalBinding, self._principals[role])
+        identity, app_id_expected, isolation = issuer or (
+            principal.identity,
+            principal.app_id,
+            principal.isolation_digest,
+        )
+        if not _DIGEST.fullmatch(isolation):
+            raise GitHubMainGraduationError("check issuer isolation is malformed")
         app = run.get("app")
         app_id = app.get("id") if isinstance(app, dict) else None
+        owner = app.get("owner") if isinstance(app, dict) else None
+        app_identity = app.get("slug") if isinstance(app, dict) else None
+        owner_identity = owner.get("login") if isinstance(owner, dict) else None
         if (
             str(run.get("id")) != run_id
             or run.get("external_id") != nonce
@@ -1012,7 +1254,11 @@ class GitHubMainGraduationAdapter:
             or run.get("head_sha") != sha
             or run.get("status") != status
             or (run.get("conclusion") or "pending") != conclusion
-            or app_id != principal.app_id
+            or app_id != app_id_expected
+            or (
+                app_identity != identity
+                and owner_identity != identity
+            )
         ):
             raise _Precondition("check run identity or state differs")
         return run
@@ -1022,7 +1268,7 @@ class GitHubMainGraduationAdapter:
         runs: list[JsonObject] = []
         total_count: int | None = None
         for page in range(1, 11):
-            suffix = "?per_page=100" if page == 1 else f"?per_page=100&page={page}"
+            suffix = f"?per_page=100&page={page}"
             raw = _obj(
                 self._read(
                     role,
@@ -1044,6 +1290,8 @@ class GitHubMainGraduationAdapter:
                 total_count = total
             elif total != total_count:
                 raise GitHubMainGraduationError("check run total_count changed")
+            if total == 0 and not page_runs:
+                break
             if total < 0 or total > 1000 or not page_runs or len(runs) > total:
                 raise GitHubMainGraduationError("check run pagination is incomplete")
             if len(runs) == total:
@@ -1082,6 +1330,13 @@ class GitHubMainGraduationAdapter:
         if nonce != expected_nonce:
             raise ValueError("check external_id is not deterministic from external identity")
         existing = self._enumerate_checks(role, sha)
+        same_context = [run for run in existing if run.get("name") == "avo-main-release"]
+        if len(same_context) > 1:
+            raise _Precondition("check context is duplicated or rerun")
+        if same_context:
+            run = same_context[0]
+            if str(run.get("id")) != run_id or run.get("external_id") != nonce:
+                raise _Precondition("check context belongs to a different run or nonce")
         matches = [
             run
             for run in existing
@@ -1093,6 +1348,7 @@ class GitHubMainGraduationAdapter:
             run = matches[0]
             principal = cast(GitHubPrincipalBinding, self._principals[role])
             app = run.get("app")
+            owner = app.get("owner") if isinstance(app, dict) else None
             if (
                 str(run.get("id")) == run_id
                 and run.get("external_id") == nonce
@@ -1102,6 +1358,10 @@ class GitHubMainGraduationAdapter:
                 and (run.get("conclusion") or "pending") == conclusion
                 and isinstance(app, dict)
                 and app.get("id") == principal.app_id
+                and (
+                    app.get("slug") == principal.identity
+                    or (isinstance(owner, dict) and owner.get("login") == principal.identity)
+                )
             ):
                 return self._result(
                     result_cls,
@@ -1125,6 +1385,7 @@ class GitHubMainGraduationAdapter:
         def parse(value: JsonValue) -> JsonObject:
             run = _obj(value, "check run")
             app = run.get("app")
+            owner = app.get("owner") if isinstance(app, dict) else None
             app_id = app.get("id") if isinstance(app, dict) else None
             principal = cast(GitHubPrincipalBinding, self._principals[role])
             if (
@@ -1134,6 +1395,16 @@ class GitHubMainGraduationAdapter:
                 or run.get("status") != status
                 or (run.get("conclusion") or "pending") != conclusion
                 or app_id != principal.app_id
+                or (
+                    not isinstance(app, dict)
+                    or (
+                        app.get("slug") != principal.identity
+                        and (
+                            not isinstance(owner, dict)
+                            or owner.get("login") != principal.identity
+                        )
+                    )
+                )
             ):
                 raise _Precondition("check run response differs")
             if str(run.get("id")) != run_id:
@@ -1143,6 +1414,72 @@ class GitHubMainGraduationAdapter:
         return self._post(
             role, request, result_cls, self.repository_path + "/check-runs", body, parse
         )
+
+    def _authoritative_admission(self, role: str, request: Any) -> JsonObject:
+        """Re-read the durable admission authority; a digest is not authority."""
+        observed_digest = getattr(request, "admission_observation_digest", None)
+        if not isinstance(observed_digest, str) or not _DIGEST.fullmatch(observed_digest):
+            raise _Precondition("admission observation digest is missing or malformed")
+        admission = self._admission_request(observed_digest)
+        admission = self._validate_request(
+            admission, AdmissionIssueRequest, self.repository_digest
+        )
+        if (
+            admission.operation_id != request.operation_id
+            or admission.lease_epoch_digest != request.lease_epoch_digest
+            or admission.pull_request_number != request.pull_request_number
+            or admission.pull_request_head != request.pull_request_head
+            or admission.pull_request_tree != request.pull_request_tree
+            or admission.base_commit != request.base_commit
+            or admission.base_tree != request.base_tree
+        ):
+            raise _Precondition("durable admission identity differs from current stage")
+        principal = cast(GitHubPrincipalBinding, self._principals["admission"])
+        if (
+            admission.issuer_identity,
+            admission.issuer_app_id,
+            admission.issuer_isolation_digest,
+        ) != (principal.identity, principal.app_id, principal.isolation_digest):
+            raise _Precondition("durable admission issuer differs")
+        now = self._trusted_clock()
+        cutoff = self._admission_freshness_cutoff(request)
+        if (
+            not isinstance(now, datetime)
+            or now.tzinfo is None
+            or not isinstance(cutoff, datetime)
+            or cutoff.tzinfo is None
+            or cutoff > now
+        ):
+            raise GitHubMainGraduationError("admission freshness boundary is malformed")
+        run = self._check(
+            role,
+            admission.pull_request_head,
+            admission.admission_run_id,
+            admission.admission_nonce,
+            status="completed",
+            conclusion="success",
+            issuer=(
+                admission.issuer_identity,
+                admission.issuer_app_id,
+                admission.issuer_isolation_digest,
+            ),
+        )
+        completed_at = run.get("completed_at")
+        if not isinstance(completed_at, str):
+            raise _Precondition("admission check freshness is unavailable")
+        try:
+            completed = datetime.fromisoformat(completed_at.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise _Precondition("admission check freshness is malformed") from exc
+        if (
+            completed.tzinfo is None
+            or completed.astimezone(UTC) < cutoff.astimezone(UTC)
+            or completed.astimezone(UTC) > now.astimezone(UTC)
+        ):
+            raise _Precondition("admission check is stale")
+        if canonical_digest(run) != observed_digest:
+            raise _Precondition("admission observation digest differs from provider evidence")
+        return run
 
     def issue_admission(self, request: AdmissionIssueRequest) -> AdmissionIssueResult:
         request = self._validate_request(request, AdmissionIssueRequest, self.repository_digest)
@@ -1190,6 +1527,7 @@ class GitHubMainGraduationAdapter:
         if request.group_sha == request.pull_request_head:
             raise ValueError("group hold must be on distinct group SHA")
         self._authoritative_group("hold", request)
+        self._authoritative_admission("hold", request)
         return cast(
             GroupHoldIssueResult,
             self._issue_check(
@@ -1206,17 +1544,22 @@ class GitHubMainGraduationAdapter:
 
     def _final_revalidate_release(self, request: ReleaseIssueRequest) -> None:
         """Perform the last authoritative read set before the release fence."""
-        if datetime.now(UTC) >= request.authorization_expires_at:
+        now = self._trusted_clock()
+        if not isinstance(now, datetime) or now.tzinfo is None:
+            raise GitHubMainGraduationError("trusted clock returned a naive or malformed time")
+        now = now.astimezone(UTC)
+        freshness_cutoff = self._release_freshness_cutoff(request)
+        if (
+            not isinstance(freshness_cutoff, datetime)
+            or freshness_cutoff.tzinfo is None
+            or freshness_cutoff > now
+        ):
+            raise GitHubMainGraduationError("controller freshness cutoff is malformed")
+        freshness_cutoff = freshness_cutoff.astimezone(UTC)
+        if now >= request.authorization_expires_at:
             raise _Precondition("release authorization has expired")
         self._authoritative_group("release", request)
-        self._check(
-            "release",
-            request.group_sha,
-            request.hold_run_id,
-            request.hold_nonce,
-            status="in_progress",
-            conclusion="pending",
-        )
+        self._authoritative_admission("release", request)
         main_ref = _obj(
             self._read(
                 "release",
@@ -1231,15 +1574,102 @@ class GitHubMainGraduationAdapter:
         main_sha = _git(_str(main_obj, "sha", "main ref"), "main SHA")
         if main_sha != request.base_commit:
             raise _Precondition("main base changed")
-        self._read_commit("release", main_sha, expected_tree=request.base_tree)
-        # Every check other than the bound pending release check must already
-        # be a successful completed check on the exact group SHA.
+        _, main_tree, main_parents = self._read_commit(
+            "release", main_sha, expected_tree=request.base_tree
+        )
+        if main_tree != request.base_tree or len(main_parents) != 1:
+            raise _Precondition("main topology is incomplete")
+        # Re-read the exact required contexts before scanning the complete,
+        # current check-run list.  Context names and issuing App IDs are both
+        # part of GitHub branch protection, so a success by a lookalike App is
+        # never sufficient.
+        protection = _obj(
+            self._read("release", "GET", self.repository_path + "/branches/main/protection"),
+            "main protection",
+        )
+        required = _nested(protection, "required_status_checks", "main protection")
+        contexts = required.get("contexts")
+        configured = required.get("checks")
+        if (
+            not isinstance(contexts, list)
+            or any(not isinstance(item, str) or not item for item in contexts)
+            or len(set(cast(list[str], contexts))) != len(contexts)
+            or not isinstance(configured, list)
+            or any(not isinstance(item, dict) for item in configured)
+            or len(configured) != len(contexts)
+        ):
+            raise GitHubMainGraduationError("required main check bindings are malformed")
+        bindings: dict[str, int] = {}
+        for value in cast(list[JsonObject], configured):
+            context = _str(value, "context", "required main check")
+            app_id = _int(value, "app_id", "required main check")
+            if context in bindings:
+                raise _Precondition("required main check context is duplicated")
+            bindings[context] = app_id
+        if set(bindings) != set(cast(list[str], contexts)):
+            raise _Precondition("required main check bindings differ from contexts")
+        release_principal = cast(GitHubPrincipalBinding, self._principals["release"])
+        expected_contexts = {*self.trusted_check_contexts, request.check_context}
+        expected_apps = {
+            **{context: self.validation_app_id for context in self.trusted_check_contexts},
+            request.check_context: release_principal.app_id,
+        }
+        if (
+            set(cast(list[str], contexts)) != expected_contexts
+            or bindings != expected_apps
+        ):
+            raise _Precondition("release check is not bound in main protection")
+
+        # Every required non-release context must be a single fresh completed
+        # success on this exact merge-group SHA.  The only release context is
+        # the one still-pending, bound hold; a duplicate context is a rerun or
+        # substitute release and therefore fails closed.
         checks = self._enumerate_checks("release", request.group_sha)
-        for check in checks:
-            if str(check.get("id")) == request.hold_run_id:
+        release_checks = [check for check in checks if check.get("name") == request.check_context]
+        if len(release_checks) != 1:
+            raise _Precondition("release check context is missing or duplicated")
+        self._check(
+            "release",
+            request.group_sha,
+            request.hold_run_id,
+            request.hold_nonce,
+            status="in_progress",
+            conclusion="pending",
+        )
+        for context, app_id in bindings.items():
+            if context == request.check_context:
                 continue
-            if check.get("status") != "completed" or check.get("conclusion") != "success":
+            matches = [check for check in checks if check.get("name") == context]
+            if len(matches) != 1:
+                raise _Precondition("required group check is missing or duplicated")
+            check = matches[0]
+            app = check.get("app")
+            if not isinstance(app, dict) or app.get("id") != app_id:
+                raise _Precondition("required group check issuer differs")
+            completed_at = check.get("completed_at")
+            if not isinstance(completed_at, str):
+                raise _Precondition("required group check freshness is unavailable")
+            try:
+                completed = datetime.fromisoformat(completed_at.replace("Z", "+00:00"))
+            except ValueError as exc:
+                raise _Precondition("required group check freshness is malformed") from exc
+            if (
+                completed.tzinfo is None
+                or completed.astimezone(UTC) < freshness_cutoff
+                or completed.astimezone(UTC) > now
+            ):
+                raise _Precondition("required group check is not fresh")
+            if (
+                check.get("head_sha") != request.group_sha
+                or check.get("status") != "completed"
+                or check.get("conclusion") != "success"
+            ):
                 raise _Precondition("non-release group check is not successful")
+        for check in checks:
+            if check.get("name") == request.check_context:
+                continue
+            if check.get("head_sha") != request.group_sha:
+                raise _Precondition("group check SHA differs")
 
     def issue_release(self, request: ReleaseIssueRequest) -> ReleaseIssueResult:
         request = self._validate_request(request, ReleaseIssueRequest, self.repository_digest)
@@ -1251,34 +1681,10 @@ class GitHubMainGraduationAdapter:
         ) or principal.app_id == 15368:
             raise ValueError("release issuer binding differs")
         self._final_revalidate_release(request)
-        if self._mutation_authorize is not None:
-            try:
-                self._mutation_authorize(request)
-            except TypeError:
-                try:
-                    cast(Callable[[], None], self._mutation_authorize)()
-                except Exception as exc:
-                    return cast(
-                        ReleaseIssueResult,
-                        self._result(
-                            ReleaseIssueResult,
-                            request,
-                            outcome="rejected",
-                            response=str(exc),
-                            dispatch=False,
-                        ),
-                    )
-            except Exception as exc:
-                return cast(
-                    ReleaseIssueResult,
-                    self._result(
-                        ReleaseIssueResult,
-                        request,
-                        outcome="rejected",
-                        response=str(exc),
-                        dispatch=False,
-                    ),
-                )
+        # This is the single final fence: there are no reads between this
+        # authorization and the isolated PATCH below, and callback failures
+        # are deliberately propagated rather than reinterpreted or retried.
+        self._mutation_authorize(request)
         body: JsonBody = {"status": "completed", "conclusion": "success"}
         result = self._invoke(
             "release",
@@ -1291,9 +1697,11 @@ class GitHubMainGraduationAdapter:
         )
         return cast(ReleaseIssueResult, result)
 
-    @staticmethod
-    def _check_response(value: JsonValue, request: ReleaseIssueRequest) -> JsonObject:
+    def _check_response(self, value: JsonValue, request: ReleaseIssueRequest) -> JsonObject:
         run = _obj(value, "release check run")
+        principal = cast(GitHubPrincipalBinding, self._principals["release"])
+        app = run.get("app")
+        owner = app.get("owner") if isinstance(app, dict) else None
         if (
             str(run.get("id")) != request.hold_run_id
             or run.get("external_id") != request.hold_nonce
@@ -1301,6 +1709,15 @@ class GitHubMainGraduationAdapter:
             or run.get("head_sha") != request.group_sha
             or run.get("status") != "completed"
             or run.get("conclusion") != "success"
+            or not isinstance(app, dict)
+            or app.get("id") != principal.app_id
+            or (
+                app.get("slug") != principal.identity
+                and (not isinstance(owner, dict) or owner.get("login") != principal.identity)
+            )
+            or request.issuer_identity != principal.identity
+            or request.issuer_app_id != principal.app_id
+            or request.issuer_isolation_digest != principal.isolation_digest
         ):
             raise _Precondition("release check response differs")
         return run
@@ -1314,6 +1731,22 @@ class GitHubMainGraduationAdapter:
         )
         return cls.build(**values)
 
+    @staticmethod
+    def _request_issuer(request: Any) -> tuple[str, int, str]:
+        identity = getattr(request, "issuer_identity", None)
+        app_id = getattr(request, "issuer_app_id", None)
+        isolation = getattr(request, "issuer_isolation_digest", None)
+        if (
+            not isinstance(identity, str)
+            or not isinstance(app_id, int)
+            or isinstance(app_id, bool)
+            or app_id <= 0
+            or not isinstance(isolation, str)
+            or not _DIGEST.fullmatch(isolation)
+        ):
+            raise GitHubMainGraduationError("observation request issuer is malformed")
+        return identity, app_id, isolation
+
     def _delegate_observer(self, name: str, request: Any, result_cls: type[Any]) -> Any | None:
         if self._observer is None:
             return None
@@ -1323,7 +1756,8 @@ class GitHubMainGraduationAdapter:
         result = method(request)
         if not isinstance(result, result_cls):
             raise GitHubMainGraduationError("injected observer returned the wrong result type")
-        result_values = result.model_dump()
+        # Re-validate instead of accepting a ``model_construct`` result.
+        result_values = result_cls.model_validate(result.model_dump()).model_dump()
         request_values = request.model_dump()
         for key, expected in request_values.items():
             if result_values.get(key) != expected:
@@ -1343,7 +1777,7 @@ class GitHubMainGraduationAdapter:
             return cast(CandidateObservationResult, delegated)
         raw = _obj(
             self._read(
-                "observer" if self._observer_transport else "preparation",
+                "observer" if self._read_only_transports else "preparation",
                 "GET",
                 self.repository_path
                 + "/git/ref/heads/"
@@ -1352,8 +1786,16 @@ class GitHubMainGraduationAdapter:
             "candidate ref",
         )
         obj = _nested(raw, "object", "candidate ref")
-        if raw.get("ref") != request.candidate_ref or obj.get("sha") != request.candidate_commit:
+        if (
+            raw.get("ref") != request.candidate_ref
+            or obj.get("type") != "commit"
+            or obj.get("sha") != request.candidate_commit
+        ):
             raise _Precondition("candidate observation differs")
+        self._read_commit(
+            "observer" if self._read_only_transports else "preparation",
+            request.candidate_commit,
+        )
         return cast(
             CandidateObservationResult, self._observation(CandidateObservationResult, request, raw)
         )
@@ -1369,20 +1811,15 @@ class GitHubMainGraduationAdapter:
         )
         if delegated is not None:
             return cast(PullRequestObservationResult, delegated)
-        parsed = self._parse_pr(
-            self._read(
-                "observer" if self._observer_transport else "preparation",
-                "GET",
-                self.repository_path + f"/pulls/{request.pull_request_number}",
-            ),
+        parsed = self._authoritative_pr(
+            "observer" if self._read_only_transports else "preparation",
             request.pull_request_number,
+            candidate_ref=request.candidate_ref,
+            head_commit=request.head_commit,
+            head_tree=request.head_tree,
+            base_commit=request.base_commit,
+            base_tree=request.base_tree,
         )
-        if (
-            parsed["head_ref"] != request.candidate_ref
-            or parsed["head_commit"] != request.head_commit
-            or parsed["base_commit"] != request.base_commit
-        ):
-            raise _Precondition("pull request observation differs")
         return cast(
             PullRequestObservationResult,
             self._observation(PullRequestObservationResult, request, parsed),
@@ -1398,12 +1835,13 @@ class GitHubMainGraduationAdapter:
         if delegated is not None:
             return cast(AdmissionObservationResult, delegated)
         run = self._check(
-            "observer" if self._observer_transport else "admission",
+            "observer" if self._read_only_transports else "admission",
             request.pull_request_head,
             request.admission_run_id,
             request.admission_nonce,
             status="completed",
             conclusion="success",
+            issuer=self._request_issuer(request),
         )
         return cast(
             AdmissionObservationResult, self._observation(AdmissionObservationResult, request, run)
@@ -1414,11 +1852,9 @@ class GitHubMainGraduationAdapter:
         delegated = self._delegate_observer("observe_queue", request, QueueObservationResult)
         if delegated is not None:
             return cast(QueueObservationResult, delegated)
-        state = self._queue_state(
-            "observer" if self._observer_transport else "preparation",
-            request.pull_request_number,
-            request.pull_request_head,
-            request.base_commit,
+        state = self._authoritative_queue(
+            "observer" if self._read_only_transports else "preparation",
+            request,
         )
         return cast(
             QueueObservationResult, self._observation(QueueObservationResult, request, state)
@@ -1435,13 +1871,17 @@ class GitHubMainGraduationAdapter:
         )
         if delegated is not None:
             return cast(GroupHoldObservationResult, delegated)
+        self._authoritative_group(
+            "observer" if self._read_only_transports else "hold", request
+        )
         run = self._check(
-            "observer" if self._observer_transport else "hold",
+            "observer" if self._read_only_transports else "hold",
             request.group_sha,
             request.hold_run_id,
             request.hold_nonce,
             status="in_progress",
             conclusion="pending",
+            issuer=self._request_issuer(request),
         )
         return cast(
             GroupHoldObservationResult, self._observation(GroupHoldObservationResult, request, run)
@@ -1452,13 +1892,17 @@ class GitHubMainGraduationAdapter:
         delegated = self._delegate_observer("observe_release", request, ReleaseObservationResult)
         if delegated is not None:
             return cast(ReleaseObservationResult, delegated)
+        self._authoritative_group(
+            "observer" if self._read_only_transports else "release", request
+        )
         run = self._check(
-            "observer" if self._observer_transport else "release",
+            "observer" if self._read_only_transports else "release",
             request.group_sha,
             request.hold_run_id,
             request.hold_nonce,
             status="completed",
             conclusion="success",
+            issuer=self._request_issuer(request),
         )
         return cast(
             ReleaseObservationResult, self._observation(ReleaseObservationResult, request, run)
