@@ -1588,25 +1588,36 @@ def test_plan_intent_and_preparation_validators_close_authority_chain() -> None:
     lease_values = {
         "operation_id": D,
         "repository_digest": R,
-        "identity": "lease",
+        "target_ref": "refs/heads/main",
+        "owner": "lease",
+        "policy_epoch": D,
+        "lease_epoch_digest": D2,
         "acquired_at": NOW,
         "expires_at": NOW + timedelta(minutes=5),
     }
-    lease_probe = MainLeaseEvidence.model_construct(**lease_values, lease_digest=D)
-    lease = MainLeaseEvidence.model_validate(
-        {
-            **lease_values,
-            "lease_digest": canonical_digest(
-                lease_probe.model_dump(exclude={"lease_digest"}, mode="json")
-            ),
+    lease_probe = MainLeaseEvidenceRecord.model_construct(
+        **lease_values, lease_digest=D, evidence_digest=D
+    )
+    lease_values["lease_digest"] = canonical_digest(
+        lease_probe.model_dump(exclude={"lease_digest", "evidence_digest"}, mode="json")
+    )
+    lease_probe = MainLeaseEvidenceRecord.model_construct(
+        **lease_values, evidence_digest=D
+    )
+    lease = MainLeaseEvidenceRecord.model_validate(
+        lease_values
+        | {
+            "evidence_digest": canonical_digest(
+                lease_probe.model_dump(exclude={"evidence_digest"}, mode="json")
+            )
         }
     )
     lease_payload = main_record_bytes(lease)
     lease_ref = ArtifactRef(
         digest=canonical_digest(lease),
         size_bytes=len(lease_payload),
-        media_type="application/vnd.avo.main-graduation-lease-evidence+json",
-        role="main-graduation-lease-evidence",
+        media_type="application/vnd.avo.main-graduation-lease-evidence-record+json",
+        role="main-graduation-lease-evidence-record",
         created_at=NOW,
     )
     intent_values = {
@@ -1622,7 +1633,8 @@ def test_plan_intent_and_preparation_validators_close_authority_chain() -> None:
         "candidate_ref": "refs/heads/avo/candidate/" + "a" * 64,
         "lease_identity": "lease",
         "lease_digest": lease.lease_digest,
-        "lease_evidence": lease,
+        "lease_epoch_digest": lease.lease_epoch_digest,
+        "lease_evidence_record": lease,
         "lease_evidence_artifact": lease_ref,
         "policy_epoch": D,
         "recorded_at": NOW,

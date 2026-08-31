@@ -3224,7 +3224,7 @@ class MainGraduationJournal:
         intent_prior = self.read_mutation_intent(intent_digest)
         if intent_prior is None:
             raise MainGraduationJournalError("dispatch owner requires durable mutation intent")
-        intent = cast(MainMutationIntent, intent_prior[0])
+        intent = intent_prior[0]
         if (
             intent.operation_id != operation_id
             or intent.request_digest != request_digest
@@ -3251,7 +3251,7 @@ class MainGraduationJournal:
             "lease_epoch_digest": lease_epoch_digest,
             "recorded_at": recorded_at,
         }
-        marker_probe = _MutationDispatchOwner.model_construct(
+        marker_probe = cast(Any, _MutationDispatchOwner).model_construct(
             **values, owner_digest="sha256:" + "0" * 64
         )
         marker = _MutationDispatchOwner.model_validate(
@@ -3306,7 +3306,7 @@ class MainGraduationJournal:
         intent_prior = self.read_mutation_intent(intent_digest)
         if intent_prior is None:
             raise MainGraduationJournalError("dispatch owner intent is missing")
-        intent = cast(MainMutationIntent, intent_prior[0])
+        intent = intent_prior[0]
         if (
             marker.operation_id != intent.operation_id
             or marker.request_digest != intent.request_digest
