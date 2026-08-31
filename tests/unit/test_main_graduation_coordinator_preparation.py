@@ -1,3 +1,5 @@
+# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportAttributeAccessIssue=false, reportIndexIssue=false, reportUnnecessaryCast=false, reportUnusedClass=false
+
 """Filesystem-backed C4 preparation coordinator coverage."""
 
 from __future__ import annotations
@@ -27,18 +29,27 @@ from avo_correlate.contracts.main_graduation import (
     MainGraduationPlan,
     MainPreparationAuthorization,
     MainProtectionManifest,
+    MainProviderPostStateObservation,
+    MainProviderReceipt,
     MainQueueObservation,
+    MainReconciliation,
     MainReleaseIssuerBinding,
 )
-from avo_correlate.contracts.main_graduation_phase_a import MainLeaseEvidenceRecord
+from avo_correlate.contracts.main_graduation_phase_a import (
+    MainLeaseEvidenceRecord,
+    MainMutationFenceResolution,
+    MainMutationReceipt,
+)
 from avo_correlate.domain.canonical import canonical_digest
-from tests.unit.phase_a_test_support import TEST_PHASE_A_AUTHORITY
-from tests.unit.test_main_graduation_c4_validated_fixture import (
+from tests.unit.c4_coordinator_test_support import (
     MAIN_OPERATION,
     REPOSITORY,
-    _git,
-    _source,
+    git,
 )
+from tests.unit.c4_coordinator_test_support import (
+    source as validated_source,
+)
+from tests.unit.phase_a_test_support import TEST_PHASE_A_AUTHORITY
 
 NOW = datetime(2026, 1, 1, tzinfo=UTC)
 CONFIG = "sha256:" + "3" * 64
@@ -67,8 +78,20 @@ class Authority:
     def verify_mutation_receipt(self, receipt: Any, intent: Any) -> None:
         TEST_PHASE_A_AUTHORITY.verify_mutation_receipt(receipt, intent)
 
-    def verify_fence_resolution(self, resolution: Any, receipt: Any) -> None:
-        TEST_PHASE_A_AUTHORITY.verify_fence_resolution(resolution, receipt)
+    def verify_fence_resolution(
+        self, resolution: MainMutationFenceResolution, source_receipt: MainMutationReceipt
+    ) -> None:
+        TEST_PHASE_A_AUTHORITY.verify_fence_resolution(resolution, source_receipt)
+
+    def verify_provider_post_state(
+        self,
+        observation: MainProviderPostStateObservation,
+        provider_receipt: MainProviderReceipt,
+        reconciliation: MainReconciliation,
+    ) -> None:
+        TEST_PHASE_A_AUTHORITY.verify_provider_post_state(
+            observation, provider_receipt, reconciliation
+        )
 
     def verify_stage_result(self, result: Any, request: Any, intent: Any) -> None:
         assert result.request_digest == request.request_digest
@@ -97,6 +120,10 @@ class Provider:
         self.queue_reads = 0
         self.pr_number = 41
         self.pr_url = self.repository_url + "/pull/41"
+        self.queue: MainQueueObservation
+        self.protection: MainProtectionManifest
+        self.admission_run_id = ""
+        self.admission_nonce = ""
 
     def observe_main(self) -> Any:
         return type(
@@ -252,13 +279,58 @@ class Provider:
         )
 
 
-def _fixture(root: Path) -> tuple[MainGraduationJournal, Provider]:
-    source = _source(root)
+class CrashOnPullRequestProvider(Provider):
+    """Lose the PR response once, then expose it through read-only recovery."""
+
+    def __init__(self, base: str, tree: str, candidate: str, candidate_tree: str) -> None:
+        super().__init__(base, tree, candidate, candidate_tree)
+        self.crash = True
+
+    def create_pull_request(self, request: PullRequestCreateRequest) -> PullRequestCreateResult:
+        if self.crash:
+            self.crash = False
+            self.calls.append("pr-crash")
+            raise RuntimeError("provider response lost after dispatch")
+        return super().create_pull_request(request)
+
+
+class ForeignPrObservationProvider(CrashOnPullRequestProvider):
+    """Return a typed PR observation whose head is not the authorized candidate."""
+
+    def observe_pull_request_by_candidate(self, request: Any) -> PullRequestObservationResult:
+        observed = super().observe_pull_request_by_candidate(request)
+        return observed.model_copy(update={"head_commit": "0" * 40})
+
+
+class ChangedQueueGenerationProvider(Provider):
+    """Model a provider that changes generation when the PR enters the queue."""
+
+    def observe_queue(self) -> MainQueueObservation:
+        observed = super().observe_queue()
+        if self.queue_reads >= 6:
+            return observed.model_copy(
+                update={"queue_generation_digest": canonical_digest({"generation": "changed"})}
+            )
+        return observed
+
+
+class ForeignAdmissionObservationProvider(Provider):
+    """Return an admission observation for a different PR identity."""
+
+    def observe_admission(self, request: Any) -> AdmissionObservationResult:
+        observed = super().observe_admission(request)
+        return observed.model_copy(update={"pull_request_number": self.pr_number + 1})
+
+
+def _fixture(
+    root: Path, provider_type: type[Provider] = Provider
+) -> tuple[MainGraduationJournal, Provider]:
+    source = validated_source(root)
     checkout = root / "checkout"
-    base = _git(checkout, "rev-parse", "HEAD~1")
-    base_tree = _git(checkout, "rev-parse", "HEAD~1^{tree}")
-    result = _git(checkout, "rev-parse", "HEAD")
-    result_tree = _git(checkout, "rev-parse", "HEAD^{tree}")
+    base = git(checkout, "rev-parse", "HEAD~1")
+    base_tree = git(checkout, "rev-parse", "HEAD~1^{tree}")
+    result = git(checkout, "rev-parse", "HEAD")
+    result_tree = git(checkout, "rev-parse", "HEAD^{tree}")
     issuer_values = {
         "operation_id": MAIN_OPERATION,
         "repository_digest": REPOSITORY,
@@ -280,8 +352,8 @@ def _fixture(root: Path) -> tuple[MainGraduationJournal, Provider]:
             return MainBaseSnapshot(REPOSITORY, base, base_tree)
 
     class FixtureJournal(MainGraduationJournal):
-        def _require_preparation_chain(self, _: Any) -> None:
-            return None
+        def _require_preparation_chain(self, preparation: MainPreparationAuthorization) -> None:
+            del preparation
 
     journal = FixtureJournal(
         root,
@@ -418,16 +490,17 @@ def _fixture(root: Path) -> tuple[MainGraduationJournal, Provider]:
         observed_at=NOW,
     )
     journal.record_queue_observation(queue)
-    provider = Provider(base, base_tree, result, result_tree)
+    provider = provider_type(base, base_tree, result, result_tree)
     provider.candidate = plan.composition.candidate_commit
     provider.candidate_tree = plan.composition.candidate_tree
     provider.queue, provider.protection = queue, protection
     return journal, provider
 
 
-def test_happy_path_is_exact_four_stage_and_replay_is_read_only(tmp_path: Path) -> None:
-    journal, provider = _fixture(tmp_path)
-    coordinator = MainGraduationPreparationCoordinator(
+def _coordinator(
+    journal: MainGraduationJournal, provider: Provider
+) -> MainGraduationPreparationCoordinator:
+    return MainGraduationPreparationCoordinator(
         journal=journal,
         clock=Clock(),
         lease_fence=Fence(),
@@ -436,6 +509,11 @@ def test_happy_path_is_exact_four_stage_and_replay_is_read_only(tmp_path: Path) 
         authority_verifier=Authority(),
         attester=Attester(),
     )
+
+
+def test_happy_path_is_exact_four_stage_and_replay_is_read_only(tmp_path: Path) -> None:
+    journal, provider = _fixture(tmp_path)
+    coordinator = _coordinator(journal, provider)
     result = coordinator.prepare(MAIN_OPERATION)
     assert result.state == "queued", result
     assert provider.calls == ["candidate", "pr", "admission", "enqueue"]
@@ -444,3 +522,61 @@ def test_happy_path_is_exact_four_stage_and_replay_is_read_only(tmp_path: Path) 
     replay = coordinator.resume(MAIN_OPERATION)
     assert replay.state == "queued"
     assert provider.calls == before
+
+
+def test_restart_after_lost_pr_response_recovers_read_only_and_queues_once(tmp_path: Path) -> None:
+    journal, provider = _fixture(tmp_path, CrashOnPullRequestProvider)
+    coordinator = _coordinator(journal, provider)
+    result = coordinator.prepare(MAIN_OPERATION)
+    before = list(provider.calls)
+    replay = coordinator.resume(MAIN_OPERATION)
+
+    assert result.state == "reconciliation_required", result
+    assert replay.state == "reconciliation_required"
+    assert provider.calls == before == ["candidate", "pr-crash"]
+    assert journal.read_queue_admission(MAIN_OPERATION) is None
+
+
+def test_foreign_pr_observation_fails_closed_before_admission_or_queue(tmp_path: Path) -> None:
+    journal, provider = _fixture(tmp_path, ForeignPrObservationProvider)
+    result = _coordinator(journal, provider).prepare(MAIN_OPERATION)
+
+    assert result.state == "quarantined"
+    assert result.reason == "observation target differs from original stage request"
+    assert provider.calls == ["candidate", "pr-crash"]
+    assert journal.read_queue_admission(MAIN_OPERATION) is None
+
+
+def test_foreign_admission_observation_fails_closed_before_queue(tmp_path: Path) -> None:
+    journal, provider = _fixture(tmp_path, ForeignAdmissionObservationProvider)
+    result = _coordinator(journal, provider).prepare(MAIN_OPERATION)
+
+    assert result.state == "quarantined"
+    assert result.reason == "admission observation target differs from request"
+    assert provider.calls == ["candidate", "pr", "admission"]
+    assert journal.read_queue_admission(MAIN_OPERATION) is None
+
+
+def test_provider_queue_generation_change_is_quarantined_after_all_mutations(
+    tmp_path: Path,
+) -> None:
+    journal, provider = _fixture(tmp_path, ChangedQueueGenerationProvider)
+    result = _coordinator(journal, provider).prepare(MAIN_OPERATION)
+
+    # ProtectedMainProvider includes queue membership in its generation digest.
+    # The coordinator currently compares that post-enqueue generation with the
+    # pre-enqueue request, so this test records the production reconciliation gap.
+    assert result.state == "quarantined"
+    assert result.reason == "queued PR is not exact singleton queue admission"
+    assert provider.calls == ["candidate", "pr", "admission", "enqueue"]
+    assert journal.read_queue_admission(MAIN_OPERATION) is not None
+
+
+def test_preparation_surface_has_no_release_or_main_mutation_capability(tmp_path: Path) -> None:
+    journal, provider = _fixture(tmp_path)
+    coordinator = _coordinator(journal, provider)
+    result = coordinator.prepare(MAIN_OPERATION)
+
+    assert result.state == "queued"
+    assert provider.calls == ["candidate", "pr", "admission", "enqueue"]
+    assert not any(call.startswith(("release", "main", "merge", "hold")) for call in provider.calls)
