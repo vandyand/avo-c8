@@ -3,6 +3,9 @@
 
 from __future__ import annotations
 
+import json
+import subprocess
+import sys
 from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -24,7 +27,10 @@ from avo_correlate.application.c4_capabilities import (
     CandidatePublicationRequest,
     CandidatePublicationResult,
 )
-from avo_correlate.application.c4_stage_executor import C4StageExecutionError, C4StageExecutor
+from avo_correlate.application.c4_stage_executor import (
+    C4StageExecutionError,
+    C4StageExecutor,
+)
 from avo_correlate.contracts.main_graduation import (
     MainExternalIdentity,
     MainGraduationPlan,
@@ -580,6 +586,153 @@ def test_resolution_replay_is_verified_and_does_not_reobserve(
     ).recover(intent, observation_request, original_request=request)
     assert replay == receipt
     assert second_observer.calls == 0
+
+
+def test_recover_effective_exposes_resolution_without_rewriting_source_receipt(
+    tmp_path: Path,
+) -> None:
+    journal, intent, request, authority = _fixture(tmp_path)
+    receipt = _executor(
+        journal, CandidateProvider(ambiguous=True), Clock(), Fence(), authority
+    ).execute(intent, request)
+    observation_request = CandidateObservationRequest.build(
+        **request.model_dump(exclude={"request_digest", "external_key", "external_identity"}),
+        object_id=request.candidate_ref,
+    )
+    observation_result = CandidateObservationResult.build(
+        **observation_request.model_dump(
+            exclude={"request_digest", "external_key", "external_identity"}
+        ),
+        outcome="observed",
+        evidence_digest=D,
+        observed_at=NOW,
+    )
+    effective = _executor(
+        journal,
+        CandidateProvider(),
+        Clock(),
+        Fence(),
+        authority,
+        Observation(observation_result),
+    ).recover_effective(intent, observation_request, original_request=request)
+
+    resolution = journal.read_mutation_fence_resolution_by_intent(intent.intent_digest)
+    assert resolution is not None
+    assert effective.receipt == receipt
+    assert effective.receipt.outcome == "ambiguous"
+    assert effective.effective_outcome == "already_applied"
+    assert effective.has_authoritative_resolution
+    assert effective.can_advance_parent
+    assert effective.parent_resolution_digest == resolution[0].resolution_digest
+    source_prior = journal.read_mutation_receipt(receipt.receipt_digest)
+    assert source_prior is not None and source_prior[0] == receipt
+
+
+def test_fresh_process_crash_after_dispatch_recovers_effective_resolution(
+    tmp_path: Path,
+) -> None:
+    journal, intent, request, authority = _fixture(tmp_path)
+    provider = CandidateProvider()
+    journal.record_mutation_intent(intent)
+    executor = _executor(journal, provider, Clock(), Fence(), authority)
+    assert executor._claim_dispatch_owner(intent, request) is True
+    # The provider crossed the boundary, but this process dies before receipt
+    # publication.  The child below must recover by observation only.
+    provider.publish_candidate(request)
+
+    observation_request = CandidateObservationRequest.build(
+        **request.model_dump(exclude={"request_digest", "external_key", "external_identity"}),
+        object_id=request.candidate_ref,
+    )
+    observation_result = CandidateObservationResult.build(
+        **observation_request.model_dump(
+            exclude={"request_digest", "external_key", "external_identity"}
+        ),
+        outcome="observed",
+        evidence_digest=D,
+        observed_at=NOW,
+    )
+    issuer = journal._release_issuer_binding  # pyright: ignore[reportPrivateUsage]
+    assert issuer is not None
+    script = """
+import json
+import sys
+from pathlib import Path
+
+from tests.unit.test_c4_stage_executor import (
+    Authority,
+    CandidateObservationRequest,
+    CandidateObservationResult,
+    CandidateProvider,
+    Clock,
+    Fence,
+    KernelJournal,
+    Observation,
+)
+from avo_correlate.application.c4_stage_executor import C4StageExecutor
+from avo_correlate.contracts.main_graduation_phase_a import MainMutationIntent
+from avo_correlate.application.c4_capabilities import CandidatePublicationRequest
+from avo_correlate.contracts.main_graduation import MainReleaseIssuerBinding
+
+root = Path(sys.argv[1])
+intent = MainMutationIntent.model_validate_json(sys.argv[2])
+request = CandidatePublicationRequest.model_validate_json(sys.argv[3])
+observation_request = CandidateObservationRequest.model_validate_json(sys.argv[4])
+observation_result = CandidateObservationResult.model_validate_json(sys.argv[5])
+issuer = MainReleaseIssuerBinding.model_validate_json(sys.argv[6])
+journal = KernelJournal(
+    root,
+    release_issuer_binding=issuer,
+    phase_a_authority_verifier=Authority(),
+)
+observer = Observation(observation_result)
+executor = C4StageExecutor(
+    journal=journal,
+    clock=Clock(),
+    lease_fence=Fence(),
+    capability=CandidateProvider(),
+    observation_capability=observer,
+    authority_verifier=Authority(),
+    provider_identity=Authority.provider_identity,
+    provider_api_version=Authority.provider_api_version,
+)
+result = executor.recover_effective(
+    intent,
+    observation_request,
+    original_request=request,
+)
+print(json.dumps({
+    "receipt": result.receipt.receipt_digest,
+    "outcome": result.effective_outcome,
+    "parent_resolution_digest": result.parent_resolution_digest,
+    "observer_calls": observer.calls,
+}))
+"""
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(tmp_path),
+            intent.model_dump_json(),
+            request.model_dump_json(),
+            observation_request.model_dump_json(),
+            observation_result.model_dump_json(),
+            issuer.model_dump_json(),
+        ],
+        cwd=Path.cwd(),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
+    result = json.loads(completed.stdout)
+    assert result["outcome"] == "already_applied"
+    assert result["observer_calls"] == 1
+    assert result["receipt"] is not None
+    assert result["parent_resolution_digest"].startswith("sha256:")
+    source_prior = journal.read_mutation_receipt(result["receipt"])
+    assert source_prior is not None and source_prior[0].outcome == "ambiguous"
 
 
 def test_fence_resolution_reader_fails_closed_when_authority_is_tampered(

@@ -11,10 +11,11 @@ read-only reconciliation of an uncertain call.
 from __future__ import annotations
 
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from threading import Lock
-from typing import Any, Protocol, cast
+from typing import Any, Literal, Protocol, cast
 
 from avo_correlate.adapters.artifacts.main_graduation_journal import (
     MainGraduationJournal,
@@ -44,6 +45,7 @@ from avo_correlate.contracts.main_graduation import MainBound
 from avo_correlate.contracts.main_graduation_phase_a import (
     MainMutationFenceResolution,
     MainMutationIntent,
+    MainMutationOutcome,
     MainMutationReceipt,
     MainUnresolvedMutationFence,
     main_target_scope_digest,
@@ -81,6 +83,39 @@ class StageAuthorityVerifier(Protocol):
 
 class C4StageExecutionError(RuntimeError):
     """A stage cannot safely be executed or recovered."""
+
+
+EffectiveStageOutcome = MainMutationOutcome | Literal["not_applied"]
+
+
+@dataclass(frozen=True)
+class C4StageExecutionResult:
+    """The effective, read-only result of one stage execution or recovery.
+
+    ``receipt`` is always the original durable mutation receipt.  In
+    particular, an ambiguous receipt is never rewritten after a fence is
+    resolved.  When an authoritative observed resolution exists,
+    ``effective_outcome`` is the outcome established by that observation and
+    ``parent_resolution_digest`` is the proof a coordinator may embed in the
+    next intent.
+    """
+
+    receipt: MainMutationReceipt
+    effective_outcome: EffectiveStageOutcome
+    authoritative_resolution: MainMutationFenceResolution | None = None
+    parent_resolution_digest: Sha256Digest | None = None
+
+    @property
+    def has_authoritative_resolution(self) -> bool:
+        """Whether a durable, verifier-approved fence resolution was found."""
+
+        return self.authoritative_resolution is not None
+
+    @property
+    def can_advance_parent(self) -> bool:
+        """Whether this result authorizes a successor stage intent."""
+
+        return self.parent_resolution_digest is not None
 
 
 _MUTATION_REQUESTS: dict[str, tuple[type[StageRequest], str]] = {
@@ -277,6 +312,20 @@ class C4StageExecutor:
         with _operation_lock(intent.intent_digest):
             return self._execute_locked(intent, request)
 
+    def execute_effective(
+        self, intent: MainMutationIntent, request: StageRequest
+    ) -> C4StageExecutionResult:
+        """Execute once and return the effective result for a coordinator.
+
+        This is a compatibility-preserving wrapper around :meth:`execute`.
+        The ordinary receipt API continues to return the immutable source
+        receipt; callers that need to advance after authoritative recovery use
+        this typed result instead.
+        """
+
+        receipt = self.execute(intent, request)
+        return self.effective_result(intent, receipt)
+
     def _execute_locked(
         self, intent: MainMutationIntent, request: StageRequest
     ) -> MainMutationReceipt:
@@ -378,6 +427,84 @@ class C4StageExecutor:
         with _operation_lock(expected):
             return self._recover_locked(intent, observation_request, original_request)
 
+    def recover_effective(
+        self,
+        intent: MainMutationIntent | Sha256Digest,
+        observation_request: StageObservationRequest,
+        *,
+        original_request: StageRequest,
+    ) -> C4StageExecutionResult:
+        """Recover once and expose an authoritative successor-stage proof.
+
+        Recovery remains read-only with respect to the provider.  The only
+        writes possible here are the existing append-only ambiguous receipt,
+        fence, and fence-resolution records needed to complete a recovery.
+        """
+
+        receipt = self.recover(
+            intent, observation_request, original_request=original_request
+        )
+        return self.effective_result(intent, receipt)
+
+    def effective_result(
+        self,
+        intent: MainMutationIntent | Sha256Digest,
+        receipt: MainMutationReceipt | None = None,
+    ) -> C4StageExecutionResult:
+        """Read and classify a durable stage result without provider access.
+
+        A resolved fence is an additional authoritative fact, not an update to
+        its source receipt.  The source receipt is re-read and verified before
+        the resolution is interpreted, so a caller cannot manufacture a
+        successor-stage proof from an unrelated receipt.
+        """
+
+        expected = intent if isinstance(intent, str) else intent.intent_digest
+        prior_intent = self.journal.read_mutation_intent(expected)
+        if prior_intent is None:
+            raise C4StageExecutionError("mutation intent is missing")
+        durable_intent = prior_intent[0]
+        if isinstance(intent, MainMutationIntent):
+            intent = cast(MainMutationIntent, _canonical_model(intent))
+            if durable_intent != intent:
+                raise C4StageExecutionError("durable mutation intent differs")
+
+        durable_receipt = self._read_receipt_for_intent(durable_intent.intent_digest)
+        if durable_receipt is None:
+            raise C4StageExecutionError("mutation receipt is missing")
+        source_receipt = durable_receipt
+        if receipt is not None:
+            receipt = cast(MainMutationReceipt, _canonical_model(receipt))
+            if receipt != source_receipt:
+                raise C4StageExecutionError("supplied mutation receipt differs")
+        self._check_receipt_binding(source_receipt, durable_intent)
+        self._verify_receipt_authority(source_receipt, durable_intent)
+
+        resolution = self._read_resolution_for_intent(durable_intent.intent_digest)
+        if resolution is None:
+            return C4StageExecutionResult(
+                receipt=source_receipt,
+                effective_outcome=source_receipt.outcome,
+            )
+
+        self._check_resolution_binding(resolution, durable_intent)
+        self._check_resolution_source(resolution, source_receipt)
+        if resolution.outcome == "observed":
+            observed_outcome = resolution.observed_outcome
+            if observed_outcome is None:
+                raise C4StageExecutionError("observed fence resolution lacks terminal outcome")
+            return C4StageExecutionResult(
+                receipt=source_receipt,
+                effective_outcome=observed_outcome,
+                authoritative_resolution=resolution,
+                parent_resolution_digest=resolution.resolution_digest,
+            )
+        return C4StageExecutionResult(
+            receipt=source_receipt,
+            effective_outcome="not_applied",
+            authoritative_resolution=resolution,
+        )
+
     def _recover_locked(
         self,
         intent: MainMutationIntent | Sha256Digest,
@@ -408,6 +535,7 @@ class C4StageExecutor:
             receipt = resolved[0]
             self._check_receipt_binding(receipt, durable_intent)
             self._verify_receipt_authority(receipt, durable_intent)
+            self._check_resolution_source(resolution, receipt)
             return receipt
 
         receipt = self._read_receipt_for_intent(durable_intent.intent_digest)
@@ -431,6 +559,7 @@ class C4StageExecutor:
         resolution = self._read_resolution(fence.fence_digest)
         if resolution is not None:
             self._check_resolution_binding(resolution, durable_intent)
+            self._check_resolution_source(resolution, receipt)
             return receipt
 
         observed = self._observe(observation_request)
@@ -794,10 +923,23 @@ class C4StageExecutor:
         ):
             raise C4StageExecutionError("durable fence resolution differs from intent")
 
+    @staticmethod
+    def _check_resolution_source(
+        resolution: MainMutationFenceResolution, receipt: MainMutationReceipt
+    ) -> None:
+        if resolution.resolved_receipt_digest != receipt.receipt_digest:
+            raise C4StageExecutionError("fence resolution source receipt differs")
+        if receipt.outcome not in {"ambiguous", "reconciliation_required"}:
+            raise C4StageExecutionError("fence resolution source receipt is terminal")
+        if resolution.outcome == "observed" and resolution.observed_outcome is None:
+            raise C4StageExecutionError("observed fence resolution lacks terminal outcome")
+
 
 __all__ = [
     "C4StageExecutionError",
+    "C4StageExecutionResult",
     "C4StageExecutor",
+    "EffectiveStageOutcome",
     "StageAuthorityVerifier",
     "StageLeaseFence",
 ]
