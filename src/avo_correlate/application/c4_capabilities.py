@@ -356,7 +356,7 @@ class ReleaseFields(GroupFields):
     _expiry = field_validator("authorization_expires_at")(require_aware_datetime)
 
     def _key(self) -> Sha256Digest:
-        key = main_release_external_key(
+        return main_release_external_key(
             operation_id=self.operation_id,
             repository_digest=self.repository_digest,
             target_ref=self.target_ref,
@@ -369,7 +369,6 @@ class ReleaseFields(GroupFields):
             release_check_context=self.check_context,
             release_issuer_app_id=self.issuer_app_id,
         )
-        return canonical_digest({"release_external_key": key, "exact_release": self._object()})
 
     @model_validator(mode="after")
     def release(self) -> Self:

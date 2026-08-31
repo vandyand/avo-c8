@@ -25,7 +25,11 @@ from avo_correlate.application.c4_capabilities import (
     ReleaseIssueRequest,
     TrustedClock,
 )
-from avo_correlate.contracts.main_graduation import MainMutationStage, main_stage_identity_digest
+from avo_correlate.contracts.main_graduation import (
+    MainMutationStage,
+    main_release_external_key,
+    main_stage_identity_digest,
+)
 from avo_correlate.domain.canonical import canonical_digest
 
 DIGEST = "sha256:" + "a" * 64
@@ -228,6 +232,19 @@ def test_release_binds_pending_hold_and_success_transition() -> None:
         }
     )
     assert release.pending_check_conclusion == "pending"
+    assert release.external_key == main_release_external_key(
+        operation_id=release.operation_id,
+        repository_digest=release.repository_digest,
+        target_ref=release.target_ref,
+        authorization_digest=release.release_authorization_digest,
+        hold_observation_digest=release.hold_observation_digest,
+        group_sha=release.group_sha,
+        hold_run_id=release.hold_run_id,
+        hold_nonce=release.hold_nonce,
+        queue_generation_digest=release.queue_generation_digest or "",
+        release_check_context=release.check_context,
+        release_issuer_app_id=release.issuer_app_id,
+    )
     with pytest.raises(ValidationError):
         ReleaseIssueRequest.build(
             **{
