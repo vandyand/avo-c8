@@ -32,7 +32,7 @@ HEAD = "b" * 40
 
 def external(stage: MainMutationStage = "candidate_publication") -> MainExternalIdentity:
     key = "refs/heads/avo/candidate/op"
-    queue = D if stage != "candidate_publication" else None
+    queue = D if stage in {"merge_group_hold", "release_transition"} else None
     identity = main_stage_identity_digest(
         D,
         stage,
@@ -106,6 +106,53 @@ def test_deterministic_identities_and_nonce_are_stable() -> None:
     assert main_target_scope_digest(R, "refs/heads/main") == main_target_scope_digest(
         R, "refs/heads/main"
     )
+
+
+@pytest.mark.parametrize("stage", ["admission_check", "queue_enqueue"])
+def test_pre_enqueue_external_identity_uses_configuration_key_without_generation(
+    stage: MainMutationStage,
+) -> None:
+    value = external(stage)
+    assert value.queue_generation_digest is None
+
+    with pytest.raises(ValidationError, match="cannot bind queue generation"):
+        identity = main_stage_identity_digest(
+            D,
+            stage,
+            value.external_key,
+            queue_generation_digest=D2,
+            repository_digest=R,
+            target_ref="refs/heads/main",
+        )
+        MainExternalIdentity.model_validate(
+            {
+                **value.model_dump(),
+                "queue_generation_digest": D2,
+                "identity_digest": identity,
+            }
+        )
+
+
+@pytest.mark.parametrize("stage", ["merge_group_hold", "release_transition"])
+def test_post_enqueue_external_identity_requires_generation(stage: MainMutationStage) -> None:
+    value = external(stage)
+    assert value.queue_generation_digest == D
+    identity = main_stage_identity_digest(
+        D,
+        stage,
+        value.external_key,
+        queue_generation_digest=None,
+        repository_digest=R,
+        target_ref="refs/heads/main",
+    )
+    with pytest.raises(ValidationError, match="requires queue generation"):
+        MainExternalIdentity.model_validate(
+            {
+                **value.model_dump(),
+                "queue_generation_digest": None,
+                "identity_digest": identity,
+            }
+        )
 
 
 def test_intent_requires_exact_stage_parent_and_external_binding() -> None:

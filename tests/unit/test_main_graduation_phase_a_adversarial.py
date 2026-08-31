@@ -80,7 +80,7 @@ def _external(
         stage,
         key,
         queue_generation_digest=(
-            None if stage in {"candidate_publication", "pull_request_open"} else D2
+            D2 if stage in {"merge_group_hold", "release_transition"} else None
         ),
         repository_digest=R,
         target_ref="refs/heads/main",
@@ -91,7 +91,7 @@ def _external(
         stage=stage,
         external_key=key,
         queue_generation_digest=(
-            None if stage in {"candidate_publication", "pull_request_open"} else D2
+            D2 if stage in {"merge_group_hold", "release_transition"} else None
         ),
         identity_digest=identity,
     )
@@ -985,7 +985,7 @@ def test_run_nonce_and_webhook_global_indexes_repair_missing_local_pointers(
             "admission_sha": HEAD,
             "admission_run_id": "admission-run",
             "admission_nonce": "admission-nonce",
-            "queue_generation_digest": D2,
+            "queue_configuration_digest": D2,
             "protection_manifest_digest": D2,
             "issuer_identity": "isolated-admission",
             "release_issuer_app_id": 9002,

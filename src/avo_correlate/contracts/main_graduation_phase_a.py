@@ -183,12 +183,13 @@ class MainExternalIdentity(MainBound):
         )
         if self.identity_digest != expected:
             raise ValueError("external identity digest mismatch")
-        if (
-            self.stage
-            in {"admission_check", "queue_enqueue", "merge_group_hold", "release_transition"}
-            and self.queue_generation_digest is None
+        if self.stage in {"merge_group_hold", "release_transition"}:
+            if self.queue_generation_digest is None:
+                raise ValueError("post-enqueue external identity requires queue generation")
+        elif self.stage in {"admission_check", "queue_enqueue"} and (
+            self.queue_generation_digest is not None
         ):
-            raise ValueError("queue-bound external identity requires queue generation")
+            raise ValueError("pre-enqueue external identity cannot bind queue generation")
         return self
 
 
