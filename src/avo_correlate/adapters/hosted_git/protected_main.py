@@ -1746,7 +1746,7 @@ class MainGraduationAttester:
             raise ProtectedMainProviderError("release authorization and hold evidence are required")
         if (
             transition_receipt.operation_id != authorization.operation_id
-            or transition_receipt.release_authorization_digest != canonical_digest(authorization)
+            or transition_receipt.release_authorization_digest != authorization.authorization_digest
             or transition_receipt.group_sha != hold.group_sha
             or transition_receipt.hold_run_id != hold.hold_run_id
             or transition_receipt.hold_nonce != hold.hold_nonce

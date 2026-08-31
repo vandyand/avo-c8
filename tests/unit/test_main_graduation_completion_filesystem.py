@@ -24,6 +24,7 @@ from avo_correlate.application.main_graduation_completion_coordinator import (
 from avo_correlate.contracts.main_graduation import (
     MainAttestationManifest,
     MainCheckObservation,
+    MainCompletionPackage,
     MainMergeGroupWebhookReceipt,
 )
 from avo_correlate.domain.canonical import canonical_digest
@@ -360,6 +361,26 @@ def test_timeout_then_expired_fresh_recovery_completes_read_only_and_replays_exa
     assert fresh.read_completion(MAIN_OPERATION) is not None
 
     package = recovered.package
+    validated = MainCompletionPackage.model_validate(package.model_dump(mode="json"))
+    auth_id = validated.release_authorization.authorization_digest
+    assert {
+        validated.transition_receipt.release_authorization_digest,
+        validated.provider_receipt.release_authorization_digest,
+        validated.provider_post_state_observation.release_authorization_digest,
+        validated.claimed_transition_receipt.release_authorization_digest,
+        validated.release_transition_intent.release_authorization_digest,
+        validated.release_transition_mutation_receipt.release_authorization_digest,
+    } == {auth_id}
+    assert (
+        cast(Any, fresh.read_release_transition(MAIN_OPERATION))[0]
+        .release_authorization_digest
+        == auth_id
+    )
+    assert (
+        cast(Any, fresh.read_provider_receipt(MAIN_OPERATION))[0]
+        .release_authorization_digest
+        == auth_id
+    )
     digest = canonical_digest(package)
     before = _snapshot(tmp_path)
     replay_journal = _fresh_journal(fresh)

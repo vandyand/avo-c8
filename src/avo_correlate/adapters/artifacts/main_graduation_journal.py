@@ -2726,7 +2726,7 @@ class MainGraduationJournal:
         if prior is None:
             raise MainGraduationJournalError("transition requires durable release authorization")
         authorization = cast(MainReleaseAuthorization, prior[0])
-        if receipt.release_authorization_digest != canonical_digest(authorization):
+        if receipt.release_authorization_digest != authorization.authorization_digest:
             raise MainGraduationJournalError("transition authorization digest differs")
         if not (authorization.authorized_at <= receipt.observed_at <= authorization.expires_at):
             raise MainGraduationJournalError("transition is outside authorization validity window")
@@ -2766,8 +2766,8 @@ class MainGraduationJournal:
         protection = cast(MainProtectionManifest, protection_prior[0])
         plan = cast(MainGraduationPlan, plan_prior[0])
         if (
-            receipt.release_authorization_digest != canonical_digest(authorization)
-            or transition.release_authorization_digest != canonical_digest(authorization)
+            receipt.release_authorization_digest != authorization.authorization_digest
+            or transition.release_authorization_digest != authorization.authorization_digest
             or receipt.operation_id != transition.operation_id
             or receipt.repository_digest != authorization.repository_digest
             or receipt.target_ref != authorization.target_ref

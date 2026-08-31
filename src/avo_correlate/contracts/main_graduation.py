@@ -1376,8 +1376,9 @@ class MainCompletionPackage(MainBound):
             raise ValueError("provider result tree differs from composition")
         if self.provider_receipt.result_parents != [self.composition.base_commit]:
             raise ValueError("provider result must have exactly one bound base parent")
-        if self.provider_receipt.release_authorization_digest != canonical_digest(
-            self.release_authorization
+        if (
+            self.provider_receipt.release_authorization_digest
+            != self.release_authorization.authorization_digest
         ):
             raise ValueError("provider receipt does not bind release authorization")
         if self.reconciliation.transition_receipt_digest != canonical_digest(

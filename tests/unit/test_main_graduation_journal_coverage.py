@@ -593,7 +593,7 @@ def completion() -> MainCompletionPackage:
     provider = MainProviderReceipt.model_construct(
         operation_id=D,
         repository_digest=R,
-        release_authorization_digest=canonical_digest(authorization),
+        release_authorization_digest=authorization.authorization_digest,
         provider_identity="provider",
         provider_api_version="v1",
         outcome="observed",
@@ -634,7 +634,7 @@ def completion() -> MainCompletionPackage:
     object.__setattr__(authorization, "hold_observation_digest", canonical_digest(hold))
     object.__setattr__(hold, "admission_observation_digest", canonical_digest(admission))
     object.__setattr__(authorization, "hold_observation_digest", canonical_digest(hold))
-    object.__setattr__(provider, "release_authorization_digest", canonical_digest(authorization))
+    object.__setattr__(provider, "release_authorization_digest", authorization.authorization_digest)
     lease_record = MainLeaseEvidenceRecord.model_construct(
         operation_id=D,
         repository_digest=R,
@@ -804,7 +804,7 @@ def completion() -> MainCompletionPackage:
         operation_id=D,
         repository_digest=R,
         target_ref="refs/heads/main",
-        release_authorization_digest=canonical_digest(authorization),
+        release_authorization_digest=authorization.authorization_digest,
         provider_identity="provider",
         provider_api_version="v1",
         result_commit=HEAD,
@@ -1788,11 +1788,13 @@ def test_journal_deep_stage_bindings_validate_from_durable_map(
     object.__setattr__(authorization, "admission_observation_digest", canonical_digest(admission))
     object.__setattr__(authorization, "preparation_authorization_digest", canonical_digest(prep))
     object.__setattr__(authorization, "hold_observation_digest", canonical_digest(hold))
-    object.__setattr__(transition, "release_authorization_digest", canonical_digest(authorization))
+    object.__setattr__(
+        transition, "release_authorization_digest", authorization.authorization_digest
+    )
     object.__setattr__(
         package.provider_receipt,
         "release_authorization_digest",
-        canonical_digest(authorization),
+        authorization.authorization_digest,
     )
     object.__setattr__(
         package.reconciliation,

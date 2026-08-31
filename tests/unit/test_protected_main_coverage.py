@@ -215,7 +215,7 @@ def _transition(
         repository_digest=auth.repository_digest,
         target_ref="refs/heads/main",
         operation_id=auth.operation_id,
-        release_authorization_digest=canonical_digest(auth),
+        release_authorization_digest=auth.authorization_digest,
         group_sha=G,
         hold_run_id="12",
         hold_nonce="hold-nonce",

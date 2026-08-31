@@ -437,6 +437,7 @@ def test_transition_rejects_attacker_repository_or_issuer(
         release_issuer_identity="release",
         release_issuer_app_id=9001,
         issuer_isolation_digest=DIGEST,
+        authorization_digest=DIGEST,
         authorized_at=now,
         expires_at=now + timedelta(minutes=5),
     )
@@ -444,7 +445,7 @@ def test_transition_rejects_attacker_repository_or_issuer(
         operation_id=DIGEST,
         repository_digest=DIGEST,
         target_ref="refs/heads/main",
-        release_authorization_digest=canonical_digest(authorization),
+        release_authorization_digest=authorization.authorization_digest,
         group_sha=HEAD,
         hold_run_id="run",
         hold_nonce="nonce",
@@ -475,6 +476,7 @@ def test_transition_requires_inclusive_authorization_time_window(
         release_issuer_identity="release",
         release_issuer_app_id=9001,
         issuer_isolation_digest=DIGEST,
+        authorization_digest=DIGEST,
         authorized_at=issued,
         expires_at=issued + timedelta(seconds=300),
     )
@@ -482,7 +484,7 @@ def test_transition_requires_inclusive_authorization_time_window(
         operation_id=DIGEST,
         repository_digest=DIGEST,
         target_ref="refs/heads/main",
-        release_authorization_digest=canonical_digest(authorization),
+        release_authorization_digest=authorization.authorization_digest,
         group_sha=HEAD,
         hold_run_id="run",
         hold_nonce="nonce",
@@ -502,7 +504,10 @@ def test_transition_requires_inclusive_authorization_time_window(
 
 def test_provider_receipt_rejects_provider_identity_substitution(tmp_path: Path) -> None:
     authorization = MainReleaseAuthorization.model_construct(
-        operation_id=DIGEST, repository_digest=DIGEST, target_ref="refs/heads/main"
+        operation_id=DIGEST,
+        repository_digest=DIGEST,
+        target_ref="refs/heads/main",
+        authorization_digest=DIGEST,
     )
     queue = MainQueueObservation.model_construct(
         operation_id=DIGEST,
@@ -526,7 +531,7 @@ def test_provider_receipt_rejects_provider_identity_substitution(tmp_path: Path)
         operation_id=DIGEST,
         repository_digest=DIGEST,
         target_ref="refs/heads/main",
-        release_authorization_digest=canonical_digest(authorization),
+        release_authorization_digest=authorization.authorization_digest,
         provider_identity="attacker",
         provider_api_version="v1",
         outcome="observed",
@@ -539,7 +544,7 @@ def test_provider_receipt_rejects_provider_identity_substitution(tmp_path: Path)
         operation_id=DIGEST,
         repository_digest=DIGEST,
         target_ref="refs/heads/main",
-        release_authorization_digest=canonical_digest(authorization),
+        release_authorization_digest=authorization.authorization_digest,
         observed_at=datetime.now(UTC),
     )
     records = {
@@ -594,7 +599,10 @@ def test_provider_recovery_receipts_do_not_claim_success_and_remain_verifiable(
     tmp_path: Path, outcome: str
 ) -> None:
     authorization = MainReleaseAuthorization.model_construct(
-        operation_id=DIGEST, repository_digest=DIGEST, target_ref="refs/heads/main"
+        operation_id=DIGEST,
+        repository_digest=DIGEST,
+        target_ref="refs/heads/main",
+        authorization_digest=DIGEST,
     )
     queue = MainQueueObservation.model_construct(
         operation_id=DIGEST,
@@ -618,7 +626,7 @@ def test_provider_recovery_receipts_do_not_claim_success_and_remain_verifiable(
         operation_id=DIGEST,
         repository_digest=DIGEST,
         target_ref="refs/heads/main",
-        release_authorization_digest=canonical_digest(authorization),
+        release_authorization_digest=authorization.authorization_digest,
         provider_identity="provider",
         provider_api_version="v1",
         outcome=outcome,
@@ -632,7 +640,7 @@ def test_provider_recovery_receipts_do_not_claim_success_and_remain_verifiable(
         operation_id=DIGEST,
         repository_digest=DIGEST,
         target_ref="refs/heads/main",
-        release_authorization_digest=canonical_digest(authorization),
+        release_authorization_digest=authorization.authorization_digest,
         observed_at=datetime.now(UTC),
     )
     records = {
@@ -649,13 +657,16 @@ def test_provider_recovery_receipts_do_not_claim_success_and_remain_verifiable(
 
 def test_provider_receipt_without_durable_transition_is_rejected(tmp_path: Path) -> None:
     authorization = MainReleaseAuthorization.model_construct(
-        operation_id=DIGEST, repository_digest=DIGEST, target_ref="refs/heads/main"
+        operation_id=DIGEST,
+        repository_digest=DIGEST,
+        target_ref="refs/heads/main",
+        authorization_digest=DIGEST,
     )
     receipt = MainProviderReceipt.model_construct(
         operation_id=DIGEST,
         repository_digest=DIGEST,
         target_ref="refs/heads/main",
-        release_authorization_digest=canonical_digest(authorization),
+        release_authorization_digest=authorization.authorization_digest,
     )
     journal = MainGraduationJournal(tmp_path)
     journal._read = lambda kind, _operation: (  # pyright: ignore[reportPrivateUsage]
@@ -677,6 +688,7 @@ def test_reconciliation_rejects_wrong_composition_tree_or_repository(tmp_path: P
         release_issuer_identity="release",
         release_issuer_app_id=9001,
         issuer_isolation_digest=DIGEST,
+        authorization_digest=DIGEST,
         authorized_at=now,
         expires_at=now + timedelta(minutes=5),
     )
@@ -684,7 +696,7 @@ def test_reconciliation_rejects_wrong_composition_tree_or_repository(tmp_path: P
         operation_id=DIGEST,
         repository_digest=DIGEST,
         target_ref="refs/heads/main",
-        release_authorization_digest=canonical_digest(authorization),
+        release_authorization_digest=authorization.authorization_digest,
         group_sha=HEAD,
         hold_run_id="run",
         hold_nonce="nonce",
@@ -718,7 +730,7 @@ def test_reconciliation_rejects_wrong_composition_tree_or_repository(tmp_path: P
         operation_id=DIGEST,
         repository_digest=DIGEST,
         target_ref="refs/heads/main",
-        release_authorization_digest=canonical_digest(authorization),
+        release_authorization_digest=authorization.authorization_digest,
         provider_identity="provider",
         provider_api_version="v1",
         outcome="observed",

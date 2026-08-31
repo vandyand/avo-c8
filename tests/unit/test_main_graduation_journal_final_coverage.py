@@ -79,9 +79,11 @@ def _chain(journal: MainGraduationJournal) -> tuple[Any, dict[str, Any]]:
     object.__setattr__(authorization, "admission_observation_digest", canonical_digest(admission))
     object.__setattr__(authorization, "preparation_authorization_digest", canonical_digest(prep))
     object.__setattr__(authorization, "hold_observation_digest", canonical_digest(hold))
-    object.__setattr__(transition, "release_authorization_digest", canonical_digest(authorization))
     object.__setattr__(
-        package.provider_receipt, "release_authorization_digest", canonical_digest(authorization)
+        transition, "release_authorization_digest", authorization.authorization_digest
+    )
+    object.__setattr__(
+        package.provider_receipt, "release_authorization_digest", authorization.authorization_digest
     )
     object.__setattr__(
         package.reconciliation, "transition_receipt_digest", canonical_digest(transition)
