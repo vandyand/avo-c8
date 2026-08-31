@@ -475,8 +475,8 @@ def _fixture(
         "composition_digest": composition.composition.composition_digest,
         "base_commit": base,
         "base_tree": base_tree,
-        "candidate_commit": result,
-        "candidate_tree": result_tree,
+        "candidate_commit": composition.composition.candidate_commit,
+        "candidate_tree": composition.composition.candidate_tree,
         "candidate_ref": composition.composition.candidate_ref,
         "lease_identity": lease.owner,
         "lease_digest": lease.lease_digest,
@@ -510,8 +510,8 @@ def _fixture(
         "composition_digest": composition.composition.composition_digest,
         "base_commit": base,
         "base_tree": base_tree,
-        "candidate_commit": result,
-        "candidate_tree": result_tree,
+        "candidate_commit": composition.composition.candidate_commit,
+        "candidate_tree": composition.composition.candidate_tree,
         "lease_identity": "lease",
         "lease_digest": lease.lease_digest,
         "policy_epoch": POLICY,
@@ -520,16 +520,15 @@ def _fixture(
     auth_probe = MainPreparationAuthorization.model_construct(
         **auth_values, authorization_digest=CONFIG
     )
-    journal.record_preparation_authorization(
-        MainPreparationAuthorization.model_validate(
-            auth_values
-            | {
-                "authorization_digest": canonical_digest(
-                    auth_probe.model_dump(exclude={"authorization_digest"}, mode="json")
-                )
-            }
-        )
+    preparation = MainPreparationAuthorization.model_validate(
+        auth_values
+        | {
+            "authorization_digest": canonical_digest(
+                auth_probe.model_dump(exclude={"authorization_digest"}, mode="json")
+            )
+        }
     )
+    journal.record_preparation_authorization(preparation)
     protection = MainProtectionManifest(
         operation_id=MAIN_OPERATION,
         repository_digest=REPOSITORY,
@@ -546,6 +545,7 @@ def _fixture(
     queue_config = MainQueueConfigurationObservation(
         operation_id=MAIN_OPERATION,
         repository_digest=REPOSITORY,
+        queue_configuration_digest=CONFIG,
         expected_base_commit=base,
         expected_base_tree=base_tree,
         protection_manifest_digest=CONFIG,
