@@ -1,14 +1,10 @@
-"""Narrow, evidence-producing executor capabilities for C4.
-
-The coordinator may compose these capabilities, but none can merge, update a
-ref, or otherwise mutate ``refs/heads/main``. Provider results and observations
-are DTOs; controller-owned verifiers decide whether they are authoritative.
-"""
+"""Strict, evidence-producing C4 executor capabilities (never main mutation)."""
+# pyright: reportIncompatibleVariableOverride=false, reportUnsupportedDunderAll=false
 
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal, Protocol, Self, cast
+from typing import Any, ClassVar, Literal, Protocol, Self
 
 from pydantic import Field, StrictBool, StrictInt, field_validator, model_validator
 
@@ -22,7 +18,7 @@ from avo_correlate.contracts.main_graduation import (
     GitObject,
     MainMutationStage,
     MainRef,
-    main_release_external_identity_digest,
+    main_release_external_key,
     main_stage_identity_digest,
 )
 from avo_correlate.domain.canonical import canonical_digest
@@ -31,195 +27,223 @@ MutationOutcome = Literal[
     "applied", "already_applied", "ambiguous", "rejected", "reconciliation_required"
 ]
 ObservationOutcome = Literal["observed", "not_found", "ambiguous", "invalid"]
-Stage = Literal[
-    "candidate_publication", "pull_request_open", "admission_check",
-    "queue_enqueue", "merge_group_hold", "release_transition"
-]
-_DIGEST_ZERO = "sha256:" + "0" * 64
+Stage = MainMutationStage
+_ZERO = "sha256:" + "0" * 64
+_QUEUE = frozenset({"admission_check", "queue_enqueue", "merge_group_hold", "release_transition"})
+_ISSUER = frozenset({"admission_check", "merge_group_hold", "release_transition"})
 
 
-def _expected_candidate_ref(operation_id: str) -> str:
-    return f"refs/heads/avo/candidate/{operation_id.removeprefix('sha256:')}"
+def _candidate(op: str) -> str:
+    return f"refs/heads/avo/candidate/{op.removeprefix('sha256:')}"
+
+
+def _topology(
+    base: str, tree: str, pr: int, head: str, head_tree: str, parents: list[str], queue: str
+) -> Sha256Digest:
+    return canonical_digest(
+        {
+            "base_commit": base,
+            "base_tree": tree,
+            "pull_request_number": pr,
+            "pull_request_head": head,
+            "pull_request_tree": head_tree,
+            "expected_group_parents": parents,
+            "queue_generation_digest": queue,
+            "merge_method": "squash",
+        }
+    )
 
 
 class C4Request(StrictModel):
-    """Exact identity shared by all requests, including an idempotent digest."""
-
     operation_id: Sha256Digest
     repository_digest: Sha256Digest
     target_ref: MainRef = "refs/heads/main"
     lease_epoch_digest: Sha256Digest
     request_digest: Sha256Digest
+    _exclude_request: ClassVar[frozenset[str]] = frozenset()
+
+    def _request(self) -> dict[str, Any]:
+        return self.model_dump(exclude={"request_digest", *self._exclude_request}, mode="json")
 
     @model_validator(mode="after")
-    def validate_request_digest(self) -> Self:
-        expected = canonical_digest(self.model_dump(exclude={"request_digest"}, mode="json"))
-        if self.request_digest != expected:
+    def valid_request(self) -> Self:
+        if self.request_digest != canonical_digest(self._request()):
             raise ValueError("request digest mismatch")
         return self
 
     @classmethod
     def build(cls, **values: object) -> Self:
-        """Build a request with its canonical digest; callers cannot omit it."""
-
-        supplied: dict[str, Any] = dict(values)
-        supplied.setdefault("target_ref", "refs/heads/main")
-        temporary = cls.model_construct(**supplied, request_digest=_DIGEST_ZERO)
-        supplied["request_digest"] = canonical_digest(
-            temporary.model_dump(exclude={"request_digest"}, mode="json")
+        d: dict[str, Any] = dict(values)
+        d.setdefault("target_ref", "refs/heads/main")
+        d["request_digest"] = canonical_digest(
+            cls.model_construct(**d, request_digest=_ZERO)._request()
         )
-        return cls.model_validate(supplied)
+        return cls.model_validate(d)
 
 
-class StageRequest(C4Request):
-    stage: str
+class StageBound(C4Request):
+    stage: Stage
     external_key: NonEmptyString
     external_identity: Sha256Digest
     queue_generation_digest: Sha256Digest | None = None
+    _exclude_external: ClassVar[frozenset[str]] = frozenset()
 
-    @classmethod
-    def build(cls, **values: object) -> Self:
-        """Build a stage request and derive its external and request identities."""
-
-        supplied: dict[str, Any] = dict(values)
-        supplied.setdefault("target_ref", "refs/heads/main")
-        stage = supplied.get("stage", cls.model_fields["stage"].default)
-        if not isinstance(stage, str):
-            raise ValueError("stage is required")
-        if stage == "release_transition":
-            external_identity = main_release_external_identity_digest(
-                operation_id=str(supplied["operation_id"]),
-                repository_digest=str(supplied["repository_digest"]),
-                target_ref=str(supplied["target_ref"]),
-                authorization_digest=str(supplied["release_authorization_digest"]),
-                hold_observation_digest=str(supplied["hold_observation_digest"]),
-                group_sha=str(supplied["group_sha"]),
-                hold_run_id=str(supplied["hold_run_id"]),
-                hold_nonce=str(supplied["hold_nonce"]),
-                queue_generation_digest=str(supplied["queue_generation_digest"]),
-                release_check_context="avo-main-release",
-                release_issuer_app_id=int(supplied["issuer_app_id"]),
-            )
-        else:
-            external_identity = main_stage_identity_digest(
-                str(supplied["operation_id"]), cast(MainMutationStage, stage),
-                str(supplied["external_key"]),
-                queue_generation_digest=supplied.get("queue_generation_digest"),
-                repository_digest=str(supplied["repository_digest"]),
-                target_ref=str(supplied["target_ref"]),
-            )
-        supplied["external_identity"] = external_identity
-        temporary = cls.model_construct(**supplied, request_digest=_DIGEST_ZERO)
-        supplied["request_digest"] = canonical_digest(
-            temporary.model_dump(exclude={"request_digest"}, mode="json")
+    def _object(self) -> dict[str, Any]:
+        return self.model_dump(
+            exclude={
+                "operation_id",
+                "repository_digest",
+                "target_ref",
+                "lease_epoch_digest",
+                "request_digest",
+                "external_key",
+                "external_identity",
+                *self._exclude_external,
+            },
+            mode="json",
         )
-        return cls.model_validate(supplied)
+
+    def _key(self) -> Sha256Digest:
+        return canonical_digest({"stage": self.stage, "object": self._object()})
 
     @model_validator(mode="after")
-    def validate_external_identity(self) -> Self:
-        expected_stage = self.__class__.model_fields["stage"].default
-        if isinstance(expected_stage, str) and self.stage != expected_stage:
-            raise ValueError("request stage does not match its dedicated type")
-        queue_bound = {"admission_check", "queue_enqueue", "merge_group_hold", "release_transition"}
-        if self.stage in queue_bound and self.queue_generation_digest is None:
-            raise ValueError("queue-bound request requires queue generation")
-        if self.stage not in queue_bound and self.queue_generation_digest is not None:
-            raise ValueError("non-queue request cannot carry queue generation")
-        if self.stage != "release_transition":
-            expected = main_stage_identity_digest(
-                self.operation_id, cast(MainMutationStage, self.stage), self.external_key,
-                queue_generation_digest=self.queue_generation_digest,
-                repository_digest=self.repository_digest, target_ref=self.target_ref,
-            )
-            if self.external_identity != expected:
-                raise ValueError("external identity mismatch")
+    def valid_identity(self) -> Self:
+        if (self.stage in _QUEUE) != (self.queue_generation_digest is not None):
+            raise ValueError("queue generation presence does not match stage")
+        if self.external_key != self._key():
+            raise ValueError("external key mismatch")
+        expected = main_stage_identity_digest(
+            self.operation_id,
+            self.stage,
+            self.external_key,
+            queue_generation_digest=self.queue_generation_digest,
+            repository_digest=self.repository_digest,
+            target_ref=self.target_ref,
+        )
+        if self.external_identity != expected:
+            raise ValueError("external identity mismatch")
+        if self.stage in _ISSUER and getattr(self, "issuer_app_id", None) == 15368:
+            raise ValueError("validation App 15368 cannot issue C4 authority")
         return self
 
 
+class StageRequest(StageBound):
+    @classmethod
+    def build(cls, **values: object) -> Self:
+        d: dict[str, Any] = dict(values)
+        d.setdefault("target_ref", "refs/heads/main")
+        d.pop("external_key", None)
+        d.pop("external_identity", None)
+        d.pop("request_digest", None)
+        t = cls.model_construct(
+            **d, external_key="x", external_identity=_ZERO, request_digest=_ZERO
+        )
+        d["external_key"] = t._key()
+        t = cls.model_construct(**d, external_identity=_ZERO, request_digest=_ZERO)
+        d["external_identity"] = main_stage_identity_digest(
+            t.operation_id,
+            t.stage,
+            t.external_key,
+            queue_generation_digest=t.queue_generation_digest,
+            repository_digest=t.repository_digest,
+            target_ref=t.target_ref,
+        )
+        d["request_digest"] = canonical_digest(
+            cls.model_construct(**d, request_digest=_ZERO)._request()
+        )
+        return cls.model_validate(d)
+
+
 class CandidatePublicationRequest(StageRequest):
-    stage: str = "candidate_publication"
+    stage: Literal["candidate_publication"] = "candidate_publication"
     candidate_ref: NonEmptyString
     candidate_commit: GitObject
     preparation_authorization_digest: Sha256Digest
 
     @model_validator(mode="after")
-    def validate_candidate(self) -> Self:
-        if self.candidate_ref != _expected_candidate_ref(self.operation_id):
+    def candidate(self) -> Self:
+        if self.candidate_ref != _candidate(self.operation_id):
             raise ValueError("candidate ref is not operation-derived")
         return self
 
 
 class PullRequestCreateRequest(StageRequest):
-    stage: str = "pull_request_open"
+    stage: Literal["pull_request_open"] = "pull_request_open"
     candidate_ref: NonEmptyString
     candidate_commit: GitObject
+    candidate_tree: GitObject
     base_commit: GitObject
     base_tree: GitObject
     preparation_authorization_digest: Sha256Digest
 
     @model_validator(mode="after")
-    def validate_create(self) -> Self:
-        if self.candidate_ref != _expected_candidate_ref(self.operation_id):
+    def pr(self) -> Self:
+        if self.candidate_ref != _candidate(self.operation_id):
             raise ValueError("pull request candidate ref is not operation-derived")
-        if self.candidate_commit == self.base_commit:
+        if self.candidate_commit == self.base_commit or self.candidate_tree == self.base_tree:
             raise ValueError("pull request head must differ from base")
         return self
 
 
-class PullRequestReconcileRequest(C4Request):
-    """Read-only exact lookup for a possibly-created pull request."""
-
-    stage: str = "pull_request_open"
+class PullRequestReconcileRequest(StageRequest):
+    stage: Literal["pull_request_open"] = "pull_request_open"
     pull_request_number: StrictInt = Field(gt=0)
     candidate_ref: NonEmptyString
     head_commit: GitObject
+    head_tree: GitObject
     base_commit: GitObject
+    base_tree: GitObject
     repository_name: NonEmptyString
 
     @model_validator(mode="after")
-    def validate_reconcile_target(self) -> Self:
-        if self.stage != "pull_request_open":
-            raise ValueError("reconcile stage mismatch")
-        if self.candidate_ref != _expected_candidate_ref(self.operation_id):
-            raise ValueError("reconcile candidate ref is not operation-derived")
-        if self.head_commit == self.base_commit:
-            raise ValueError("reconcile head must differ from base")
+    def reconcile(self) -> Self:
+        if (
+            self.candidate_ref != _candidate(self.operation_id)
+            or self.head_commit == self.base_commit
+            or self.head_tree == self.base_tree
+        ):
+            raise ValueError("reconcile target is not exact")
         return self
 
 
-class QueueEnqueueRequest(StageRequest):
-    stage: str = "queue_enqueue"
-    pull_request_number: StrictInt = Field(gt=0)
-    pull_request_head: GitObject
-    preparation_authorization_digest: Sha256Digest
-    admission_observation_digest: Sha256Digest
-
-
 class AdmissionIssueRequest(StageRequest):
-    stage: str = "admission_check"
+    stage: Literal["admission_check"] = "admission_check"
     preparation_authorization_digest: Sha256Digest
     pull_request_number: StrictInt = Field(gt=0)
     pull_request_head: GitObject
+    pull_request_tree: GitObject
+    base_commit: GitObject
+    base_tree: GitObject
     admission_run_id: NonEmptyString
     admission_nonce: NonEmptyString
     issuer_identity: NonEmptyString
     issuer_app_id: StrictInt = Field(gt=0)
     issuer_isolation_digest: Sha256Digest
-
-    @model_validator(mode="after")
-    def validate_admission_issuer(self) -> Self:
-        if self.issuer_app_id == 15368:
-            raise ValueError("validation App 15368 cannot issue admission")
-        return self
+    check_context: Literal["avo-main-release"] = "avo-main-release"
+    check_state: Literal["completed"] = "completed"
+    check_conclusion: Literal["success"] = "success"
 
 
-class GroupHoldIssueRequest(StageRequest):
-    stage: str = "merge_group_hold"
-    admission_observation_digest: Sha256Digest
+class QueueEnqueueRequest(StageRequest):
+    stage: Literal["queue_enqueue"] = "queue_enqueue"
     pull_request_number: StrictInt = Field(gt=0)
+    pull_request_head: GitObject
+    pull_request_tree: GitObject
+    base_commit: GitObject
+    base_tree: GitObject
+    preparation_authorization_digest: Sha256Digest
+    admission_observation_digest: Sha256Digest
+
+
+class GroupFields(StageRequest):
+    pull_request_number: StrictInt = Field(gt=0)
+    pull_request_head: GitObject
+    pull_request_tree: GitObject
     group_sha: GitObject
     group_tree: GitObject
     group_parents: list[GitObject] = Field(min_length=1)
+    expected_group_parents: list[GitObject] = Field(min_length=1)
+    group_topology_digest: Sha256Digest
     base_commit: GitObject
     base_tree: GitObject
     queue_members: list[StrictInt] = Field(min_length=1, max_length=1)
@@ -229,261 +253,253 @@ class GroupHoldIssueRequest(StageRequest):
     issuer_app_id: StrictInt = Field(gt=0)
     issuer_isolation_digest: Sha256Digest
 
-    @model_validator(mode="after")
-    def validate_group(self) -> Self:
+    def valid_group(self) -> None:
         if self.queue_members != [self.pull_request_number]:
-            raise ValueError("group hold requires exactly the authorized PR")
-        if not self.group_parents or self.group_parents[0] != self.base_commit:
-            raise ValueError("group parents must start at the exact base")
-        if len(set(self.group_parents)) != len(self.group_parents):
-            raise ValueError("group parents must be complete and unique")
-        if self.issuer_app_id == 15368:
-            raise ValueError("validation App 15368 cannot issue group hold")
+            raise ValueError("group requires singleton PR membership")
+        if self.group_sha == self.pull_request_head or self.group_tree == self.pull_request_tree:
+            raise ValueError("group SHA/tree must differ from PR head")
+        if (
+            self.group_parents != self.expected_group_parents
+            or not self.group_parents
+            or self.group_parents[0] != self.base_commit
+            or len(set(self.group_parents)) != len(self.group_parents)
+        ):
+            raise ValueError("group topology is not complete and expected")
+        if self.group_topology_digest != _topology(
+            self.base_commit,
+            self.base_tree,
+            self.pull_request_number,
+            self.pull_request_head,
+            self.pull_request_tree,
+            self.expected_group_parents,
+            self.queue_generation_digest or "",
+        ):
+            raise ValueError("group topology digest mismatch")
+
+
+class GroupHoldIssueRequest(GroupFields):
+    stage: Literal["merge_group_hold"] = "merge_group_hold"
+    admission_observation_digest: Sha256Digest
+    check_context: Literal["avo-main-release"] = "avo-main-release"
+    check_state: Literal["in_progress"] = "in_progress"
+    check_conclusion: Literal["pending"] = "pending"
+
+    @model_validator(mode="after")
+    def group(self) -> Self:
+        self.valid_group()
         return self
 
 
-class ReleaseIssueRequest(StageRequest):
-    stage: str = "release_transition"
+class ReleaseFields(GroupFields):
     hold_observation_digest: Sha256Digest
-    group_sha: GitObject
-    group_tree: GitObject
-    group_parents: list[GitObject] = Field(min_length=1)
-    hold_run_id: NonEmptyString
-    hold_nonce: NonEmptyString
+    admission_observation_digest: Sha256Digest
     release_authorization_digest: Sha256Digest
     release_claim_digest: Sha256Digest
-    issuer_identity: NonEmptyString
-    issuer_app_id: StrictInt = Field(gt=0)
-    issuer_isolation_digest: Sha256Digest
+    pending_check_context: Literal["avo-main-release"] = "avo-main-release"
+    pending_check_state: Literal["in_progress"] = "in_progress"
+    pending_check_conclusion: Literal["pending"] = "pending"
+    check_context: Literal["avo-main-release"] = "avo-main-release"
+    check_state: Literal["completed"] = "completed"
+    check_conclusion: Literal["success"] = "success"
     authorization_expires_at: datetime
+    _expiry = field_validator("authorization_expires_at")(require_aware_datetime)
 
-    _aware_expiry = field_validator("authorization_expires_at")(require_aware_datetime)
+    def _key(self) -> Sha256Digest:
+        key = main_release_external_key(
+            operation_id=self.operation_id,
+            repository_digest=self.repository_digest,
+            target_ref=self.target_ref,
+            authorization_digest=self.release_authorization_digest,
+            hold_observation_digest=self.hold_observation_digest,
+            group_sha=self.group_sha,
+            hold_run_id=self.hold_run_id,
+            hold_nonce=self.hold_nonce,
+            queue_generation_digest=self.queue_generation_digest or "",
+            release_check_context=self.check_context,
+            release_issuer_app_id=self.issuer_app_id,
+        )
+        return canonical_digest({"release_external_key": key, "exact_release": self._object()})
 
     @model_validator(mode="after")
-    def validate_release(self) -> Self:
-        if self.issuer_app_id == 15368:
-            raise ValueError("validation App 15368 cannot issue release")
-        if self.queue_generation_digest is None:
-            raise ValueError("release requires queue generation")
-        expected = main_release_external_identity_digest(
-            operation_id=self.operation_id, repository_digest=self.repository_digest,
-            target_ref=self.target_ref, authorization_digest=self.release_authorization_digest,
-            hold_observation_digest=self.hold_observation_digest, group_sha=self.group_sha,
-            hold_run_id=self.hold_run_id, hold_nonce=self.hold_nonce,
-            queue_generation_digest=self.queue_generation_digest,
-            release_check_context="avo-main-release", release_issuer_app_id=self.issuer_app_id,
-        )
-        if self.external_identity != expected:
-            raise ValueError("release external identity mismatch")
+    def release(self) -> Self:
+        self.valid_group()
         return self
 
 
-class MutationResult(StrictModel):
-    """Provider response, never an authority decision."""
+class ReleaseIssueRequest(ReleaseFields):
+    stage: Literal["release_transition"] = "release_transition"
 
-    operation_id: Sha256Digest
-    repository_digest: Sha256Digest
-    target_ref: MainRef = "refs/heads/main"
-    stage: str
-    request_digest: Sha256Digest
-    external_identity: Sha256Digest
-    external_key: NonEmptyString
-    queue_generation_digest: Sha256Digest | None = None
-    hold_observation_digest: Sha256Digest | None = None
-    group_sha: GitObject | None = None
-    hold_run_id: NonEmptyString | None = None
-    hold_nonce: NonEmptyString | None = None
-    release_authorization_digest: Sha256Digest | None = None
-    issuer_app_id: StrictInt | None = Field(default=None, gt=0)
+
+class StageMutationResult(StageBound):
     outcome: MutationOutcome
     response_digest: Sha256Digest
     observed_at: datetime
     dispatch_started: StrictBool
-
-    _aware_observed_at = field_validator("observed_at")(require_aware_datetime)
+    _exclude_request: ClassVar[frozenset[str]] = frozenset(
+        {"outcome", "response_digest", "observed_at", "dispatch_started"}
+    )
+    _exclude_external: ClassVar[frozenset[str]] = _exclude_request
+    _time = field_validator("observed_at")(require_aware_datetime)
 
     @model_validator(mode="after")
-    def validate_result(self) -> Self:
-        if self.outcome == "rejected" and self.dispatch_started:
-            raise ValueError("rejected result cannot claim dispatch started")
-        if self.outcome != "rejected" and not self.dispatch_started:
-            raise ValueError("non-rejected result requires dispatch_started")
-        expected = main_stage_identity_digest(
-            self.operation_id, cast(MainMutationStage, self.stage), self.external_key,
-            queue_generation_digest=self.queue_generation_digest,
-            repository_digest=self.repository_digest, target_ref=self.target_ref,
-        )
-        if self.stage == "release_transition":
-            if (
-                self.hold_observation_digest is None or self.group_sha is None
-                or self.hold_run_id is None or self.hold_nonce is None
-                or self.release_authorization_digest is None or self.issuer_app_id is None
-                or self.queue_generation_digest is None
-            ):
-                raise ValueError("release result requires exact release identity fields")
-            expected = main_release_external_identity_digest(
-                operation_id=self.operation_id, repository_digest=self.repository_digest,
-                target_ref=self.target_ref,
-                authorization_digest=self.release_authorization_digest,
-                hold_observation_digest=self.hold_observation_digest, group_sha=self.group_sha,
-                hold_run_id=self.hold_run_id, hold_nonce=self.hold_nonce,
-                queue_generation_digest=self.queue_generation_digest,
-                release_check_context="avo-main-release", release_issuer_app_id=self.issuer_app_id,
-            )
-        if self.external_identity != expected:
-            raise ValueError("mutation result external identity mismatch")
+    def mutation(self) -> Self:
+        if (self.outcome == "rejected") == self.dispatch_started:
+            raise ValueError("dispatch state does not match outcome")
         return self
+
+
+class CandidatePublicationResult(StageMutationResult):
+    stage: Literal["candidate_publication"] = "candidate_publication"
+    candidate_ref: NonEmptyString
+    candidate_commit: GitObject
+    preparation_authorization_digest: Sha256Digest
+
+    @model_validator(mode="after")
+    def candidate(self) -> Self:
+        if self.candidate_ref != _candidate(self.operation_id):
+            raise ValueError("candidate result ref is not operation-derived")
+        return self
+
+
+class PullRequestCreateResult(StageMutationResult):
+    stage: Literal["pull_request_open"] = "pull_request_open"
+    candidate_ref: NonEmptyString
+    candidate_commit: GitObject
+    candidate_tree: GitObject
+    base_commit: GitObject
+    base_tree: GitObject
+    preparation_authorization_digest: Sha256Digest
+
+    @model_validator(mode="after")
+    def pull_request(self) -> Self:
+        if self.candidate_ref != _candidate(self.operation_id):
+            raise ValueError("pull request result ref is not operation-derived")
+        if self.candidate_commit == self.base_commit or self.candidate_tree == self.base_tree:
+            raise ValueError("pull request result head must differ from base")
+        return self
+
+
+class AdmissionIssueResult(AdmissionIssueRequest, StageMutationResult):
+    _exclude_request = StageMutationResult._exclude_request
+    _exclude_external = _exclude_request
+
+
+class QueueEnqueueResult(QueueEnqueueRequest, StageMutationResult):
+    _exclude_request = StageMutationResult._exclude_request
+    _exclude_external = _exclude_request
+
+
+class GroupHoldIssueResult(GroupHoldIssueRequest, StageMutationResult):
+    _exclude_request = StageMutationResult._exclude_request
+    _exclude_external = _exclude_request
+
+
+class ReleaseIssueResult(ReleaseIssueRequest, StageMutationResult):
+    _exclude_request = StageMutationResult._exclude_request
+    _exclude_external = _exclude_request
 
 
 class StageObservationRequest(StageRequest):
-    """Base for stage-specific, read-only observation lookups."""
-
     object_id: NonEmptyString
 
 
-class CandidateObservationRequest(StageObservationRequest):
-    stage: str = "candidate_publication"
+class CandidateObservationRequest(CandidatePublicationRequest, StageObservationRequest):
+    pass
 
 
 class PullRequestObservationRequest(StageObservationRequest):
-    stage: str = "pull_request_open"
+    stage: Literal["pull_request_open"] = "pull_request_open"
     pull_request_number: StrictInt = Field(gt=0)
     candidate_ref: NonEmptyString
     head_commit: GitObject
+    head_tree: GitObject
     base_commit: GitObject
-
-
-class AdmissionObservationRequest(StageObservationRequest):
-    stage: str = "admission_check"
-    pull_request_number: StrictInt = Field(gt=0)
-    pull_request_head: GitObject
-    admission_run_id: NonEmptyString
-    admission_nonce: NonEmptyString
-
-
-class QueueObservationRequest(StageObservationRequest):
-    stage: str = "queue_enqueue"
-    pull_request_number: StrictInt = Field(gt=0)
-
-
-class GroupHoldObservationRequest(StageObservationRequest):
-    stage: str = "merge_group_hold"
-    pull_request_number: StrictInt = Field(gt=0)
-    group_sha: GitObject
-    hold_run_id: NonEmptyString
-    hold_nonce: NonEmptyString
-
-
-class ReleaseObservationRequest(StageObservationRequest):
-    stage: str = "release_transition"
-    group_sha: GitObject
-    hold_observation_digest: Sha256Digest
-    release_authorization_digest: Sha256Digest
-
-
-class StageObservationResult(StrictModel):
-    operation_id: Sha256Digest
-    repository_digest: Sha256Digest
-    target_ref: MainRef = "refs/heads/main"
-    stage: str
-    request_digest: Sha256Digest
-    external_identity: Sha256Digest
-    external_key: NonEmptyString
-    queue_generation_digest: Sha256Digest | None = None
-    hold_observation_digest: Sha256Digest | None = None
-    group_sha: GitObject | None = None
-    hold_run_id: NonEmptyString | None = None
-    hold_nonce: NonEmptyString | None = None
-    release_authorization_digest: Sha256Digest | None = None
-    issuer_app_id: StrictInt | None = Field(default=None, gt=0)
-    outcome: ObservationOutcome
-    evidence_digest: Sha256Digest
-    observed_at: datetime
-
-    _aware_observed_at = field_validator("observed_at")(require_aware_datetime)
+    base_tree: GitObject
 
     @model_validator(mode="after")
-    def validate_observation_identity(self) -> Self:
-        expected_stage = self.__class__.model_fields["stage"].default
-        if isinstance(expected_stage, str) and self.stage != expected_stage:
-            raise ValueError("result stage does not match its dedicated type")
-        queue_bound = {"admission_check", "queue_enqueue", "merge_group_hold", "release_transition"}
-        if self.stage in queue_bound and self.queue_generation_digest is None:
-            raise ValueError("queue-bound observation requires queue generation")
-        if self.stage not in queue_bound and self.queue_generation_digest is not None:
-            raise ValueError("non-queue observation cannot carry queue generation")
-        expected = main_stage_identity_digest(
-            self.operation_id, cast(MainMutationStage, self.stage), self.external_key,
-            queue_generation_digest=self.queue_generation_digest,
-            repository_digest=self.repository_digest,
-            target_ref=self.target_ref,
-        )
-        if self.stage == "release_transition":
-            if (
-                self.hold_observation_digest is None or self.group_sha is None
-                or self.hold_run_id is None or self.hold_nonce is None
-                or self.release_authorization_digest is None or self.issuer_app_id is None
-                or self.queue_generation_digest is None
-            ):
-                raise ValueError("release observation requires exact release identity fields")
-            expected = main_release_external_identity_digest(
-                operation_id=self.operation_id, repository_digest=self.repository_digest,
-                target_ref=self.target_ref,
-                authorization_digest=self.release_authorization_digest,
-                hold_observation_digest=self.hold_observation_digest, group_sha=self.group_sha,
-                hold_run_id=self.hold_run_id, hold_nonce=self.hold_nonce,
-                queue_generation_digest=self.queue_generation_digest,
-                release_check_context="avo-main-release", release_issuer_app_id=self.issuer_app_id,
-            )
-        if self.external_identity != expected:
-            raise ValueError("observation external identity mismatch")
+    def pull_request(self) -> Self:
+        if self.candidate_ref != _candidate(self.operation_id):
+            raise ValueError("pull request observation ref is not operation-derived")
+        if self.head_commit == self.base_commit or self.head_tree == self.base_tree:
+            raise ValueError("pull request observation head must differ from base")
         return self
 
 
-class CandidateObservationResult(StageObservationResult):
-    stage: str = "candidate_publication"
+class AdmissionObservationRequest(AdmissionIssueRequest, StageObservationRequest):
+    pass
 
 
-class PullRequestObservationResult(StageObservationResult):
-    stage: str = "pull_request_open"
+class QueueObservationRequest(QueueEnqueueRequest, StageObservationRequest):
+    pass
 
 
-class AdmissionObservationResult(StageObservationResult):
-    stage: str = "admission_check"
+class GroupHoldObservationRequest(GroupHoldIssueRequest, StageObservationRequest):
+    pass
 
 
-class QueueObservationResult(StageObservationResult):
-    stage: str = "queue_enqueue"
+class ReleaseObservationRequest(ReleaseIssueRequest, StageObservationRequest):
+    pass
 
 
-class GroupHoldObservationResult(StageObservationResult):
-    stage: str = "merge_group_hold"
+class StageObservationResult(StageBound):
+    outcome: ObservationOutcome
+    evidence_digest: Sha256Digest
+    observed_at: datetime
+    _exclude_request: ClassVar[frozenset[str]] = frozenset(
+        {"outcome", "evidence_digest", "observed_at"}
+    )
+    _exclude_external: ClassVar[frozenset[str]] = _exclude_request
+    _time = field_validator("observed_at")(require_aware_datetime)
 
 
-class ReleaseObservationResult(StageObservationResult):
-    stage: str = "release_transition"
+class CandidateObservationResult(CandidateObservationRequest, StageObservationResult):
+    _exclude_request = StageObservationResult._exclude_request
+    _exclude_external = _exclude_request
+
+
+class PullRequestObservationResult(PullRequestObservationRequest, StageObservationResult):
+    _exclude_request = StageObservationResult._exclude_request
+    _exclude_external = _exclude_request
+
+
+class AdmissionObservationResult(AdmissionObservationRequest, StageObservationResult):
+    _exclude_request = StageObservationResult._exclude_request
+    _exclude_external = _exclude_request
+
+
+class QueueObservationResult(QueueObservationRequest, StageObservationResult):
+    _exclude_request = StageObservationResult._exclude_request
+    _exclude_external = _exclude_request
+
+
+class GroupHoldObservationResult(GroupHoldObservationRequest, StageObservationResult):
+    _exclude_request = StageObservationResult._exclude_request
+    _exclude_external = _exclude_request
+
+
+class ReleaseObservationResult(ReleaseObservationRequest, StageObservationResult):
+    _exclude_request = StageObservationResult._exclude_request
+    _exclude_external = _exclude_request
 
 
 class TrustedClock(Protocol):
-    """Controller-owned time source for final authorization checks."""
-
     def now(self) -> datetime: ...
 
 
 class LeaseFence(Protocol):
-    """Controller-owned lease epoch check immediately before every write."""
-
     def assert_current(
         self, *, operation_id: Sha256Digest, lease_epoch_digest: Sha256Digest
     ) -> None: ...
 
 
 class CandidatePublicationCapability(Protocol):
-    def publish_candidate(self, request: CandidatePublicationRequest) -> MutationResult: ...
+    def publish_candidate(
+        self, request: CandidatePublicationRequest
+    ) -> CandidatePublicationResult: ...
 
 
 class PullRequestPreparationCapability(Protocol):
-    def create_pull_request(self, request: PullRequestCreateRequest) -> MutationResult: ...
+    def create_pull_request(self, request: PullRequestCreateRequest) -> PullRequestCreateResult: ...
 
 
 class PullRequestReconciliationCapability(Protocol):
@@ -493,55 +509,36 @@ class PullRequestReconciliationCapability(Protocol):
 
 
 class QueueEnqueueCapability(Protocol):
-    def enqueue(self, request: QueueEnqueueRequest) -> MutationResult: ...
+    def enqueue(self, request: QueueEnqueueRequest) -> QueueEnqueueResult: ...
 
 
 class AdmissionIssuerCapability(Protocol):
-    def issue_admission(self, request: AdmissionIssueRequest) -> MutationResult: ...
+    def issue_admission(self, request: AdmissionIssueRequest) -> AdmissionIssueResult: ...
 
 
 class GroupHoldIssuerCapability(Protocol):
-    def issue_group_hold(self, request: GroupHoldIssueRequest) -> MutationResult: ...
+    def issue_group_hold(self, request: GroupHoldIssueRequest) -> GroupHoldIssueResult: ...
 
 
 class ReleaseIssuerCapability(Protocol):
-    def issue_release(self, request: ReleaseIssueRequest) -> MutationResult: ...
+    def issue_release(self, request: ReleaseIssueRequest) -> ReleaseIssueResult: ...
 
 
 class ReadOnlyObservationCapability(Protocol):
     def observe_candidate(
         self, request: CandidateObservationRequest
     ) -> CandidateObservationResult: ...
-
     def observe_pull_request(
         self, request: PullRequestObservationRequest
     ) -> PullRequestObservationResult: ...
-
     def observe_admission(
         self, request: AdmissionObservationRequest
     ) -> AdmissionObservationResult: ...
-
     def observe_queue(self, request: QueueObservationRequest) -> QueueObservationResult: ...
-
     def observe_group_hold(
         self, request: GroupHoldObservationRequest
     ) -> GroupHoldObservationResult: ...
-
     def observe_release(self, request: ReleaseObservationRequest) -> ReleaseObservationResult: ...
 
 
-__all__ = [
-    "AdmissionIssueRequest", "AdmissionIssuerCapability", "AdmissionObservationRequest",
-    "AdmissionObservationResult", "C4Request", "CandidateObservationRequest",
-    "CandidateObservationResult", "CandidatePublicationCapability", "CandidatePublicationRequest",
-    "GitObject", "GroupHoldIssueRequest", "GroupHoldIssuerCapability",
-    "GroupHoldObservationRequest", "GroupHoldObservationResult", "LeaseFence", "MutationOutcome",
-    "MutationResult", "PullRequestCreateRequest", "PullRequestObservationRequest",
-    "PullRequestObservationResult", "PullRequestPreparationCapability",
-    "PullRequestReconcileRequest",
-    "PullRequestReconciliationCapability", "QueueEnqueueCapability", "QueueEnqueueRequest",
-    "QueueObservationRequest", "QueueObservationResult", "ReadOnlyObservationCapability",
-    "ReleaseIssueRequest", "ReleaseIssuerCapability", "ReleaseObservationRequest",
-    "ReleaseObservationResult", "Stage", "StageObservationRequest", "StageObservationResult",
-    "StageRequest", "TrustedClock",
-]
+__all__ = [n for n, v in globals().items() if isinstance(v, type) and v.__module__ == __name__]

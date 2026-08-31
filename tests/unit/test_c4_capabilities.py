@@ -11,17 +11,20 @@ from avo_correlate.application.c4_capabilities import (
     AdmissionIssueRequest,
     CandidatePublicationCapability,
     CandidatePublicationRequest,
+    CandidatePublicationResult,
     GroupHoldIssuerCapability,
+    GroupHoldIssueRequest,
     LeaseFence,
-    MutationResult,
     PullRequestPreparationCapability,
     PullRequestReconcileRequest,
     QueueEnqueueCapability,
     ReadOnlyObservationCapability,
     ReleaseIssuerCapability,
+    ReleaseIssueRequest,
     TrustedClock,
 )
 from avo_correlate.contracts.main_graduation import MainMutationStage, main_stage_identity_digest
+from avo_correlate.domain.canonical import canonical_digest
 
 DIGEST = "sha256:" + "a" * 64
 OBJECT = "a" * 40
@@ -29,8 +32,12 @@ OBJECT = "a" * 40
 
 def stage_identity(stage: str, key: str, queue: str | None = None) -> str:
     return main_stage_identity_digest(
-        DIGEST, cast(MainMutationStage, stage), key, queue_generation_digest=queue,
-        repository_digest=DIGEST, target_ref="refs/heads/main",
+        DIGEST,
+        cast(MainMutationStage, stage),
+        key,
+        queue_generation_digest=queue,
+        repository_digest=DIGEST,
+        target_ref="refs/heads/main",
     )
 
 
@@ -49,9 +56,13 @@ def test_capabilities_are_disjoint_and_have_no_merge_or_ref_surface() -> None:
 
 def test_candidate_ref_and_preparation_authorization_are_bound() -> None:
     values = dict(
-        operation_id=DIGEST, repository_digest=DIGEST, lease_epoch_digest=DIGEST,
-        external_key="candidate-publication", candidate_ref="refs/heads/wrong",
-        candidate_commit=OBJECT, preparation_authorization_digest=DIGEST,
+        operation_id=DIGEST,
+        repository_digest=DIGEST,
+        lease_epoch_digest=DIGEST,
+        external_key="candidate-publication",
+        candidate_ref="refs/heads/wrong",
+        candidate_commit=OBJECT,
+        preparation_authorization_digest=DIGEST,
     )
     with pytest.raises(ValidationError):
         CandidatePublicationRequest.build(**values)
@@ -63,10 +74,13 @@ def test_candidate_ref_and_preparation_authorization_are_bound() -> None:
 
 def test_request_digest_is_required_and_self_binding() -> None:
     values = dict(
-        operation_id=DIGEST, repository_digest=DIGEST, lease_epoch_digest=DIGEST,
+        operation_id=DIGEST,
+        repository_digest=DIGEST,
+        lease_epoch_digest=DIGEST,
         external_key="candidate-publication",
         candidate_ref=f"refs/heads/avo/candidate/{'a' * 64}",
-        candidate_commit=OBJECT, preparation_authorization_digest=DIGEST,
+        candidate_commit=OBJECT,
+        preparation_authorization_digest=DIGEST,
     )
     request = CandidatePublicationRequest.build(**values)
     with pytest.raises(ValidationError):
@@ -82,34 +96,139 @@ def test_pr_create_and_reconcile_are_dedicated_exact_models() -> None:
     with pytest.raises(ValidationError):
         PullRequestReconcileRequest.model_validate(
             dict(
-                operation_id=DIGEST, repository_digest=DIGEST, lease_epoch_digest=DIGEST,
-                request_digest=DIGEST, pull_request_number="9", candidate_ref="candidate",
-                head_commit=OBJECT, base_commit="b" * 40, repository_name="org/repo",
+                operation_id=DIGEST,
+                repository_digest=DIGEST,
+                lease_epoch_digest=DIGEST,
+                request_digest=DIGEST,
+                pull_request_number="9",
+                candidate_ref="candidate",
+                head_commit=OBJECT,
+                base_commit="b" * 40,
+                repository_name="org/repo",
             )
         )
 
 
 def test_admission_rejects_validation_app_and_requires_queue_identity() -> None:
     values = dict(
-        operation_id=DIGEST, repository_digest=DIGEST, lease_epoch_digest=DIGEST,
-        external_key="admission", preparation_authorization_digest=DIGEST,
-        pull_request_number=9, pull_request_head=OBJECT, admission_run_id="run",
-        admission_nonce="nonce", issuer_identity="validation", issuer_app_id=15368,
-        issuer_isolation_digest=DIGEST, queue_generation_digest=DIGEST,
+        operation_id=DIGEST,
+        repository_digest=DIGEST,
+        lease_epoch_digest=DIGEST,
+        external_key="admission",
+        preparation_authorization_digest=DIGEST,
+        pull_request_number=9,
+        pull_request_head=OBJECT,
+        pull_request_tree="b" * 40,
+        base_commit="c" * 40,
+        base_tree="d" * 40,
+        admission_run_id="run",
+        admission_nonce="nonce",
+        issuer_identity="validation",
+        issuer_app_id=15368,
+        issuer_isolation_digest=DIGEST,
+        queue_generation_digest=DIGEST,
     )
     with pytest.raises(ValidationError):
         AdmissionIssueRequest.build(**values)
 
 
 def test_mutation_result_rejects_wrong_external_identity() -> None:
-    common = dict(
-        operation_id=DIGEST, repository_digest=DIGEST, stage="candidate_publication",
-        request_digest=DIGEST, external_key="candidate-publication", external_identity=DIGEST,
-        outcome="applied", response_digest=DIGEST, observed_at=datetime.now(UTC),
-        dispatch_started=True,
+    request = CandidatePublicationRequest.build(
+        operation_id=DIGEST,
+        repository_digest=DIGEST,
+        lease_epoch_digest=DIGEST,
+        candidate_ref=f"refs/heads/avo/candidate/{'a' * 64}",
+        candidate_commit=OBJECT,
+        preparation_authorization_digest=DIGEST,
     )
     with pytest.raises(ValidationError):
-        MutationResult.model_validate(common)
+        CandidatePublicationResult.model_validate(
+            {
+                **request.model_dump(),
+                "external_identity": DIGEST,
+                "outcome": "applied",
+                "response_digest": DIGEST,
+                "observed_at": datetime.now(UTC),
+                "dispatch_started": True,
+            }
+        )
+
+
+def _group_values() -> dict[str, object]:
+    base = "b" * 40
+    head = "c" * 40
+    head_tree = "d" * 40
+    group = "e" * 40
+    group_tree = "f" * 40
+    queue = DIGEST
+    parents = [base, head]
+    return dict(
+        operation_id=DIGEST,
+        repository_digest=DIGEST,
+        lease_epoch_digest=DIGEST,
+        queue_generation_digest=queue,
+        admission_observation_digest=DIGEST,
+        pull_request_number=9,
+        pull_request_head=head,
+        pull_request_tree=head_tree,
+        group_sha=group,
+        group_tree=group_tree,
+        group_parents=parents,
+        expected_group_parents=parents,
+        group_topology_digest=canonical_digest(
+            {
+                "base_commit": base,
+                "base_tree": "1" * 40,
+                "pull_request_number": 9,
+                "pull_request_head": head,
+                "pull_request_tree": head_tree,
+                "expected_group_parents": parents,
+                "queue_generation_digest": queue,
+                "merge_method": "squash",
+            }
+        ),
+        base_commit=base,
+        base_tree="1" * 40,
+        queue_members=[9],
+        hold_run_id="run",
+        hold_nonce="nonce",
+        issuer_identity="isolated",
+        issuer_app_id=99,
+        issuer_isolation_digest=DIGEST,
+    )
+
+
+def test_group_hold_binds_full_pending_topology_and_rejects_pr_head_reuse() -> None:
+    values = _group_values()
+    hold = GroupHoldIssueRequest.build(**values)
+    assert hold.check_conclusion == "pending"
+    with pytest.raises(ValidationError):
+        GroupHoldIssueRequest.build(**{**values, "group_sha": values["pull_request_head"]})
+    with pytest.raises(ValidationError):
+        GroupHoldIssueRequest.build(**{**values, "queue_members": [10]})
+
+
+def test_release_binds_pending_hold_and_success_transition() -> None:
+    values = _group_values()
+    release = ReleaseIssueRequest.build(
+        **{
+            **values,
+            "hold_observation_digest": DIGEST,
+            "release_authorization_digest": DIGEST,
+            "release_claim_digest": DIGEST,
+            "authorization_expires_at": datetime.now(UTC),
+        }
+    )
+    assert release.pending_check_conclusion == "pending"
+    with pytest.raises(ValidationError):
+        ReleaseIssueRequest.build(
+            **{
+                **release.model_dump(
+                    exclude={"external_key", "external_identity", "request_digest"}
+                ),
+                "issuer_app_id": 15368,
+            }
+        )
 
 
 def test_trusted_clock_and_lease_fence_are_explicit_seams() -> None:
