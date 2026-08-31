@@ -334,8 +334,8 @@ class GroupFields(StageRequest):
     def valid_group(self) -> None:
         if self.queue_members != [self.pull_request_number]:
             raise ValueError("group requires singleton PR membership")
-        if self.group_sha == self.pull_request_head or self.group_tree == self.pull_request_tree:
-            raise ValueError("group SHA/tree must differ from PR head")
+        if self.group_sha == self.pull_request_head:
+            raise ValueError("merge-group SHA must differ from PR head")
         if self.group_tree != self.expected_group_tree:
             raise ValueError("group tree must equal the deterministic expected group tree")
         if (

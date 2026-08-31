@@ -161,7 +161,9 @@ def _group_values() -> dict[str, object]:
     head = "c" * 40
     head_tree = "d" * 40
     group = "e" * 40
-    group_tree = "f" * 40
+    # A synthetic squash merge has a distinct commit SHA but the exact
+    # deterministic candidate tree carried by the PR head.
+    group_tree = head_tree
     queue = DIGEST
     parents = [base, head]
     return dict(
