@@ -1059,9 +1059,20 @@ class MainGraduationJournal:
                 raise MainGraduationRecordConflictError(
                     "mutation intent already has a terminal receipt; dispatch is prohibited"
                 )
-            raise MainGraduationJournalError(
-                "ambiguous mutation receipt has no durable target reservation"
-            )
+            # A process can crash after the fence record is durably published
+            # but before (or while) its reservation index is repaired.  A
+            # restart may therefore re-submit the already durable intent to
+            # this create-once path.  Recover the reservation only from the
+            # journal's verified intent artifact and an exact active fence;
+            # never use the caller's DTO/reference as authority and never
+            # recreate a reservation for an unproven or foreign target.
+            durable = self._read("mutation-intent", intent.intent_digest)
+            if durable is None or durable[0] != intent:
+                raise MainGraduationJournalError(
+                    "ambiguous mutation receipt has no verified durable intent"
+                )
+            self._repair_target_mutation_reservation(intent, durable[1])
+            return
         path = self._target_fence_path(intent)
         reservation_path = self._target_reservation_record_path(path)
         envelope = _TargetMutationReservationEnvelope(
@@ -1179,6 +1190,92 @@ class MainGraduationJournal:
                 ) from None
             raise MainGraduationJournalError(
                 "target mutation reservation was not durably indexed"
+            ) from exc
+
+    def _repair_target_mutation_reservation(
+        self, intent: MainMutationIntent, reference: ArtifactRef
+    ) -> None:
+        """Repair a missing reservation from verified active-fence evidence.
+
+        The reservation is a pre-dispatch target lock.  Once an ambiguous
+        receipt exists, a subsequent ``record_mutation_intent`` call must not
+        be interpreted as permission to dispatch again.  This narrow repair
+        path accepts only an active fence whose verified artifact names the
+        exact durable intent.  Missing, malformed, tampered, or foreign slots
+        remain fail-closed.
+        """
+
+        path = self._target_fence_path(intent)
+        if not path.is_dir():
+            raise MainGraduationJournalError(
+                "ambiguous mutation receipt has no durable target reservation"
+            )
+        record_path = self._target_fence_record_path(path)
+        reservation_path = self._target_reservation_record_path(path)
+        if not record_path.is_file():
+            # A reservation-only directory has no independent proof that the
+            # provider boundary was fenced.  Do not mint a lock from the
+            # caller's intent after the receipt has become ambiguous.
+            raise MainGraduationJournalError(
+                "ambiguous mutation receipt has no verified active target fence"
+            )
+
+        fence_envelope = self._read_target_fence_envelope(
+            path,
+            MainBound(repository_digest=intent.repository_digest, target_ref=intent.target_ref),
+        )
+        fence_prior = self._read("unresolved-mutation-fence", fence_envelope.fence_digest)
+        if fence_prior is None:
+            raise MainGraduationJournalError("ambiguous mutation target fence is missing")
+        fence = cast(MainUnresolvedMutationFence, fence_prior[0])
+        if (
+            fence.operation_id != intent.operation_id
+            or fence.intent_digest != intent.intent_digest
+            or fence.repository_digest != intent.repository_digest
+            or fence.target_ref != intent.target_ref
+        ):
+            raise MainGraduationRecordConflictError(
+                "ambiguous mutation target fence differs"
+            )
+
+        envelope = _TargetMutationReservationEnvelope(
+            target_scope_digest=main_target_scope_digest(
+                intent.repository_digest, intent.target_ref
+            ),
+            operation_id=intent.operation_id,
+            intent_digest=intent.intent_digest,
+            reference=reference,
+        )
+        if reservation_path.is_file():
+            current = self._read_target_reservation(path)
+            if (
+                current.target_scope_digest == envelope.target_scope_digest
+                and current.operation_id == envelope.operation_id
+                and current.intent_digest == envelope.intent_digest
+                and _same_artifact_ref(current.reference, reference)
+            ):
+                return
+            raise MainGraduationRecordConflictError(
+                "ambiguous mutation target reservation differs"
+            )
+        try:
+            _write_exclusive_durable(reservation_path, canonical_bytes(envelope))
+            _sync_directory(path)
+        except FileExistsError:
+            current = self._read_target_reservation(path)
+            if (
+                current.target_scope_digest == envelope.target_scope_digest
+                and current.operation_id == envelope.operation_id
+                and current.intent_digest == envelope.intent_digest
+                and _same_artifact_ref(current.reference, reference)
+            ):
+                return
+            raise MainGraduationRecordConflictError(
+                "ambiguous mutation target reservation raced"
+            ) from None
+        except OSError as exc:
+            raise MainGraduationJournalError(
+                "ambiguous mutation target reservation was not repaired"
             ) from exc
 
     def _cas_release_claim(self, record: MainReleaseClaim, reference: ArtifactRef) -> None:

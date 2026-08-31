@@ -1251,3 +1251,63 @@ def test_generic_windows_reservation_race_reuses_exact_winner(
     assert active.is_dir()
     assert journal._target_reservation_record_path(active).is_file()  # type: ignore[reportPrivateUsage]
     assert not list(active.parent.glob(".tmp-*"))
+
+
+def test_ambiguous_restart_repairs_missing_reservation_only_from_active_fence(
+    tmp_path: Path,
+) -> None:
+    """A lost reservation index is repairable only with exact fence proof."""
+    journal = _journal(tmp_path)
+    _disable_phase_prerequisites(journal)
+    intent = _intent()
+    journal.record_mutation_intent(intent)
+    receipt = _receipt(intent)
+    journal.record_mutation_receipt(receipt)
+    fence = _fence(receipt)
+    journal.record_unresolved_mutation_fence(fence)
+
+    active = journal._target_fence_path(intent)  # pyright: ignore[reportPrivateUsage]
+    reservation = journal._target_reservation_record_path(active)  # pyright: ignore[reportPrivateUsage]
+    reservation.unlink()
+
+    restarted = _journal(tmp_path)
+    _disable_phase_prerequisites(restarted)
+    # The caller's intent is merely a lookup key here.  The repaired envelope
+    # must point at the already durable intent artifact.
+    repaired = restarted.record_mutation_intent(intent)
+    assert repaired == journal.read_mutation_intent(intent.intent_digest)[1]  # type: ignore[index]
+    assert restarted._read_target_reservation(active).intent_digest == intent.intent_digest  # pyright: ignore[reportPrivateUsage]
+
+
+@pytest.mark.parametrize("mode", ["missing-fence", "tampered-reservation", "foreign-reservation"])
+def test_ambiguous_restart_reservation_repair_fails_closed_without_exact_fence(
+    tmp_path: Path, mode: str
+) -> None:
+    journal = _journal(tmp_path)
+    _disable_phase_prerequisites(journal)
+    intent = _intent()
+    journal.record_mutation_intent(intent)
+    receipt = _receipt(intent)
+    journal.record_mutation_receipt(receipt)
+    fence = _fence(receipt)
+    journal.record_unresolved_mutation_fence(fence)
+    active = journal._target_fence_path(intent)  # pyright: ignore[reportPrivateUsage]
+    reservation = journal._target_reservation_record_path(active)  # pyright: ignore[reportPrivateUsage]
+
+    if mode == "missing-fence":
+        # Removing the active slot leaves only the ambiguous receipt.  It is
+        # not enough evidence to mint a new target lock on restart.
+        import shutil
+
+        shutil.rmtree(active)
+    elif mode == "tampered-reservation":
+        reservation.write_bytes(b"tampered")
+    else:
+        payload = json.loads(reservation.read_text(encoding="utf-8"))
+        payload["operation_id"] = OP2
+        reservation.write_bytes(canonical_bytes(payload))
+
+    restarted = _journal(tmp_path)
+    _disable_phase_prerequisites(restarted)
+    with pytest.raises(MainGraduationJournalError):
+        restarted.record_mutation_intent(intent)
