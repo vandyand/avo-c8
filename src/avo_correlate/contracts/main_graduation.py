@@ -365,11 +365,48 @@ class MainProtectionManifest(MainBound):
         return self
 
 
-class MainQueueObservation(MainBound):
+class MainQueueConfigurationObservation(MainBound):
+    """The authoritative, empty queue configuration read before enqueue."""
+
     schema_version: Literal[1] = 1
+    operation_id: Sha256Digest
+    queue_configuration_digest: Sha256Digest
+    queue_enabled: Literal[True] = True
+    max_entries_per_group: Literal[1] = 1
+    bypass_allowed: Literal[False] = False
+    direct_merge_allowed: Literal[False] = False
+    expected_base_commit: GitObject
+    expected_base_tree: GitObject
+    protection_manifest_digest: Sha256Digest
+    protection_epoch: Sha256Digest
+    provider_identity: NonEmptyString
+    provider_api_version: NonEmptyString
+    merge_method: Literal["squash"]
+    isolated_release_issuer: NonEmptyString
+    release_issuer_app_id: StrictInt = Field(gt=0)
+    issuer_isolation_digest: Sha256Digest
+    observed_at: datetime
+
+    _aware_observed_at = field_validator("observed_at")(_aware)
+
+    @model_validator(mode="after")
+    def validate_queue_configuration(self) -> MainQueueConfigurationObservation:
+        if self.release_issuer_app_id == 15368:
+            raise ValueError("validation App 15368 cannot be the release issuer")
+        if self.expected_base_commit == "":
+            raise ValueError("queue configuration base is required")
+        return self
+
+
+class MainQueueObservation(MainBound):
+    """The authoritative singleton queue state read after enqueue."""
+
+    schema_version: Literal[2] = 2
     operation_id: Sha256Digest
     queue_generation_digest: Sha256Digest
     queue_manifest_digest: Sha256Digest
+    queue_configuration_digest: Sha256Digest
+    admission_observation_digest: Sha256Digest
     queue_enabled: Literal[True] = True
     max_entries_per_group: Literal[1] = 1
     bypass_allowed: Literal[False] = False
@@ -389,7 +426,7 @@ class MainQueueObservation(MainBound):
     release_issuer_app_id: StrictInt = Field(gt=0)
     issuer_isolation_digest: Sha256Digest
     observed_at: datetime
-    pull_request_number: StrictInt = Field(default=0, ge=0)
+    pull_request_number: StrictInt = Field(gt=0)
 
     _aware_observed_at = field_validator("observed_at")(_aware)
 
@@ -399,8 +436,12 @@ class MainQueueObservation(MainBound):
             raise ValueError("validation App 15368 cannot be the release issuer")
         if self.expected_base_commit == "":
             raise ValueError("queue base is required")
-        if (len(self.expected_group_parents) > 1) != (self.pull_request_number > 0):
-            raise ValueError("queue PR membership does not match singleton topology")
+        if len(self.expected_group_parents) != 2:
+            raise ValueError("post-enqueue queue must contain exactly one singleton topology")
+        if self.expected_group_parents[0] != self.expected_base_commit:
+            raise ValueError("post-enqueue queue topology must start at the expected base")
+        if self.expected_group_parents[1] == self.expected_base_commit:
+            raise ValueError("post-enqueue queue head must differ from the expected base")
         expected_topology = canonical_digest(
             {
                 "expected_group_parents": self.expected_group_parents,
@@ -642,7 +683,7 @@ class MainPreparationAuthorization(MainBound):
 class MainQueueAdmissionObservation(MainBound):
     """One-use, PR-head-only admission proof (never group evidence)."""
 
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     operation_id: Sha256Digest
     preparation_authorization_digest: Sha256Digest
     package_digest: Sha256Digest
@@ -656,7 +697,7 @@ class MainQueueAdmissionObservation(MainBound):
     admission_sha: GitObject = Field(validation_alias=AliasChoices("admission_sha", "pr_head_sha"))
     admission_run_id: NonEmptyString
     admission_nonce: NonEmptyString
-    queue_generation_digest: Sha256Digest
+    queue_configuration_digest: Sha256Digest
     protection_manifest_digest: Sha256Digest
     issuer_identity: NonEmptyString
     release_issuer_app_id: StrictInt = Field(gt=0)
@@ -964,13 +1005,15 @@ class MainCompletionPackage(MainBound):
     default so a caller cannot omit the branch decision.
     """
 
-    # C4 adds durable release authority and is a breaking wire-version bump.
-    schema_version: Literal[2] = 2
+    # Queue evidence was split into pre-enqueue configuration and post-enqueue
+    # singleton observations; this is a breaking wire-version bump.
+    schema_version: Literal[3] = 3
     operation_id: Sha256Digest
     plan: MainGraduationPlan
     source_package: MainSourcePackageBinding
     delta: MainDeltaManifest
     composition: MainCompositionArtifact
+    queue_configuration: MainQueueConfigurationObservation
     queue_observation: MainQueueObservation
     protection_manifest: MainProtectionManifest
     attestation_manifest: MainAttestationManifest
@@ -1001,6 +1044,7 @@ class MainCompletionPackage(MainBound):
             self.source_package,
             self.delta,
             self.composition,
+            self.queue_configuration,
             self.queue_observation,
             self.protection_manifest,
             self.attestation_manifest,
@@ -1024,6 +1068,17 @@ class MainCompletionPackage(MainBound):
             for record in records
         ):
             raise ValueError("completion child operation IDs differ")
+        if (
+            self.queue_observation.queue_configuration_digest
+            != self.queue_configuration.queue_configuration_digest
+            or self.admission_observation.queue_configuration_digest
+            != self.queue_configuration.queue_configuration_digest
+        ):
+            raise ValueError("completion queue configuration differs across evidence")
+        if self.queue_observation.admission_observation_digest != canonical_digest(
+            self.admission_observation
+        ):
+            raise ValueError("completion queue does not bind admission observation")
         # The historical transition receipt is observation only.  C4 always
         # requires the complete durable authority chain; there is no legacy
         # fallback branch.
@@ -1323,6 +1378,7 @@ class MainCompletionPackage(MainBound):
             self.source_package,
             self.delta,
             self.composition,
+            self.queue_configuration,
             self.queue_observation,
             self.protection_manifest,
             self.attestation_manifest,
@@ -1391,10 +1447,20 @@ class MainCompletionPackage(MainBound):
         if self.release_issuer_binding.issuer_id != self.admission_observation.issuer_identity:
             raise ValueError("controller-pinned issuer differs across stages")
         if (
-            self.queue_observation.queue_generation_digest
-            != self.admission_observation.queue_generation_digest
+            self.admission_observation.queue_configuration_digest
+            != self.queue_configuration.queue_configuration_digest
         ):
-            raise ValueError("queue generation differs at admission")
+            raise ValueError("admission queue configuration differs")
+        if (
+            self.queue_configuration.expected_base_commit != self.composition.base_commit
+            or self.queue_configuration.expected_base_tree != self.composition.base_tree
+        ):
+            raise ValueError("queue configuration base differs from composition base")
+        if (
+            self.queue_observation.queue_configuration_digest
+            != self.queue_configuration.queue_configuration_digest
+        ):
+            raise ValueError("post queue configuration differs")
         if self.queue_observation.expected_base_commit != self.composition.base_commit:
             raise ValueError("queue base differs from composition base")
         if self.queue_observation.expected_base_tree != self.composition.base_tree:
@@ -1723,6 +1789,7 @@ __all__ = [
     "MainProviderPostStateObservation",
     "MainProviderReceipt",
     "MainQueueAdmissionObservation",
+    "MainQueueConfigurationObservation",
     "MainQueueObservation",
     "MainReconciliation",
     "MainReleaseAuthorization",

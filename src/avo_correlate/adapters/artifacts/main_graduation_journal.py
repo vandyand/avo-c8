@@ -50,6 +50,7 @@ from avo_correlate.contracts.main_graduation import (
     MainProviderPostStateObservation,
     MainProviderReceipt,
     MainQueueAdmissionObservation,
+    MainQueueConfigurationObservation,
     MainQueueObservation,
     MainReconciliation,
     MainRef,
@@ -226,6 +227,7 @@ _MODELS: dict[str, type[StrictModel]] = {
     "delta": MainDeltaManifest,
     "composition": MainCompositionArtifact,
     "composition-proof": MainCompositionProof,
+    "queue-configuration": MainQueueConfigurationObservation,
     "queue": MainQueueObservation,
     "protection": MainProtectionManifest,
     "attestations": MainAttestationManifest,
@@ -595,6 +597,7 @@ class MainGraduationJournal:
             "main-graduation-source-package": package.source_package,
             "main-graduation-delta": package.delta,
             "main-graduation-composition": package.composition,
+            "main-graduation-queue-configuration": package.queue_configuration,
             "main-graduation-queue-observation": package.queue_observation,
             "main-graduation-protection-manifest": package.protection_manifest,
             "main-graduation-attestation-manifest": package.attestation_manifest,
@@ -1983,6 +1986,7 @@ class MainGraduationJournal:
             ("source-package", package.source_package),
             ("delta", package.delta),
             ("composition", package.composition),
+            ("queue-configuration", package.queue_configuration),
             ("queue", package.queue_observation),
             ("protection", package.protection_manifest),
             ("attestations", package.attestation_manifest),
@@ -2442,15 +2446,22 @@ class MainGraduationJournal:
             raise MainGraduationJournalError("preparation predates intent")
 
     def _require_queue_admission(self, admission: MainQueueAdmissionObservation) -> None:
-        """Admission independently closes the queue/base/protection snapshot."""
+        """Admission closes the pre-enqueue queue configuration snapshot."""
         plan = self._read("plan", admission.operation_id)
-        queue = self._read("queue", admission.operation_id)
+        queue_configuration = self._read("queue-configuration", admission.operation_id)
         protection = self._read("protection", admission.operation_id)
         preparation = self._read("preparation-authorization", admission.operation_id)
-        if plan is None or queue is None or protection is None or preparation is None:
-            raise MainGraduationJournalError("admission requires durable queue preparation chain")
+        if (
+            plan is None
+            or queue_configuration is None
+            or protection is None
+            or preparation is None
+        ):
+            raise MainGraduationJournalError(
+                "admission requires durable queue configuration preparation chain"
+            )
         p = cast(MainGraduationPlan, plan[0])
-        q = cast(MainQueueObservation, queue[0])
+        q = cast(MainQueueConfigurationObservation, queue_configuration[0])
         protection_manifest = cast(MainProtectionManifest, protection[0])
         prep = cast(MainPreparationAuthorization, preparation[0])
         self._require_preparation_chain(prep)
@@ -2467,7 +2478,7 @@ class MainGraduationJournal:
             or admission.base_tree != composition.base_tree
             or admission.head_commit != composition.candidate_commit
             or admission.head_tree != composition.candidate_tree
-            or admission.queue_generation_digest != q.queue_generation_digest
+            or admission.queue_configuration_digest != q.queue_configuration_digest
             or admission.protection_manifest_digest != protection_manifest.manifest_digest
         ):
             raise MainGraduationJournalError("admission plan/queue binding differs")
@@ -2548,8 +2559,6 @@ class MainGraduationJournal:
             or hold.composition_tree != durable_plan.composition.candidate_tree
         ):
             raise MainGraduationJournalError("admission/hold composition binding differs")
-        if admission.queue_generation_digest != hold.queue_generation_digest:
-            raise MainGraduationJournalError("queue generation differs from admission")
         if admission.head_commit == hold.group_sha:
             raise MainGraduationJournalError("PR-head SHA cannot be reused as group SHA")
         queue = self._read("queue", hold.operation_id)
@@ -2563,7 +2572,9 @@ class MainGraduationJournal:
         a = cast(MainAttestationManifest, attestations[0])
         c = cast(MainMergeGroupChecks, checks[0])
         if (
-            admission.queue_generation_digest != q.queue_generation_digest
+            admission.queue_configuration_digest != q.queue_configuration_digest
+            or q.admission_observation_digest != canonical_digest(admission)
+            or hold.queue_generation_digest != q.queue_generation_digest
             or admission.protection_manifest_digest != p.manifest_digest
             or hold.protection_manifest_digest != p.manifest_digest
             or hold.attestation_manifest_digest != canonical_digest(a)
@@ -3693,6 +3704,16 @@ class MainGraduationJournal:
 
     def read_composition_proof(self, operation_id: str) -> tuple[StrictModel, ArtifactRef] | None:
         return self._read("composition-proof", operation_id)
+
+    def record_queue_configuration(
+        self, record: MainQueueConfigurationObservation
+    ) -> ArtifactRef:
+        return self._record("queue-configuration", record)
+
+    def read_queue_configuration(
+        self, operation_id: str
+    ) -> tuple[StrictModel, ArtifactRef] | None:
+        return self._read("queue-configuration", operation_id)
 
     def record_queue_observation(self, record: MainQueueObservation) -> ArtifactRef:
         return self._record("queue", record)
