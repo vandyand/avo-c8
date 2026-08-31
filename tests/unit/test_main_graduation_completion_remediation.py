@@ -37,6 +37,21 @@ def test_main_completion_v1_is_not_accepted_as_c4() -> None:
         MainCompletionPackage.model_validate({"schema_version": 1})
 
 
+def test_completion_requires_queue_configuration_artifact_role() -> None:
+    package = completion_package()
+    queue_configuration_role = "main-graduation-queue-configuration"
+    assert any(item.role == queue_configuration_role for item in package.artifacts)
+    tampered = package.model_copy(
+        update={
+            "artifacts": [
+                item for item in package.artifacts if item.role != queue_configuration_role
+            ]
+        }
+    )
+    with pytest.raises(ValueError, match="completion artifact closure is incomplete"):
+        MainCompletionPackage.validate_completion(tampered)  # pyright: ignore[reportCallIssue]
+
+
 def test_claimed_transition_requires_exact_mutation_receipt_link() -> None:
     payload = {
         "repository_digest": R,

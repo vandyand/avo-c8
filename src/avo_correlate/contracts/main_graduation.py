@@ -1579,6 +1579,7 @@ class MainCompletionPackage(MainBound):
             "main-graduation-source-package",
             "main-graduation-delta",
             "main-graduation-composition",
+            "main-graduation-queue-configuration",
             "main-graduation-queue-observation",
             "main-graduation-protection-manifest",
             "main-graduation-attestation-manifest",

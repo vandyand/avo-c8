@@ -1496,6 +1496,7 @@ def test_completion_orchestration_and_conflict_edges(
     )
     journal._verify_completion_prerequisites(package)
     assert called[:3] == ["source-package", "delta", "composition"]
+    assert "queue-configuration" in called
     assert len(called) == 34
     monkeypatch.setattr(
         journal,
