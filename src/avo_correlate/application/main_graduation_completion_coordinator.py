@@ -1164,7 +1164,7 @@ class MainGraduationCompletionCoordinator:
             provider_api_version=self.provider_api_version,
         )
         effective = self._execute_or_recover(
-            executor, intent, request, ReleaseObservationRequest, hold.group_sha
+            executor, intent, request, ReleaseObservationRequest, hold.hold_run_id
         )
         resolution = effective.authoritative_resolution
         mutation = effective.receipt
