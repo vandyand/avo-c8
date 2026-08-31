@@ -158,7 +158,7 @@ def _immutable_stage_projection(request: StageRequest) -> dict[str, Any]:
     by the stage-specific binding below.
     """
 
-    return request.model_dump(
+    projection = request.model_dump(
         exclude={
             "operation_id",
             "repository_digest",
@@ -169,14 +169,18 @@ def _immutable_stage_projection(request: StageRequest) -> dict[str, Any]:
             "external_identity",
             "stage",
             "object_id",
-            "pull_request_number",
         },
         mode="json",
     )
+    if request.stage == "pull_request_open":
+        projection.pop("pull_request_number", None)
+    return projection
 
 
 def _check_observation_object_binding(
-    original: StageRequest, observation: StageObservationRequest
+    original: StageRequest,
+    observation: StageObservationRequest,
+    provider_repository: str | None,
 ) -> None:
     """Bind a read target to the original mutation request.
 
@@ -207,9 +211,12 @@ def _check_observation_object_binding(
     if original.stage == "pull_request_open":
         number = str(getattr(observation, "pull_request_number", ""))
         # GitHub's durable PR object key is ``owner/repository:pull/<n>``.
-        # Keep the provider prefix opaque while requiring the assigned number
-        # to be the exact number being observed.
-        if not number or not observation.object_id.endswith(f":pull/{number}"):
+        # Require the configured repository prefix as well as the assigned
+        # number; a caller cannot select another repository's PR.
+        expected_object_id = (
+            f"{provider_repository}:pull/{number}" if provider_repository and number else None
+        )
+        if expected_object_id is None or observation.object_id != expected_object_id:
             raise C4StageExecutionError(
                 "observation object identity is not derived from assigned pull request"
             )
@@ -239,6 +246,7 @@ class C4StageExecutor:
         authority_verifier: StageAuthorityVerifier,
         provider_identity: str | None = None,
         provider_api_version: str | None = None,
+        provider_repository: str | None = None,
     ) -> None:
         self.journal = journal
         self.clock = clock
@@ -252,6 +260,14 @@ class C4StageExecutor:
         self.provider_api_version = provider_api_version or cast(
             str | None, getattr(capability, "provider_api_version", None)
         )
+        self.provider_repository = provider_repository or cast(
+            str | None, getattr(capability, "repository_name", None)
+        )
+        if self.provider_repository is None:
+            owner = getattr(capability, "owner", None)
+            repo = getattr(capability, "repo", None)
+            if isinstance(owner, str) and isinstance(repo, str):
+                self.provider_repository = f"{owner}/{repo}"
 
     def execute(self, intent: MainMutationIntent, request: StageRequest) -> MainMutationReceipt:
         intent = cast(MainMutationIntent, _canonical_model(intent))
@@ -297,6 +313,10 @@ class C4StageExecutor:
             raise
         except Exception as exc:
             raise C4StageExecutionError("last-moment authority check failed") from exc
+        if not self._claim_dispatch_owner(intent, request):
+            raise C4StageExecutionError(
+                "mutation dispatch owner is already claimed; recovery is required"
+            )
         try:
             result = self._dispatch(request)
         except Exception as exc:
@@ -434,7 +454,7 @@ class C4StageExecutor:
         if expected is None or not isinstance(request, expected):
             raise C4StageExecutionError("observation request type does not match stage")
         _same_observation_binding(intent, request)
-        _check_observation_object_binding(original, request)
+        _check_observation_object_binding(original, request, self.provider_repository)
         if self.observation_capability is None:
             raise C4StageExecutionError("read-only observation capability is missing")
 
@@ -472,6 +492,31 @@ class C4StageExecutor:
     def _dispatch(self, request: StageRequest) -> StageMutationResult:
         method = _MUTATION_REQUESTS[request.stage][1]
         return cast(StageMutationResult, getattr(self.capability, method)(request))
+
+    def _claim_dispatch_owner(self, intent: MainMutationIntent, request: StageRequest) -> bool:
+        claimer = getattr(self.journal, "claim_mutation_dispatch", None)
+        if not callable(claimer):
+            raise C4StageExecutionError("journal dispatch-owner CAS is missing")
+        try:
+            return bool(
+                claimer(
+                    operation_id=intent.operation_id,
+                    intent_digest=intent.intent_digest,
+                    request_digest=request.request_digest,
+                    stage=intent.stage,
+                    repository_digest=intent.repository_digest,
+                    target_ref=intent.target_ref,
+                    external_identity_digest=intent.external_identity.identity_digest,
+                    lease_identity=intent.lease_identity,
+                    lease_digest=intent.lease_digest,
+                    lease_epoch_digest=intent.lease_epoch_digest,
+                    recorded_at=self.clock.now(),
+                )
+            )
+        except C4StageExecutionError:
+            raise
+        except Exception as exc:
+            raise C4StageExecutionError("mutation dispatch owner was not durably claimed") from exc
 
     def _verify_result(
         self, result: StageMutationResult, request: StageRequest, intent: MainMutationIntent

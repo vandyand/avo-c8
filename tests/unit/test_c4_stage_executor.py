@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import Barrier, Thread
 from typing import Any
 
 import pytest
@@ -326,7 +327,62 @@ def test_intent_before_mutation_and_terminal_replay(tmp_path: Path) -> None:
     executor = _executor(journal, provider, Clock(), Fence(), authority)
     receipt = executor.execute(intent, request)
     assert receipt.outcome == "applied" and provider.calls == 1
+    assert journal.read_mutation_dispatch_owner(intent.intent_digest) is not None
     assert executor.execute(intent, request) == receipt and provider.calls == 1
+
+
+def test_dispatch_owner_marker_crash_requires_recovery(tmp_path: Path) -> None:
+    journal, intent, request, authority = _fixture(tmp_path)
+    journal.record_mutation_intent(intent)
+    provider = CandidateProvider()
+    executor = _executor(journal, provider, Clock(), Fence(), authority)
+    assert executor._claim_dispatch_owner(intent, request) is True
+    with pytest.raises(C4StageExecutionError, match="recovery"):
+        executor.execute(intent, request)
+    assert provider.calls == 0
+    marker = journal.read_mutation_dispatch_owner(intent.intent_digest)
+    assert marker is not None
+    assert marker.request_digest == request.request_digest
+
+
+def test_dispatch_owner_cas_has_one_winner_across_independent_journals(
+    tmp_path: Path,
+) -> None:
+    journal, intent, request, authority = _fixture(tmp_path)
+    journal.record_mutation_intent(intent)
+    barrier = Barrier(2)
+    winners: list[bool] = []
+
+    def claim() -> None:
+        independent = KernelJournal(
+            tmp_path,
+            release_issuer_binding=journal._release_issuer_binding,
+            phase_a_authority_verifier=authority,
+        )
+        barrier.wait()
+        winners.append(
+            independent.claim_mutation_dispatch(
+                operation_id=intent.operation_id,
+                intent_digest=intent.intent_digest,
+                request_digest=request.request_digest,
+                stage=intent.stage,
+                repository_digest=intent.repository_digest,
+                target_ref=intent.target_ref,
+                external_identity_digest=intent.external_identity.identity_digest,
+                lease_identity=intent.lease_identity,
+                lease_digest=intent.lease_digest,
+                lease_epoch_digest=intent.lease_epoch_digest,
+                recorded_at=NOW,
+            )
+        )
+
+    threads = [Thread(target=claim), Thread(target=claim)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert sorted(winners) == [False, True]
+    assert journal.read_mutation_dispatch_owner(intent.intent_digest) is not None
 
 
 def test_ambiguous_recovery_is_read_only_across_fresh_executor(tmp_path: Path) -> None:

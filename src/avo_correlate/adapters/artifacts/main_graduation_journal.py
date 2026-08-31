@@ -10,11 +10,20 @@ import re
 import shutil
 import tempfile
 from contextlib import suppress
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, Protocol, cast
 
+from pydantic import field_validator, model_validator
+
 from avo_correlate.adapters.artifacts.filesystem import FilesystemArtifactStore
-from avo_correlate.contracts.base import ArtifactRef, StrictModel
+from avo_correlate.contracts.base import (
+    ArtifactRef,
+    NonEmptyString,
+    Sha256Digest,
+    StrictModel,
+    require_aware_datetime,
+)
 from avo_correlate.contracts.integration_campaign import (
     IntegrationCampaignEvidencePackage,
     verify_campaign_package_artifact,
@@ -35,6 +44,7 @@ from avo_correlate.contracts.main_graduation import (
     MainLeaseEvidence,
     MainMergeGroupChecks,
     MainMergeGroupWebhookReceipt,
+    MainMutationStage,
     MainPreparationAuthorization,
     MainProtectionManifest,
     MainProviderPostStateObservation,
@@ -174,6 +184,39 @@ class _TargetMutationReservationEnvelope(StrictModel):
     operation_id: str
     intent_digest: str
     reference: ArtifactRef
+
+
+class _MutationDispatchOwner(StrictModel):
+    """Durable create-once ownership claim immediately before dispatch."""
+
+    schema_version: Literal[1] = 1
+    operation_id: Sha256Digest
+    intent_digest: Sha256Digest
+    request_digest: Sha256Digest
+    stage: MainMutationStage
+    repository_digest: Sha256Digest
+    target_ref: MainRef
+    target_scope_digest: Sha256Digest
+    external_identity_digest: Sha256Digest
+    lease_identity: NonEmptyString
+    lease_digest: Sha256Digest
+    lease_epoch_digest: Sha256Digest
+    recorded_at: datetime
+    owner_digest: Sha256Digest
+
+    _aware_recorded_at = field_validator("recorded_at")(require_aware_datetime)
+
+    @model_validator(mode="after")
+    def valid_owner(self) -> _MutationDispatchOwner:
+        if self.target_scope_digest != main_target_scope_digest(
+            self.repository_digest, self.target_ref
+        ):
+            raise ValueError("dispatch owner target scope mismatch")
+        if self.owner_digest != canonical_digest(
+            self.model_dump(exclude={"owner_digest"}, mode="json")
+        ):
+            raise ValueError("dispatch owner digest mismatch")
+        return self
 
 
 _MODELS: dict[str, type[StrictModel]] = {
@@ -3084,6 +3127,127 @@ class MainGraduationJournal:
             tuple[MainMutationIntent, ArtifactRef] | None,
             self._read("mutation-intent", intent_digest),
         )
+
+    def claim_mutation_dispatch(
+        self,
+        *,
+        operation_id: Sha256Digest,
+        intent_digest: Sha256Digest,
+        request_digest: Sha256Digest,
+        stage: MainMutationStage,
+        repository_digest: Sha256Digest,
+        target_ref: MainRef,
+        external_identity_digest: Sha256Digest,
+        lease_identity: str,
+        lease_digest: Sha256Digest,
+        lease_epoch_digest: Sha256Digest,
+        recorded_at: datetime,
+    ) -> bool:
+        """Atomically claim the sole right to dispatch a mutation.
+
+        ``True`` is returned only for the process that creates the global
+        intent-keyed marker.  Existing markers are never treated as an
+        execution grant, even when their contents exactly match.
+        """
+        intent_prior = self.read_mutation_intent(intent_digest)
+        if intent_prior is None:
+            raise MainGraduationJournalError("dispatch owner requires durable mutation intent")
+        intent = cast(MainMutationIntent, intent_prior[0])
+        if (
+            intent.operation_id != operation_id
+            or intent.request_digest != request_digest
+            or intent.stage != stage
+            or intent.repository_digest != repository_digest
+            or intent.target_ref != target_ref
+            or intent.external_identity.identity_digest != external_identity_digest
+            or intent.lease_identity != lease_identity
+            or intent.lease_digest != lease_digest
+            or intent.lease_epoch_digest != lease_epoch_digest
+        ):
+            raise MainGraduationRecordConflictError("dispatch owner binding differs from intent")
+        values: dict[str, object] = {
+            "operation_id": operation_id,
+            "intent_digest": intent_digest,
+            "request_digest": request_digest,
+            "stage": stage,
+            "repository_digest": repository_digest,
+            "target_ref": target_ref,
+            "target_scope_digest": main_target_scope_digest(repository_digest, target_ref),
+            "external_identity_digest": external_identity_digest,
+            "lease_identity": lease_identity,
+            "lease_digest": lease_digest,
+            "lease_epoch_digest": lease_epoch_digest,
+            "recorded_at": recorded_at,
+        }
+        marker_probe = _MutationDispatchOwner.model_construct(
+            **values, owner_digest="sha256:" + "0" * 64
+        )
+        marker = _MutationDispatchOwner.model_validate(
+            values
+            | {
+                "owner_digest": canonical_digest(
+                    marker_probe.model_dump(exclude={"owner_digest"}, mode="json")
+                )
+            }
+        )
+        data = canonical_bytes(marker)
+        reference = self._store.put_bytes(
+            data,
+            media_type="application/vnd.avo.main-graduation-mutation-dispatch-owner+json",
+            role="main-graduation-mutation-dispatch-owner",
+            max_bytes=self._max,
+        )
+        _sync_directory(self._store.path_for_digest(reference.digest).parent)
+        envelope = self._phase_reference_envelope(
+            "mutation-dispatch-owner", intent_digest, marker, reference
+        )
+        path = self._phase_identity_path("mutation-dispatch-owner", intent_digest)
+        try:
+            prior = self._cas_global_envelope(path, envelope, marker, "mutation dispatch owner")
+        except MainGraduationRecordConflictError:
+            # Another process won the create-once CAS.  Validate its marker
+            # before reporting the loss; malformed competing bytes fail
+            # closed rather than being interpreted as a harmless duplicate.
+            existing = self.read_mutation_dispatch_owner(intent_digest)
+            if existing is None:
+                raise
+            return False
+        return prior is None
+
+    def read_mutation_dispatch_owner(
+        self, intent_digest: Sha256Digest
+    ) -> _MutationDispatchOwner | None:
+        """Read and validate the durable dispatch-owner marker."""
+        path = self._phase_identity_path("mutation-dispatch-owner", intent_digest)
+        if not path.is_file():
+            return None
+        envelope = self._read_phase_envelope(path, "mutation-dispatch-owner", intent_digest)
+        try:
+            data = self._store.read_bytes(envelope.reference)
+            if _digest_bytes(data) != envelope.reference.digest:
+                raise ValueError("dispatch owner artifact hash mismatch")
+            marker = _MutationDispatchOwner.model_validate_json(data)
+        except (OSError, ValueError, TypeError, UnicodeError, json.JSONDecodeError) as exc:
+            raise MainGraduationJournalError("mutation dispatch owner is malformed") from exc
+        if envelope.operation_id != marker.operation_id or canonical_bytes(marker) != data:
+            raise MainGraduationRecordConflictError("mutation dispatch owner index differs")
+        intent_prior = self.read_mutation_intent(intent_digest)
+        if intent_prior is None:
+            raise MainGraduationJournalError("dispatch owner intent is missing")
+        intent = cast(MainMutationIntent, intent_prior[0])
+        if (
+            marker.operation_id != intent.operation_id
+            or marker.request_digest != intent.request_digest
+            or marker.stage != intent.stage
+            or marker.repository_digest != intent.repository_digest
+            or marker.target_ref != intent.target_ref
+            or marker.external_identity_digest != intent.external_identity.identity_digest
+            or marker.lease_identity != intent.lease_identity
+            or marker.lease_digest != intent.lease_digest
+            or marker.lease_epoch_digest != intent.lease_epoch_digest
+        ):
+            raise MainGraduationRecordConflictError("mutation dispatch owner binding differs")
+        return marker
 
     def record_mutation_receipt(self, record: MainMutationReceipt) -> ArtifactRef:
         return self._record("mutation-receipt", record)
