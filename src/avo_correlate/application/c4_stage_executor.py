@@ -317,6 +317,16 @@ class C4StageExecutor:
             raise C4StageExecutionError(
                 "mutation dispatch owner is already claimed; recovery is required"
             )
+        # The ownership CAS itself can take time.  Re-run the trusted
+        # authority check after it wins and immediately before crossing the
+        # provider boundary.  If this check fails, retain the marker and force
+        # read-only recovery; never release ownership and retry blindly.
+        try:
+            self._last_moment_authority(intent, request)
+        except C4StageExecutionError:
+            raise
+        except Exception as exc:
+            raise C4StageExecutionError("last-moment authority check failed") from exc
         try:
             result = self._dispatch(request)
         except Exception as exc:

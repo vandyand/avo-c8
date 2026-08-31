@@ -3,14 +3,16 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from threading import Barrier, Thread
+from threading import Barrier, Event, Thread
 from typing import Any
 
 import pytest
 from pydantic import ValidationError
 
+import avo_correlate.application.c4_stage_executor as c4_kernel
 from avo_correlate.adapters.artifacts.main_graduation_journal import (
     MainGraduationJournal,
     MainGraduationJournalError,
@@ -343,6 +345,116 @@ def test_dispatch_owner_marker_crash_requires_recovery(tmp_path: Path) -> None:
     marker = journal.read_mutation_dispatch_owner(intent.intent_digest)
     assert marker is not None
     assert marker.request_digest == request.request_digest
+
+
+def test_dispatch_owner_recovery_observes_once_after_marker_crash(tmp_path: Path) -> None:
+    journal, intent, request, authority = _fixture(tmp_path)
+    journal.record_mutation_intent(intent)
+    provider = CandidateProvider()
+    executor = _executor(journal, provider, Clock(), Fence(), authority)
+    assert executor._claim_dispatch_owner(intent, request) is True
+    observation_request = CandidateObservationRequest.build(
+        **request.model_dump(exclude={"request_digest", "external_key", "external_identity"}),
+        object_id=request.candidate_ref,
+    )
+    observation_result = CandidateObservationResult.build(
+        **observation_request.model_dump(
+            exclude={"request_digest", "external_key", "external_identity"}
+        ),
+        outcome="observed",
+        evidence_digest=D,
+        observed_at=NOW,
+    )
+    observer = Observation(observation_result)
+    recovery_executor = _executor(
+        journal, provider, Clock(), Fence(), authority, observer
+    )
+    recovery_executor.recover(intent, observation_request, original_request=request)
+    assert provider.calls == 0 and observer.calls == 1
+
+
+def test_clock_or_lease_change_after_owner_marker_stops_before_provider(
+    tmp_path: Path,
+) -> None:
+    journal, intent, request, authority = _fixture(tmp_path)
+    clock = Clock()
+
+    class AdvancingFence(Fence):
+        def assert_current(self, **kwargs: object) -> None:
+            super().assert_current(**kwargs)
+            if self.calls == 1:
+                clock.value = NOW + timedelta(hours=2)
+            else:
+                raise RuntimeError("lease expired while claiming dispatch")
+
+    provider = CandidateProvider()
+    executor = _executor(journal, provider, clock, AdvancingFence(), authority)
+    with pytest.raises(C4StageExecutionError):
+        executor.execute(intent, request)
+    assert provider.calls == 0
+    assert journal.read_mutation_dispatch_owner(intent.intent_digest) is not None
+
+
+def test_independent_executors_have_one_dispatch_owner_and_loser_recovers(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    journal, intent, request, authority = _fixture(tmp_path)
+    journal2 = KernelJournal(
+        tmp_path,
+        release_issuer_binding=journal._release_issuer_binding,
+        phase_a_authority_verifier=authority,
+    )
+    entered = Event()
+    release = Event()
+
+    class BlockingProvider(CandidateProvider):
+        def publish_candidate(
+            self, request: CandidatePublicationRequest
+        ) -> CandidatePublicationResult:
+            self.calls += 1
+            entered.set()
+            assert release.wait(10)
+            return CandidatePublicationResult.build(
+                **request.model_dump(
+                    exclude={"request_digest", "external_key", "external_identity"}
+                ),
+                outcome="applied",
+                response_digest=D,
+                observed_at=NOW,
+                dispatch_started=True,
+            )
+
+    provider = BlockingProvider()
+    first = _executor(journal, provider, Clock(), Fence(), authority)
+    second = _executor(journal2, provider, Clock(), Fence(), authority)
+
+    def unlocked(_: str) -> Any:
+        return nullcontext()
+
+    monkeypatch.setattr(c4_kernel, "_operation_lock", unlocked)
+    first_result: list[Any] = []
+    loser_errors: list[Exception] = []
+
+    def run_first() -> None:
+        first_result.append(first.execute(intent, request))
+
+    def run_second() -> None:
+        try:
+            second.execute(intent, request)
+        except Exception as exc:
+            loser_errors.append(exc)
+
+    first_thread = Thread(target=run_first)
+    first_thread.start()
+    assert entered.wait(10)
+    second_thread = Thread(target=run_second)
+    second_thread.start()
+    second_thread.join(10)
+    release.set()
+    first_thread.join(10)
+    assert len(first_result) == 1 and first_result[0].outcome == "applied"
+    assert len(loser_errors) == 1 and "recovery" in str(loser_errors[0])
+    assert provider.calls == 1
 
 
 def test_dispatch_owner_cas_has_one_winner_across_independent_journals(
