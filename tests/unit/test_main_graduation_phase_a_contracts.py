@@ -16,6 +16,7 @@ from avo_correlate.contracts import (
     MainReleaseClaim,
     MainUnresolvedMutationFence,
     StrictModel,
+    main_release_claim_key,
     main_stage_identity_digest,
     main_stage_nonce,
     main_target_scope_digest,
@@ -106,6 +107,55 @@ def test_deterministic_identities_and_nonce_are_stable() -> None:
     assert main_target_scope_digest(R, "refs/heads/main") == main_target_scope_digest(
         R, "refs/heads/main"
     )
+
+
+def test_release_claim_key_uses_exact_iso_timestamp_projection() -> None:
+    authorization_expires_at = NOW.replace(hour=1)
+    lease_expires_at = NOW.replace(hour=2)
+    target_scope_digest = main_target_scope_digest(R, "refs/heads/main")
+
+    actual = main_release_claim_key(
+        repository_digest=R,
+        target_ref="refs/heads/main",
+        operation_id=D,
+        authorization_digest=D2,
+        hold_observation_digest=D,
+        group_sha=HEAD,
+        hold_run_id="hold-run",
+        hold_nonce="hold-nonce",
+        queue_generation_digest=D2,
+        lease_epoch_digest=D2,
+        lease_digest=D2,
+        release_issuer_identity="isolated-release",
+        issuer_isolation_digest=D,
+        authorization_expires_at=authorization_expires_at,
+        lease_expires_at=lease_expires_at,
+        release_issuer_app_id=9002,
+        target_scope_digest=target_scope_digest,
+    )
+
+    expected = canonical_digest(
+        {
+            "repository_digest": R,
+            "target_ref": "refs/heads/main",
+            "operation_id": D,
+            "authorization_digest": D2,
+            "hold_observation_digest": D,
+            "group_sha": HEAD,
+            "hold_run_id": "hold-run",
+            "hold_nonce": "hold-nonce",
+            "queue_generation_digest": D2,
+            "lease_epoch_digest": D2,
+            "lease_digest": D2,
+            "release_issuer_identity": "isolated-release",
+            "issuer_isolation_digest": D,
+            "authorization_expires_at": authorization_expires_at.isoformat(),
+            "lease_expires_at": lease_expires_at.isoformat(),
+            "release_issuer_app_id": 9002,
+            "target_scope_digest": target_scope_digest,
+        }
+    )
+    assert actual == expected
 
 
 @pytest.mark.parametrize("stage", ["admission_check", "queue_enqueue"])

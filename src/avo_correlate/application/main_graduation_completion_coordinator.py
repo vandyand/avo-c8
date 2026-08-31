@@ -69,6 +69,7 @@ from avo_correlate.contracts.main_graduation_phase_a import (
     MainLeaseEvidenceRecord,
     MainMutationIntent,
     MainMutationReceipt,
+    main_release_claim_key,
     main_stage_nonce,
 )
 from avo_correlate.domain.canonical import canonical_bytes, canonical_digest
@@ -1071,11 +1072,27 @@ class MainGraduationCompletionCoordinator:
             "lease_expires_at": lease.expires_at,
             "claimed_at": now,
         }
-        key_values = dict(values)
-        key_values.pop("claimed_at", None)
-        key_values["target_scope_digest"] = values["target_scope_digest"]
-        key_values["release_issuer_app_id"] = authorization.release_issuer_app_id
-        values["claim_key"] = canonical_digest(key_values)
+        values["claim_key"] = main_release_claim_key(
+            repository_digest=authorization.repository_digest,
+            target_ref=authorization.target_ref,
+            operation_id=authorization.operation_id,
+            authorization_digest=authorization.authorization_digest,
+            hold_observation_digest=canonical_digest(hold),
+            group_sha=hold.group_sha,
+            hold_run_id=hold.hold_run_id,
+            hold_nonce=hold.hold_nonce,
+            queue_generation_digest=hold.queue_generation_digest,
+            lease_epoch_digest=lease.lease_epoch_digest,
+            lease_digest=lease.lease_digest,
+            release_issuer_identity=authorization.release_issuer_identity,
+            issuer_isolation_digest=authorization.issuer_isolation_digest,
+            authorization_expires_at=authorization.expires_at,
+            lease_expires_at=lease.expires_at,
+            release_issuer_app_id=authorization.release_issuer_app_id,
+            target_scope_digest=main_target_scope_digest(
+                authorization.repository_digest, authorization.target_ref
+            ),
+        )
         claim = _digest_record(MainReleaseClaim, values, "claim_digest")
         self.journal.record_release_claim(claim)
         return claim

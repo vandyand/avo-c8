@@ -161,6 +161,56 @@ def main_release_external_identity_digest(
     )
 
 
+def main_release_claim_key(
+    *,
+    repository_digest: str,
+    target_ref: str,
+    operation_id: str,
+    authorization_digest: str,
+    hold_observation_digest: str,
+    group_sha: str,
+    hold_run_id: str,
+    hold_nonce: str,
+    queue_generation_digest: str,
+    lease_epoch_digest: str,
+    lease_digest: str,
+    release_issuer_identity: str,
+    issuer_isolation_digest: str,
+    authorization_expires_at: datetime,
+    lease_expires_at: datetime,
+    release_issuer_app_id: int,
+    target_scope_digest: str,
+) -> Sha256Digest:
+    """Derive the stable, one-use identity of a main release claim.
+
+    Claim identity is deliberately independent of ``lease_identity`` and
+    ``claimed_at``.  The authority-chain expiry timestamps are represented as
+    ISO strings so every caller hashes the same canonical value shape.
+    """
+
+    return canonical_digest(
+        {
+            "repository_digest": repository_digest,
+            "target_ref": target_ref,
+            "operation_id": operation_id,
+            "authorization_digest": authorization_digest,
+            "hold_observation_digest": hold_observation_digest,
+            "group_sha": group_sha,
+            "hold_run_id": hold_run_id,
+            "hold_nonce": hold_nonce,
+            "queue_generation_digest": queue_generation_digest,
+            "lease_epoch_digest": lease_epoch_digest,
+            "lease_digest": lease_digest,
+            "release_issuer_identity": release_issuer_identity,
+            "issuer_isolation_digest": issuer_isolation_digest,
+            "authorization_expires_at": authorization_expires_at.isoformat(),
+            "lease_expires_at": lease_expires_at.isoformat(),
+            "release_issuer_app_id": release_issuer_app_id,
+            "target_scope_digest": target_scope_digest,
+        }
+    )
+
+
 class MainExternalIdentity(MainBound):
     """Content-addressed identity of one external object or action."""
 
@@ -372,26 +422,25 @@ class MainReleaseClaim(MainBound):
             or self.claimed_at >= self.lease_expires_at
         ):
             raise ValueError("release claim must be created before authority expiry")
-        key_values: dict[str, object] = {
-            "repository_digest": self.repository_digest,
-            "target_ref": self.target_ref,
-            "operation_id": self.operation_id,
-            "authorization_digest": self.authorization_digest,
-            "hold_observation_digest": self.hold_observation_digest,
-            "group_sha": self.group_sha,
-            "hold_run_id": self.hold_run_id,
-            "hold_nonce": self.hold_nonce,
-            "queue_generation_digest": self.queue_generation_digest,
-            "lease_epoch_digest": self.lease_epoch_digest,
-            "lease_digest": self.lease_digest,
-            "release_issuer_identity": self.release_issuer_identity,
-            "issuer_isolation_digest": self.issuer_isolation_digest,
-            "authorization_expires_at": self.authorization_expires_at.isoformat(),
-            "lease_expires_at": self.lease_expires_at.isoformat(),
-        }
-        key_values["release_issuer_app_id"] = self.release_issuer_app_id
-        key_values["target_scope_digest"] = self.target_scope_digest
-        expected_key = canonical_digest(key_values)
+        expected_key = main_release_claim_key(
+            repository_digest=self.repository_digest,
+            target_ref=self.target_ref,
+            operation_id=self.operation_id,
+            authorization_digest=self.authorization_digest,
+            hold_observation_digest=self.hold_observation_digest,
+            group_sha=self.group_sha,
+            hold_run_id=self.hold_run_id,
+            hold_nonce=self.hold_nonce,
+            queue_generation_digest=self.queue_generation_digest,
+            lease_epoch_digest=self.lease_epoch_digest,
+            lease_digest=self.lease_digest,
+            release_issuer_identity=self.release_issuer_identity,
+            issuer_isolation_digest=self.issuer_isolation_digest,
+            authorization_expires_at=self.authorization_expires_at,
+            lease_expires_at=self.lease_expires_at,
+            release_issuer_app_id=self.release_issuer_app_id,
+            target_scope_digest=self.target_scope_digest,
+        )
         if self.claim_key != expected_key:
             raise ValueError("release claim key mismatch")
         if self.claim_digest != canonical_digest(
@@ -566,6 +615,7 @@ __all__ = [
     "MainMutationStage",
     "MainReleaseClaim",
     "MainUnresolvedMutationFence",
+    "main_release_claim_key",
     "main_release_external_identity_digest",
     "main_release_external_key",
     "main_stage_identity_digest",
