@@ -3130,6 +3130,78 @@ class MainGraduationJournal:
             self._read("mutation-fence-resolution", resolution_digest),
         )
 
+    def read_mutation_fence_resolution_by_fence(
+        self, fence_digest: str
+    ) -> tuple[MainMutationFenceResolution, ArtifactRef] | None:
+        """Read a resolution through its fence identity and verify authority.
+
+        The resolution identity index is deliberately not exposed as a raw
+        filesystem lookup to callers.  In particular, a canonical artifact
+        and a valid index are not sufficient evidence that a fence was
+        authoritatively resolved; the injected Phase-A verifier must attest
+        the resolution and its source receipt on every read.
+        """
+        prior = self._read_fence_resolution_by_fence(fence_digest)
+        if prior is None:
+            return None
+        resolution = prior[0]
+        fence_prior = self._read("unresolved-mutation-fence", fence_digest)
+        if fence_prior is None:
+            raise MainGraduationJournalError("mutation fence resolution fence is missing")
+        fence = cast(MainUnresolvedMutationFence, fence_prior[0])
+        if (
+            resolution.operation_id != fence.operation_id
+            or resolution.intent_digest != fence.intent_digest
+            or resolution.repository_digest != fence.repository_digest
+            or resolution.target_ref != fence.target_ref
+            or resolution.external_identity_digest != fence.external_identity_digest
+            or resolution.lease_identity != fence.lease_identity
+            or resolution.lease_digest != fence.lease_digest
+            or resolution.target_scope_digest != fence.target_scope_digest
+        ):
+            raise MainGraduationRecordConflictError("mutation fence resolution binding differs")
+        self._verify_fence_authority(resolution, self._source_receipt(resolution))
+        return prior
+
+    def read_mutation_fence_resolution_by_intent(
+        self, intent_digest: str
+    ) -> tuple[MainMutationFenceResolution, ArtifactRef] | None:
+        """Find and verify a closed fence resolution for a mutation intent.
+
+        A target fence is moved to closed history after resolution, so a
+        fresh recovery runner cannot rely on the active target pointer.  This
+        read scans the immutable resolution identity index and delegates each
+        candidate to the verified-by-fence API above.  At most one resolution
+        may exist for an intent.
+        """
+        _check_digest(intent_digest)
+        directory = self._indexes / "mutation-fence-resolution-identity"
+        if not directory.is_dir():
+            return None
+        match: tuple[MainMutationFenceResolution, ArtifactRef] | None = None
+        try:
+            paths = sorted(directory.glob("*.json"), key=lambda path: path.name)
+            for path in paths:
+                fence_digest = "sha256:" + path.stem
+                candidate = self.read_mutation_fence_resolution_by_fence(fence_digest)
+                if candidate is None or candidate[0].intent_digest != intent_digest:
+                    continue
+                if (
+                    match is not None
+                    and match[0].resolution_digest != candidate[0].resolution_digest
+                ):
+                    raise MainGraduationRecordConflictError(
+                        "multiple mutation fence resolutions exist for intent"
+                    )
+                match = candidate
+        except MainGraduationJournalError:
+            raise
+        except (OSError, ValueError, TypeError, UnicodeError, json.JSONDecodeError) as exc:
+            raise MainGraduationJournalError(
+                "mutation fence resolution identity index is unverifiable"
+            ) from exc
+        return match
+
     def assert_no_unresolved_mutation_fence(self, repository_digest: str, target_ref: str) -> None:
         _check_digest(repository_digest)
         scope = MainBound(repository_digest=repository_digest, target_ref=cast(MainRef, target_ref))

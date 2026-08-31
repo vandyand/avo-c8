@@ -150,6 +150,73 @@ def _same_observation_binding(intent: MainMutationIntent, request: StageObservat
         raise C4StageExecutionError("observation request does not match mutation intent")
 
 
+def _immutable_stage_projection(request: StageRequest) -> dict[str, Any]:
+    """Return request fields that identify the intended stage object.
+
+    Operation/lease/request/external identity fields are checked separately.
+    ``object_id`` and the PR server-assigned number are intentionally handled
+    by the stage-specific binding below.
+    """
+
+    return request.model_dump(
+        exclude={
+            "operation_id",
+            "repository_digest",
+            "target_ref",
+            "lease_epoch_digest",
+            "request_digest",
+            "external_key",
+            "external_identity",
+            "stage",
+            "object_id",
+            "pull_request_number",
+        },
+        mode="json",
+    )
+
+
+def _check_observation_object_binding(
+    original: StageRequest, observation: StageObservationRequest
+) -> None:
+    """Bind a read target to the original mutation request.
+
+    Pull-request creation is the one stage where the provider assigns the
+    object number after dispatch.  Its immutable head/base/candidate
+    projection is still derived from the original request; the observation
+    object id is restricted to the assigned PR number.  Other stages expose
+    a deterministic provider object id in their mutation request.
+    """
+
+    expected_projection = _immutable_stage_projection(original)
+    observed_projection = _immutable_stage_projection(observation)
+    if original.stage == "pull_request_open":
+        # PullRequestObservationRequest uses head_* for the create request's
+        # candidate_* fields.  These are the same immutable provider object.
+        expected_projection["head_commit"] = expected_projection.pop("candidate_commit")
+        expected_projection["head_tree"] = expected_projection.pop("candidate_tree")
+    if expected_projection != observed_projection:
+        raise C4StageExecutionError("observation target differs from original stage request")
+
+    expected_object_id: str | None = {
+        "candidate_publication": getattr(original, "candidate_ref", None),
+        "admission_check": getattr(original, "admission_run_id", None),
+        "queue_enqueue": getattr(original, "pull_request_url", None),
+        "merge_group_hold": getattr(original, "hold_run_id", None),
+        "release_transition": getattr(original, "hold_run_id", None),
+    }.get(original.stage)
+    if original.stage == "pull_request_open":
+        number = str(getattr(observation, "pull_request_number", ""))
+        # GitHub's durable PR object key is ``owner/repository:pull/<n>``.
+        # Keep the provider prefix opaque while requiring the assigned number
+        # to be the exact number being observed.
+        if not number or not observation.object_id.endswith(f":pull/{number}"):
+            raise C4StageExecutionError(
+                "observation object identity is not derived from assigned pull request"
+            )
+    elif expected_object_id is None or observation.object_id != expected_object_id:
+        raise C4StageExecutionError("observation object identity is not derived from stage request")
+
+
 class C4StageExecutor:
     """Execute/recover one already-authorized C4 stage.
 
@@ -264,17 +331,26 @@ class C4StageExecutor:
         self,
         intent: MainMutationIntent | Sha256Digest,
         observation_request: StageObservationRequest,
+        *,
+        original_request: StageRequest,
     ) -> MainMutationReceipt:
-        """Recover an uncertain stage with exactly one read-only observation."""
+        """Recover an uncertain stage with exactly one read-only observation.
+
+        The original mutation request is mandatory because the durable intent
+        stores its canonical digest, not every stage-specific request field.
+        This prevents a recovery caller from choosing an unrelated provider
+        object that happens to share the operation and stage.
+        """
 
         expected = intent if isinstance(intent, str) else intent.intent_digest
         with _operation_lock(expected):
-            return self._recover_locked(intent, observation_request)
+            return self._recover_locked(intent, observation_request, original_request)
 
     def _recover_locked(
         self,
         intent: MainMutationIntent | Sha256Digest,
         observation_request: StageObservationRequest,
+        original_request: StageRequest,
     ) -> MainMutationReceipt:
         expected = intent if isinstance(intent, str) else intent.intent_digest
         prior_intent = self.journal.read_mutation_intent(expected)
@@ -283,8 +359,24 @@ class C4StageExecutor:
         durable_intent = prior_intent[0]
         if isinstance(intent, MainMutationIntent) and durable_intent != intent:
             raise C4StageExecutionError("durable mutation intent differs")
+        original_request = cast(StageRequest, _canonical_model(original_request))
+        self._check_request(durable_intent, original_request)
         observation_request = cast(StageObservationRequest, _canonical_model(observation_request))
-        self._check_observation_request(durable_intent, observation_request)
+        self._check_observation_request(durable_intent, observation_request, original_request)
+
+        # A resolved fence is closed and removed from the active target slot.
+        # Discover its verified resolution before materializing a missing
+        # receipt or attempting to create/reopen another fence.
+        resolution = self._read_resolution_for_intent(durable_intent.intent_digest)
+        if resolution is not None:
+            self._check_resolution_binding(resolution, durable_intent)
+            resolved = self.journal.read_mutation_receipt(resolution.resolved_receipt_digest)
+            if resolved is None:
+                raise C4StageExecutionError("resolved mutation receipt is missing")
+            receipt = resolved[0]
+            self._check_receipt_binding(receipt, durable_intent)
+            self._verify_receipt_authority(receipt, durable_intent)
+            return receipt
 
         receipt = self._read_receipt_for_intent(durable_intent.intent_digest)
         if receipt is None:
@@ -299,11 +391,14 @@ class C4StageExecutor:
             return receipt
 
         fence = self._read_active_fence(durable_intent)
+        if fence is not None:
+            self._check_fence_binding(fence, durable_intent)
         if fence is None:
             fence = self._fence_from_receipt(durable_intent, receipt)
             self.journal.record_unresolved_mutation_fence(fence)
         resolution = self._read_resolution(fence.fence_digest)
         if resolution is not None:
+            self._check_resolution_binding(resolution, durable_intent)
             return receipt
 
         observed = self._observe(observation_request)
@@ -330,12 +425,16 @@ class C4StageExecutor:
             raise C4StageExecutionError("capability does not implement the exact stage operation")
 
     def _check_observation_request(
-        self, intent: MainMutationIntent, request: StageObservationRequest
+        self,
+        intent: MainMutationIntent,
+        request: StageObservationRequest,
+        original: StageRequest,
     ) -> None:
         expected = _OBSERVATION_REQUESTS.get(intent.stage)
         if expected is None or not isinstance(request, expected):
             raise C4StageExecutionError("observation request type does not match stage")
         _same_observation_binding(intent, request)
+        _check_observation_object_binding(original, request)
         if self.observation_capability is None:
             raise C4StageExecutionError("read-only observation capability is missing")
 
@@ -395,11 +494,12 @@ class C4StageExecutor:
         """Run the journal's mandatory controller verifier before publication."""
 
         fn = getattr(self.journal, "_verify_mutation_receipt", None)
-        if callable(fn):
-            try:
-                fn(receipt, intent)
-            except Exception as exc:
-                raise C4StageExecutionError("controller rejected mutation receipt") from exc
+        if not callable(fn):
+            raise C4StageExecutionError("journal receipt authority verifier is missing")
+        try:
+            fn(receipt, intent)
+        except Exception as exc:
+            raise C4StageExecutionError("controller rejected mutation receipt") from exc
 
     def _verify_observation(
         self,
@@ -562,14 +662,20 @@ class C4StageExecutor:
         return None if prior is None else prior[0]
 
     def _read_resolution(self, fence_digest: str) -> MainMutationFenceResolution | None:
-        # A resolution is indexed by fence identity, but its public API is
-        # keyed by its own digest.  The journal's private helper is used only
-        # for discovery; all returned bytes still pass journal verification.
-        reader = getattr(self.journal, "_read_fence_resolution_by_fence", None)
-        if callable(reader):
-            prior = reader(fence_digest)
-            return None if prior is None else cast(MainMutationFenceResolution, prior[0])
-        return None
+        reader = getattr(self.journal, "read_mutation_fence_resolution_by_fence", None)
+        if not callable(reader):
+            raise C4StageExecutionError("journal verified fence-resolution reader is missing")
+        prior = reader(fence_digest)
+        return None if prior is None else cast(MainMutationFenceResolution, prior[0])
+
+    def _read_resolution_for_intent(
+        self, intent_digest: Sha256Digest
+    ) -> MainMutationFenceResolution | None:
+        reader = getattr(self.journal, "read_mutation_fence_resolution_by_intent", None)
+        if not callable(reader):
+            raise C4StageExecutionError("journal verified fence-resolution reader is missing")
+        prior = reader(intent_digest)
+        return None if prior is None else cast(MainMutationFenceResolution, prior[0])
 
     def _observe(self, request: StageObservationRequest) -> StageObservationResult:
         capability = self.observation_capability
@@ -600,6 +706,36 @@ class C4StageExecutor:
             or receipt.external_identity != intent.external_identity
         ):
             raise C4StageExecutionError("durable mutation receipt differs from intent")
+
+    def _check_fence_binding(
+        self, fence: MainUnresolvedMutationFence, intent: MainMutationIntent
+    ) -> None:
+        if (
+            fence.intent_digest != intent.intent_digest
+            or fence.operation_id != intent.operation_id
+            or fence.stage != intent.stage
+            or fence.repository_digest != intent.repository_digest
+            or fence.target_ref != intent.target_ref
+            or fence.external_identity_digest != intent.external_identity.identity_digest
+            or fence.lease_digest != intent.lease_digest
+            or fence.lease_identity != intent.lease_identity
+        ):
+            raise C4StageExecutionError("durable mutation fence differs from intent")
+
+    def _check_resolution_binding(
+        self, resolution: MainMutationFenceResolution, intent: MainMutationIntent
+    ) -> None:
+        if (
+            resolution.intent_digest != intent.intent_digest
+            or resolution.operation_id != intent.operation_id
+            or resolution.repository_digest != intent.repository_digest
+            or resolution.target_ref != intent.target_ref
+            or resolution.external_identity_digest
+            != intent.external_identity.identity_digest
+            or resolution.lease_digest != intent.lease_digest
+            or resolution.lease_identity != intent.lease_identity
+        ):
+            raise C4StageExecutionError("durable fence resolution differs from intent")
 
 
 __all__ = [

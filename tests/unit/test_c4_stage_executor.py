@@ -1,5 +1,5 @@
 """Filesystem-backed tests for the C4 single-stage durable kernel."""
-# pyright: reportPrivateUsage=false, reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportArgumentType=false, reportCallIssue=false, reportMissingImports=false
+# pyright: reportPrivateUsage=false, reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportArgumentType=false, reportCallIssue=false, reportMissingImports=false, reportUntypedFunctionDecorator=false
 
 from __future__ import annotations
 
@@ -354,8 +354,102 @@ def test_ambiguous_recovery_is_read_only_across_fresh_executor(tmp_path: Path) -
     )
     recovered = _executor(
         fresh, CandidateProvider(), Clock(), Fence(), authority, observer
-    ).recover(intent, observation_request)
+    ).recover(intent, observation_request, original_request=request)
     assert recovered == receipt and provider.calls == 1 and observer.calls == 1
+
+
+@pytest.mark.parametrize("outcome", ["observed", "not_found"])
+def test_resolution_replay_is_verified_and_does_not_reobserve(
+    tmp_path: Path, outcome: str
+) -> None:
+    journal, intent, request, authority = _fixture(tmp_path)
+    receipt = _executor(
+        journal, CandidateProvider(ambiguous=True), Clock(), Fence(), authority
+    ).execute(intent, request)
+    observation_request = CandidateObservationRequest.build(
+        **request.model_dump(exclude={"request_digest", "external_key", "external_identity"}),
+        object_id=request.candidate_ref,
+    )
+    observation_result = CandidateObservationResult.build(
+        **observation_request.model_dump(
+            exclude={"request_digest", "external_key", "external_identity"}
+        ),
+        outcome=outcome,
+        evidence_digest=D,
+        observed_at=NOW,
+    )
+    first_observer = Observation(observation_result)
+    first = _executor(
+        journal,
+        CandidateProvider(),
+        Clock(),
+        Fence(),
+        authority,
+        first_observer,
+    )
+    assert first.recover(intent, observation_request, original_request=request) == receipt
+    assert first_observer.calls == 1
+
+    # The active fence has been closed.  The public read-by-fence contract
+    # still verifies the durable resolution, and the intent lookup lets a
+    # fresh executor replay it without reopening a fence.
+    resolution = journal.read_mutation_fence_resolution_by_intent(intent.intent_digest)
+    assert resolution is not None
+    assert journal.read_mutation_fence_resolution_by_fence(resolution[0].fence_digest) == resolution
+    second_observer = Observation(observation_result)
+    fresh = KernelJournal(
+        tmp_path,
+        release_issuer_binding=journal._release_issuer_binding,
+        phase_a_authority_verifier=authority,
+    )
+    replay = _executor(
+        fresh,
+        CandidateProvider(),
+        Clock(),
+        Fence(),
+        authority,
+        second_observer,
+    ).recover(intent, observation_request, original_request=request)
+    assert replay == receipt
+    assert second_observer.calls == 0
+
+
+def test_fence_resolution_reader_fails_closed_when_authority_is_tampered(
+    tmp_path: Path,
+) -> None:
+    journal, intent, request, authority = _fixture(tmp_path)
+    receipt = _executor(
+        journal, CandidateProvider(ambiguous=True), Clock(), Fence(), authority
+    ).execute(intent, request)
+    observation_request = CandidateObservationRequest.build(
+        **request.model_dump(exclude={"request_digest", "external_key", "external_identity"}),
+        object_id=request.candidate_ref,
+    )
+    result = CandidateObservationResult.build(
+        **observation_request.model_dump(
+            exclude={"request_digest", "external_key", "external_identity"}
+        ),
+        outcome="observed",
+        evidence_digest=D,
+        observed_at=NOW,
+    )
+    observer = Observation(result)
+    executor = _executor(journal, CandidateProvider(), Clock(), Fence(), authority, observer)
+    assert executor.recover(intent, observation_request, original_request=request) == receipt
+    resolution = journal.read_mutation_fence_resolution_by_intent(intent.intent_digest)
+    assert resolution is not None
+
+    class TamperedAuthority(Authority):
+        def verify_fence_resolution(self, resolution: Any, receipt: Any) -> None:
+            raise ValueError("tampered verifier")
+
+    tampered = KernelJournal(
+        tmp_path,
+        release_issuer_binding=journal._release_issuer_binding,
+        phase_a_authority_verifier=TamperedAuthority(),
+    )
+    with pytest.raises(Exception, match="tampered verifier"):
+        tampered.read_mutation_fence_resolution_by_fence(resolution[0].fence_digest)
 
 
 def test_rejection_expiry_stale_lease_and_existing_intent_fail_closed(tmp_path: Path) -> None:
