@@ -807,6 +807,7 @@
     },
     "MainGraduationIntent": {
       "additionalProperties": false,
+      "description": "Immutable C4 intent bound to the durable Phase-A lease record.\n\n``MainLeaseEvidence`` is the historical C2 lease shape.  It remains\nrepresented as an optional compatibility member so old model-constructed\nvalues can still be inspected, but a validated C4 intent must carry the\nPhase-A ``MainLeaseEvidenceRecord`` and all of its authority digests.",
       "properties": {
         "base_commit": {
           "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
@@ -848,11 +849,39 @@
           "title": "Lease Digest",
           "type": "string"
         },
+        "lease_epoch_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Lease Epoch Digest",
+          "type": "string"
+        },
         "lease_evidence": {
-          "$ref": "#/$defs/MainLeaseEvidence"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MainLeaseEvidence"
+            },
+            {
+              "$ref": "#/$defs/MainLeaseEvidenceRecord"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Lease Evidence"
         },
         "lease_evidence_artifact": {
           "$ref": "#/$defs/ArtifactRef"
+        },
+        "lease_evidence_record": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MainLeaseEvidenceRecord"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "lease_identity": {
           "minLength": 1,
@@ -890,8 +919,8 @@
           "type": "string"
         },
         "schema_version": {
-          "const": 1,
-          "default": 1,
+          "const": 2,
+          "default": 2,
           "title": "Schema Version",
           "type": "integer"
         },
@@ -921,7 +950,7 @@
         "candidate_ref",
         "lease_identity",
         "lease_digest",
-        "lease_evidence",
+        "lease_epoch_digest",
         "lease_evidence_artifact",
         "policy_epoch",
         "intent_digest",
