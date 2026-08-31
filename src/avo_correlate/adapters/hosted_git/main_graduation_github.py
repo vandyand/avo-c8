@@ -40,6 +40,7 @@ from avo_correlate.application.c4_capabilities import (
     GroupHoldObservationResult,
     PullRequestCreateRequest,
     PullRequestCreateResult,
+    PullRequestLookupRequest,
     PullRequestObservationRequest,
     PullRequestObservationResult,
     PullRequestReconcileRequest,
@@ -52,6 +53,7 @@ from avo_correlate.application.c4_capabilities import (
     ReleaseObservationRequest,
     ReleaseObservationResult,
 )
+from avo_correlate.contracts.main_graduation import MainQueueConfigurationObservation
 from avo_correlate.contracts.main_graduation_phase_a import main_stage_nonce
 from avo_correlate.domain.canonical import canonical_digest
 
@@ -766,10 +768,20 @@ class GitHubMainGraduationAdapter:
             request.base_tree,
             require_entry=require_entry,
         )
-        expected = request.queue_generation_digest
-        observed = state.get("queue_generation_digest")
-        if not isinstance(expected, str) or not _DIGEST.fullmatch(expected) or observed != expected:
+        if not require_entry and state.get("state") != "empty":
+            raise _Precondition("pre-enqueue queue must be empty")
+        expected_generation = getattr(request, "queue_generation_digest", None)
+        observed_generation = state.get("queue_generation_digest")
+        if expected_generation is not None and observed_generation != expected_generation:
             raise _Precondition("queue generation differs from authorization")
+        expected_configuration = getattr(request, "queue_configuration_digest", None)
+        observed_configuration = state.get("queue_configuration_digest")
+        if expected_configuration is not None and (
+            not isinstance(expected_configuration, str)
+            or not _DIGEST.fullmatch(expected_configuration)
+            or observed_configuration != expected_configuration
+        ):
+            raise _Precondition("queue configuration differs from authorization")
         return state
 
     def _authoritative_group(self, role: str, request: Any) -> JsonObject:
@@ -993,6 +1005,89 @@ class GitHubMainGraduationAdapter:
         )
         return PullRequestObservationResult.build(**values)
 
+    def lookup_pull_request(
+        self, request: PullRequestLookupRequest
+    ) -> PullRequestObservationResult:
+        """Find the unique PR for an exact operation-derived candidate.
+
+        Search results are paginated to completion.  A missing, malformed, or
+        conflicting result is never treated as a successful lookup, and more
+        than one exact identity fails closed as ambiguous.
+        """
+
+        request = self._validate_request(request, PullRequestLookupRequest, self.repository_digest)
+        branch = request.candidate_ref.removeprefix("refs/heads/")
+        role = "observer" if self._read_only_transports else "preparation"
+        items: list[JsonValue] = []
+        for page in range(1, 101):
+            raw = self._read(
+                role,
+                "GET",
+                self.repository_path
+                + "/pulls?state=all&head="
+                + quote(self.owner + ":" + branch, safe="")
+                + f"&base=main&per_page=100&page={page}",
+            )
+            page_items = (
+                raw
+                if isinstance(raw, list)
+                else _obj(raw, "pull request search").get("items", [])
+            )
+            if not isinstance(page_items, list):
+                raise GitHubMainGraduationAmbiguous("malformed pull request search")
+            items.extend(page_items)
+            if len(page_items) < 100:
+                break
+        else:
+            raise GitHubMainGraduationAmbiguous("pull request search exceeded bounds")
+
+        exact: list[dict[str, Any]] = []
+        for item in items:
+            parsed = self._parse_pr(item)
+            if parsed["head_ref"] != request.candidate_ref:
+                raise _Precondition("pull request search returned a foreign head ref")
+            if parsed["base_commit"] != request.base_commit:
+                raise _Precondition("pull request search returned a foreign base")
+            if parsed["head_commit"] == request.candidate_commit:
+                exact.append(parsed)
+            else:
+                raise _Precondition("pull request search returned a conflicting candidate")
+        if len({item["number"] for item in exact}) != len(exact):
+            raise _Precondition("pull request search contains duplicate identities")
+        if len(exact) != 1:
+            raise _Precondition("pull request lookup is missing or ambiguous")
+
+        parsed = self._authoritative_pr(
+            role,
+            exact[0]["number"],
+            candidate_ref=request.candidate_ref,
+            head_commit=request.candidate_commit,
+            head_tree=request.candidate_tree,
+            base_commit=request.base_commit,
+            base_tree=request.base_tree,
+        )
+        values = {
+            "operation_id": request.operation_id,
+            "repository_digest": request.repository_digest,
+            "target_ref": request.target_ref,
+            "lease_epoch_digest": request.lease_epoch_digest,
+            "stage": "pull_request_open",
+            "object_id": parsed["url"],
+            "pull_request_number": parsed["number"],
+            "candidate_ref": request.candidate_ref,
+            "head_commit": request.candidate_commit,
+            "head_tree": request.candidate_tree,
+            "base_commit": request.base_commit,
+            "base_tree": request.base_tree,
+            "outcome": "observed",
+            "evidence_digest": canonical_digest(parsed),
+            "observed_at": datetime.now(UTC),
+        }
+        return PullRequestObservationResult.build(**values)
+
+    # Compatibility spelling used by recovery callers.
+    find_pull_request = lookup_pull_request
+
     def _graphql(self, role: str, query: str, variables: JsonObject) -> JsonObject:
         payload = self._read(role, "POST", "/graphql", {"query": query, "variables": variables})
         raw = _obj(payload, "GraphQL response")
@@ -1022,6 +1117,10 @@ class GitHubMainGraduationAdapter:
         node_id = parsed.get("node_id")
         if not isinstance(node_id, str) or not node_id:
             raise _Precondition("pull request node identity is unavailable")
+        # The queue configuration is a pre-enqueue fence.  It must be read
+        # while empty and match the durable configuration digest bound by the
+        # admission and enqueue requests.
+        self._authoritative_queue("preparation", request, require_entry=False)
         self._authoritative_admission("preparation", request)
         try:
             data = self._graphql(
@@ -1060,9 +1159,16 @@ class GitHubMainGraduationAdapter:
             _str(entry, "id", "enqueuePullRequest")
             # Exact singleton observation is mandatory after enqueue.  It is
             # kept in the response digest and never inferred from the mutation.
-            queue = self._authoritative_queue(
+            # A queue generation is created by this dispatch.  Observe the
+            # exact singleton directly; comparing it with a pre-enqueue
+            # generation would conflate two different evidence objects.
+            queue = self._queue_state(
                 "preparation",
-                request,
+                request.pull_request_number,
+                request.pull_request_head,
+                request.base_commit,
+                request.base_tree,
+                require_entry=True,
             )
         except Exception as exc:
             return cast(
@@ -1119,6 +1225,18 @@ class GitHubMainGraduationAdapter:
             raise _Precondition("queue configuration is not singleton squash all-green")
         protection_digest, protection_epoch = self._authoritative_protection(
             role, queue_configuration=config
+        )
+        queue_configuration_digest = canonical_digest(
+            {
+                "queue_id": _str(queue, "id", "merge queue"),
+                "configuration": _stable_observation(config),
+                "expected_base_commit": base,
+                "expected_base_tree": base_tree,
+                "protection_manifest_digest": protection_digest,
+                "protection_epoch": protection_epoch,
+                "provider_identity": self.provider_identity,
+                "provider_api_version": self.provider_api_version,
+            }
         )
         main_ref = _obj(
             self._read(role, "GET", self.repository_path + "/git/ref/heads/main"),
@@ -1195,6 +1313,7 @@ class GitHubMainGraduationAdapter:
                 "issuer_isolation_digest": cast(
                     GitHubPrincipalBinding, self._principals["release"]
                 ).isolation_digest,
+                "queue_configuration_digest": queue_configuration_digest,
             }
         )
         generation = canonical_digest(
@@ -1216,6 +1335,7 @@ class GitHubMainGraduationAdapter:
             "protection_epoch": protection_epoch,
             "queue_manifest_digest": manifest,
             "queue_generation_digest": generation,
+            "queue_configuration_digest": queue_configuration_digest,
         }
 
     def _check(
@@ -1437,7 +1557,11 @@ class GitHubMainGraduationAdapter:
             or admission.pull_request_tree != request.pull_request_tree
             or admission.base_commit != request.base_commit
             or admission.base_tree != request.base_tree
-            or admission.queue_generation_digest != request.queue_generation_digest
+            or (
+                getattr(request, "queue_configuration_digest", None) is not None
+                and admission.queue_configuration_digest
+                != request.queue_configuration_digest
+            )
         ):
             raise _Precondition("durable admission identity differs from current stage")
         downstream_preparation = getattr(request, "preparation_authorization_digest", None)
@@ -1811,6 +1935,66 @@ class GitHubMainGraduationAdapter:
         return cast(
             CandidateObservationResult, self._observation(CandidateObservationResult, request, raw)
         )
+
+    def observe_queue_configuration(
+        self, *, operation_id: str | None = None
+    ) -> MainQueueConfigurationObservation:
+        """Observe the stable, empty pre-enqueue queue configuration.
+
+        The digest intentionally excludes queue entries and observation
+        timestamps.  It therefore remains the same across the enqueue
+        transition, while the post-enqueue queue generation is a separate
+        fact observed by :meth:`observe_queue`.
+        """
+
+        role = "observer" if self._read_only_transports else "preparation"
+        main_ref = _obj(
+            self._read(role, "GET", self.repository_path + "/git/ref/heads/main"),
+            "main ref",
+        )
+        main_object = _nested(main_ref, "object", "main ref")
+        if main_ref.get("ref") != "refs/heads/main" or main_object.get("type") != "commit":
+            raise _Precondition("main ref identity differs")
+        base = _git(_str(main_object, "sha", "main ref"), "main base")
+        _, base_tree, _ = self._read_commit(role, base)
+        state = self._queue_state(role, 0, base, base, base_tree, require_entry=False)
+        if state.get("state") != "empty":
+            raise _Precondition("pre-enqueue queue must be empty")
+        release = cast(GitHubPrincipalBinding, self._principals["release"])
+        config_digest = state.get("queue_configuration_digest")
+        protection_digest = state.get("protection_manifest_digest")
+        protection_epoch = state.get("protection_epoch")
+        if (
+            not isinstance(config_digest, str)
+            or not _DIGEST.fullmatch(config_digest)
+            or not isinstance(protection_digest, str)
+            or not isinstance(protection_epoch, str)
+        ):
+            raise GitHubMainGraduationError("queue configuration evidence is malformed")
+        values: dict[str, Any] = {
+            "repository_digest": self.repository_digest,
+            "target_ref": "refs/heads/main",
+            "operation_id": operation_id
+            or canonical_digest(
+                {
+                    "repository_digest": self.repository_digest,
+                    "queue_configuration_digest": config_digest,
+                }
+            ),
+            "queue_configuration_digest": config_digest,
+            "expected_base_commit": base,
+            "expected_base_tree": base_tree,
+            "protection_manifest_digest": protection_digest,
+            "protection_epoch": protection_epoch,
+            "provider_identity": self.provider_identity,
+            "provider_api_version": self.provider_api_version,
+            "merge_method": "squash",
+            "isolated_release_issuer": release.identity,
+            "release_issuer_app_id": release.app_id,
+            "issuer_isolation_digest": release.isolation_digest,
+            "observed_at": datetime.now(UTC),
+        }
+        return MainQueueConfigurationObservation.model_validate(values)
 
     def observe_pull_request(
         self, request: PullRequestObservationRequest

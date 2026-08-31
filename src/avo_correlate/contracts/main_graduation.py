@@ -601,7 +601,15 @@ class MainGraduationPlan(MainBound):
 
 
 class MainGraduationIntent(MainBound):
-    schema_version: Literal[1] = 1
+    """Immutable C4 intent bound to the durable Phase-A lease record.
+
+    ``MainLeaseEvidence`` is the historical C2 lease shape.  It remains
+    represented as an optional compatibility member so old model-constructed
+    values can still be inspected, but a validated C4 intent must carry the
+    Phase-A ``MainLeaseEvidenceRecord`` and all of its authority digests.
+    """
+
+    schema_version: Literal[2] = 2
     operation_id: Sha256Digest
     plan_digest: Sha256Digest
     package_digest: Sha256Digest
@@ -613,7 +621,11 @@ class MainGraduationIntent(MainBound):
     candidate_ref: NonEmptyString
     lease_identity: NonEmptyString
     lease_digest: Sha256Digest
-    lease_evidence: MainLeaseEvidence
+    lease_epoch_digest: Sha256Digest
+    # Legacy C2 evidence is accepted only by the private historical
+    # inspection seam.  A normal v2 parse requires lease_evidence_record.
+    lease_evidence: MainLeaseEvidence | MainLeaseEvidenceRecord | None = None
+    lease_evidence_record: MainLeaseEvidenceRecord | None = None
     lease_evidence_artifact: ArtifactRef
     policy_epoch: Sha256Digest
     intent_digest: Sha256Digest
@@ -624,20 +636,29 @@ class MainGraduationIntent(MainBound):
 
     @model_validator(mode="after")
     def validate_intent(self) -> MainGraduationIntent:
-        lease_bytes = canonical_bytes(self.lease_evidence)
+        lease = self.lease_evidence_record
+        if lease is None and isinstance(self.lease_evidence, MainLeaseEvidenceRecord):
+            lease = self.lease_evidence
+        if lease is None:
+            raise ValueError("C4 intent requires durable Phase-A lease evidence")
+        lease_bytes = canonical_bytes(lease)
         if (
-            self.lease_evidence.operation_id != self.operation_id
-            or self.lease_evidence.repository_digest != self.repository_digest
-            or self.lease_evidence.target_ref != self.target_ref
-            or self.lease_evidence.identity != self.lease_identity
-            or self.lease_evidence.lease_digest != self.lease_digest
-            or self.lease_evidence_artifact.role != "main-graduation-lease-evidence"
+            lease.operation_id != self.operation_id
+            or lease.repository_digest != self.repository_digest
+            or lease.target_ref != self.target_ref
+            or lease.owner != self.lease_identity
+            or lease.lease_digest != self.lease_digest
+            or lease.lease_epoch_digest != self.lease_epoch_digest
+            or lease.policy_epoch != self.policy_epoch
+            or isinstance(self.lease_evidence, MainLeaseEvidence)
+            or self.lease_evidence_artifact.role
+            != "main-graduation-lease-evidence-record"
             or self.lease_evidence_artifact.media_type
-            != "application/vnd.avo.main-graduation-lease-evidence+json"
-            or self.lease_evidence_artifact.digest != canonical_digest(self.lease_evidence)
+            != "application/vnd.avo.main-graduation-lease-evidence-record+json"
+            or self.lease_evidence_artifact.digest != canonical_digest(lease)
             or self.lease_evidence_artifact.size_bytes != len(lease_bytes)
         ):
-            raise ValueError("intent lease evidence is not bound")
+            raise ValueError("intent durable lease evidence is not bound")
         if self.intent_digest != canonical_digest(
             self.model_dump(exclude={"intent_digest"}, mode="json")
         ):
@@ -1825,8 +1846,9 @@ from avo_correlate.contracts.main_graduation_phase_a import (  # noqa: E402
     main_target_scope_digest,
 )
 
-# The C4 completion model uses phase-A records as forward references to keep
-# the historical C1-C3 contract module acyclic during class definition.
+# The C4 models use phase-A records as forward references to keep the
+# established contract module acyclic during class definition.
+MainGraduationIntent.model_rebuild()
 MainCompletionPackage.model_rebuild()
 
 __all__ += [

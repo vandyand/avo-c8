@@ -35,6 +35,7 @@ from avo_correlate.contracts.main_graduation import (
     MainProtectionManifest,
     MainProviderReceipt,
     MainQueueAdmissionObservation,
+    MainQueueConfigurationObservation,
     MainQueueObservation,
     MainReleaseAuthorization,
     MainReleaseHoldObservation,
@@ -222,6 +223,33 @@ def _stable_observation(value: JsonValue) -> JsonValue:
             if key.casefold() not in {"observed_at", "updated_at", "created_at", "timestamp"}
         }
     return value
+
+
+def _queue_configuration_digest(
+    *,
+    queue_id: str,
+    configuration: JsonObject,
+    base_commit: str,
+    base_tree: str,
+    protection_manifest_digest: str,
+    protection_epoch: str,
+    provider_identity: str,
+    provider_api_version: str,
+) -> str:
+    """Stable digest shared by pre- and post-enqueue queue observations."""
+
+    return _json_digest(
+        {
+            "queue_id": queue_id,
+            "configuration": _stable_observation(configuration),
+            "expected_base_commit": base_commit,
+            "expected_base_tree": base_tree,
+            "protection_manifest_digest": protection_manifest_digest,
+            "protection_epoch": protection_epoch,
+            "provider_identity": provider_identity,
+            "provider_api_version": provider_api_version,
+        }
+    )
 
 
 class ProtectedMainProvider:
@@ -592,6 +620,81 @@ class ProtectedMainProvider:
             datetime.now(UTC),
         )
 
+    def lookup_pull_request(
+        self,
+        operation_id: str,
+        *,
+        expected_head_commit: str,
+        expected_base_commit: str,
+    ) -> MainPullRequestObservation:
+        """Resolve the unique PR for an operation-derived candidate branch.
+
+        GitHub's search response is read to completion and every returned
+        candidate identity is checked before the individual PR is re-read.
+        This is the recovery path when a prior PR-create call crossed the
+        transport boundary before its number was journaled.
+        """
+
+        if not _DIGEST.fullmatch(operation_id):
+            raise ProtectedMainProviderError("operation identity is malformed")
+        candidate_ref = "refs/heads/avo/candidate/" + operation_id.removeprefix("sha256:")
+        head_commit = _git(expected_head_commit, "expected pull request head")
+        base_commit = _git(expected_base_commit, "expected pull request base")
+        items: list[JsonObject] = []
+        branch = candidate_ref.removeprefix("refs/heads/")
+        for page in range(1, 101):
+            raw = self._call(
+                self.repository_path
+                + "/pulls?state=all&head="
+                + quote(self.owner + ":" + branch, safe="")
+                + f"&base=main&per_page=100&page={page}"
+            )
+            page_items = (
+                raw
+                if isinstance(raw, list)
+                else _items(
+                    _object(raw, "pull request search").get("items"),
+                    "pull request search items",
+                )
+            )
+            items.extend(_object(item, "pull request search result") for item in page_items)
+            if len(page_items) < 100:
+                break
+        else:
+            raise ProtectedMainProviderError("pull request search exceeded bounds")
+        exact: list[int] = []
+        for item in items:
+            head = _nested(item, "head", "pull request search result")
+            base = _nested(item, "base", "pull request search result")
+            item_head_ref = _str(head, "ref", "pull request search head")
+            item_head_sha = _git(
+                _str(head, "sha", "pull request search head"),
+                "pull request search head SHA",
+            )
+            item_base_sha = _git(
+                _str(base, "sha", "pull request search base"),
+                "pull request search base SHA",
+            )
+            if item_head_ref not in {candidate_ref, candidate_ref.removeprefix("refs/heads/")}:
+                raise ProtectedMainProviderError("pull request search returned a foreign head ref")
+            if item_base_sha != base_commit:
+                raise ProtectedMainProviderError("pull request search returned a foreign base")
+            number = _int(item, "number", "pull request search result")
+            if item_head_sha == head_commit:
+                exact.append(number)
+            else:
+                raise ProtectedMainProviderError("pull request search returned a conflicting head")
+        if len(set(exact)) != len(exact) or len(exact) != 1:
+            raise ProtectedMainProviderError("pull request lookup is missing or ambiguous")
+        return self.observe_pull_request(
+            exact[0],
+            expected_base_commit=base_commit,
+            expected_head_ref=candidate_ref,
+            expected_head_commit=head_commit,
+        )
+
+    find_pull_request = lookup_pull_request
+
     def observe_protection(self, queue_config: JsonObject | None = None) -> MainProtectionManifest:
         raw = _object(self._call(self.repository_path + "/branches/main/protection"), "protection")
         required = _nested(raw, "required_status_checks", "protection")
@@ -650,7 +753,77 @@ class ProtectedMainProvider:
             {**payload, "manifest_digest": manifest_digest}
         )
 
-    def observe_queue(self, base: MainRefObservation | None = None) -> MainQueueObservation:
+    def observe_queue_configuration(
+        self, base: MainRefObservation | None = None, *, operation_id: str | None = None
+    ) -> MainQueueConfigurationObservation:
+        """Observe the active queue policy while the queue is empty."""
+
+        data = self._graphql(
+            _MERGE_QUEUE_QUERY,
+            {"owner": self.owner, "name": self.repo, "branch": "main"},
+        )
+        repository = _nested(data, "repository", "GraphQL data")
+        raw = _object(repository.get("mergeQueue"), "merge queue")
+        queue_id = _str(raw, "id", "merge queue")
+        config = _nested(raw, "configuration", "merge queue")
+        entries = _nested(raw, "entries", "merge queue")
+        total = _int(entries, "totalCount", "merge queue entries")
+        nodes = _items(entries.get("nodes"), "merge queue entries")
+        if total != 0 or nodes:
+            raise ProtectedMainProviderError("pre-enqueue merge queue must be empty")
+        max_entries = _int(config, "maximumEntriesToMerge", "merge queue configuration")
+        max_build = _int(config, "maximumEntriesToBuild", "merge queue configuration")
+        method = _str(config, "mergeMethod", "merge queue configuration").casefold()
+        strategy = _str(config, "mergingStrategy", "merge queue configuration").casefold()
+        if max_entries != 1 or max_build < 1 or method != "squash" or strategy != "allgreen":
+            raise ProtectedMainProviderError(
+                "merge queue configuration is not singleton squash all-green"
+            )
+        fresh_base = self.observe_main()
+        if base is not None and base != fresh_base:
+            raise ProtectedMainProviderError("supplied main base is stale")
+        protection = self.observe_protection(config)
+        digest = _queue_configuration_digest(
+            queue_id=queue_id,
+            configuration=config,
+            base_commit=fresh_base.commit,
+            base_tree=fresh_base.tree,
+            protection_manifest_digest=protection.manifest_digest,
+            protection_epoch=protection.protection_epoch,
+            provider_identity=self.provider_identity,
+            provider_api_version=self.provider_api_version,
+        )
+        return MainQueueConfigurationObservation(
+            repository_digest=self.repository_digest,
+            target_ref="refs/heads/main",
+            operation_id=operation_id or _json_digest(
+                {
+                    "repository_digest": self.repository_digest,
+                    "queue_configuration_digest": digest,
+                }
+            ),
+            queue_configuration_digest=digest,
+            expected_base_commit=fresh_base.commit,
+            expected_base_tree=fresh_base.tree,
+            protection_manifest_digest=protection.manifest_digest,
+            protection_epoch=protection.protection_epoch,
+            provider_identity=self.provider_identity,
+            provider_api_version=self.provider_api_version,
+            merge_method="squash",
+            isolated_release_issuer=self.release_issuer_identity,
+            release_issuer_app_id=self.release_issuer_app_id,
+            issuer_isolation_digest=self.issuer_isolation_digest,
+            observed_at=datetime.now(UTC),
+        )
+
+    def observe_queue(
+        self,
+        base: MainRefObservation | None = None,
+        *,
+        operation_id: str | None = None,
+        queue_configuration_digest: str | None = None,
+        admission_observation_digest: str | None = None,
+    ) -> MainQueueObservation:
         data = self._graphql(
             _MERGE_QUEUE_QUERY,
             {"owner": self.owner, "name": self.repo, "branch": "main"},
@@ -724,7 +897,32 @@ class ProtectedMainProvider:
                 raise ProtectedMainProviderError("merge queue entry is not singleton")
             entry_id = _str(entry, "id", "merge queue entry")
             parents = [base.commit, entry_head]
+        if total != 1:
+            raise ProtectedMainProviderError("post-enqueue merge queue must contain one entry")
         protection = self.observe_protection(config)
+        configuration_digest = _queue_configuration_digest(
+            queue_id=queue_id,
+            configuration=config,
+            base_commit=base.commit,
+            base_tree=base.tree,
+            protection_manifest_digest=protection.manifest_digest,
+            protection_epoch=protection.protection_epoch,
+            provider_identity=self.provider_identity,
+            provider_api_version=self.provider_api_version,
+        )
+        if (
+            not isinstance(queue_configuration_digest, str)
+            or not _DIGEST.fullmatch(queue_configuration_digest)
+            or queue_configuration_digest != configuration_digest
+        ):
+            raise ProtectedMainProviderError("post-enqueue queue configuration differs")
+        if (
+            not isinstance(admission_observation_digest, str)
+            or not _DIGEST.fullmatch(admission_observation_digest)
+        ):
+            raise ProtectedMainProviderError("durable admission observation digest is required")
+        if not isinstance(operation_id, str) or not _DIGEST.fullmatch(operation_id):
+            raise ProtectedMainProviderError("post-enqueue queue operation identity is required")
         normalized_manifest = {
             "enabled": True,
             "max_entries_per_group": max_entries,
@@ -746,6 +944,7 @@ class ProtectedMainProvider:
             "isolated_release_issuer": self.release_issuer_identity,
             "release_issuer_app_id": self.release_issuer_app_id,
             "issuer_isolation_digest": self.issuer_isolation_digest,
+            "queue_configuration_digest": configuration_digest,
         }
         manifest = _json_digest(normalized_manifest)
         generation_identity = _json_digest(
@@ -767,11 +966,11 @@ class ProtectedMainProvider:
         return MainQueueObservation(
             repository_digest=self.repository_digest,
             target_ref="refs/heads/main",
-            operation_id=_json_digest(
-                {"repository_digest": self.repository_digest, "queue_id": queue_id}
-            ),
+            operation_id=operation_id,
             queue_generation_digest=generation,
             queue_manifest_digest=manifest,
+            queue_configuration_digest=configuration_digest,
+            admission_observation_digest=admission_observation_digest,
             expected_base_commit=base.commit,
             expected_base_tree=base.tree,
             protection_manifest_digest=protection.manifest_digest,
@@ -902,7 +1101,11 @@ class ProtectedMainProvider:
             raise ProtectedMainProviderError(
                 "durable authenticated queue observation is required for merge group"
             )
-        current_queue = self.observe_queue()
+        current_queue = self.observe_queue(
+            operation_id=queue.operation_id,
+            queue_configuration_digest=queue.queue_configuration_digest,
+            admission_observation_digest=queue.admission_observation_digest,
+        )
         if (
             current_queue.queue_generation_digest != queue.queue_generation_digest
             or current_queue.expected_base_commit != queue.expected_base_commit
@@ -1002,6 +1205,9 @@ class ProtectedMainProvider:
         group_sha: str | None = None,
         group_webhook_body: bytes | None = None,
         group_webhook_headers: Mapping[str, str] | None = None,
+        operation_id: str | None = None,
+        queue_configuration_digest: str | None = None,
+        admission_observation_digest: str | None = None,
     ) -> ProtectedMainSnapshot:
         """Read repository, main, PR, queue, protection, and optional group together."""
         repository = self.observe_repository()
@@ -1010,7 +1216,12 @@ class ProtectedMainProvider:
             pull_request_number,
             expected_base_commit=main.commit,
         )
-        queue = self.observe_queue(main)
+        queue = self.observe_queue(
+            main,
+            operation_id=operation_id,
+            queue_configuration_digest=queue_configuration_digest,
+            admission_observation_digest=admission_observation_digest,
+        )
         protection = self.observe_protection()
         group = (
             self.observe_merge_group(
@@ -1336,7 +1547,7 @@ class MainGraduationAttester:
         ):
             raise ProtectedMainProviderError("admission success is not exact PR-head evidence")
         if (
-            observation.queue_generation_digest != queue.queue_generation_digest
+            observation.queue_configuration_digest != queue.queue_configuration_digest
             or observation.protection_manifest_digest != queue.protection_manifest_digest
         ):
             raise ProtectedMainProviderError("admission queue/protection evidence drift")

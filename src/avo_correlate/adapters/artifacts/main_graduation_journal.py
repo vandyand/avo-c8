@@ -2361,8 +2361,55 @@ class MainGraduationJournal:
             raise MainGraduationJournalError("release issuer binding differs from controller root")
 
     def _verify_intent_lease(self, intent: MainGraduationIntent) -> None:
-        """Reparse durable lease evidence before it can authorize preparation."""
-        evidence = intent.lease_evidence
+        """Reparse the one authoritative lease before preparation.
+
+        A v2 intent must point at the durable Phase-A record.  The old nested
+        C2 evidence remains readable only when no Phase-A lease exists; this
+        prevents an old intent from being paired with a newer lease epoch.
+        """
+        if getattr(intent, "schema_version", 2) != 2:
+            raise MainGraduationJournalError("legacy C2 intent schema is not accepted by C4")
+        record = getattr(intent, "lease_evidence_record", None)
+        if record is None and isinstance(
+            getattr(intent, "lease_evidence", None), MainLeaseEvidenceRecord
+        ):
+            record = intent.lease_evidence
+        if record is not None:
+            prior = self._read("lease-evidence-record", intent.operation_id)
+            if prior is None:
+                raise MainGraduationJournalError(
+                    "C4 intent requires durable Phase-A lease evidence"
+                )
+            durable = cast(MainLeaseEvidenceRecord, prior[0])
+            reference = intent.lease_evidence_artifact
+            if (
+                canonical_bytes(durable) != canonical_bytes(record)
+                or durable.operation_id != intent.operation_id
+                or durable.repository_digest != intent.repository_digest
+                or durable.target_ref != intent.target_ref
+                or durable.owner != intent.lease_identity
+                or durable.lease_digest != intent.lease_digest
+                or durable.lease_epoch_digest != intent.lease_epoch_digest
+                or durable.policy_epoch != intent.policy_epoch
+                or reference.role != "main-graduation-lease-evidence-record"
+                or reference.media_type
+                != "application/vnd.avo.main-graduation-lease-evidence-record+json"
+                or reference.digest != canonical_digest(durable)
+                or reference.size_bytes != len(canonical_bytes(durable))
+            ):
+                raise MainGraduationJournalError("intent durable lease evidence binding differs")
+            self._verify_lease_authority(durable)
+            return
+
+        # Legacy model-constructed values are useful to historical tests and
+        # recovery inspection, but are not allowed to cross into Phase-A.
+        if self._read("lease-evidence-record", intent.operation_id) is not None:
+            raise MainGraduationJournalError(
+                "legacy C2 intent cannot bind durable Phase-A lease evidence"
+            )
+        evidence = getattr(intent, "lease_evidence", None)
+        if evidence is None:
+            raise MainGraduationJournalError("intent lease evidence is missing")
         reference = intent.lease_evidence_artifact
         if (
             evidence.operation_id != intent.operation_id
@@ -2379,11 +2426,11 @@ class MainGraduationJournal:
             parsed = json.loads(raw.decode("utf-8"), object_pairs_hook=_strict_pairs)
             if canonical_bytes(parsed) != raw:
                 raise ValueError("lease evidence is not canonical JSON")
-            durable = MainLeaseEvidence.model_validate(parsed)
+            durable_legacy = MainLeaseEvidence.model_validate(parsed)
         except (OSError, ValueError, TypeError, UnicodeError, json.JSONDecodeError) as exc:
             raise MainGraduationJournalError("intent lease evidence is unverifiable") from exc
         if (
-            canonical_bytes(durable) != canonical_bytes(evidence)
+            canonical_bytes(durable_legacy) != canonical_bytes(evidence)
             or reference.digest != _digest_bytes(raw)
             or reference.size_bytes != len(raw)
         ):
@@ -2410,6 +2457,8 @@ class MainGraduationJournal:
             raise MainGraduationJournalError("preparation requires durable plan and intent")
         plan = cast(MainGraduationPlan, plan_prior[0])
         intent = cast(MainGraduationIntent, intent_prior[0])
+        lease_prior = self._read("lease-evidence-record", preparation.operation_id)
+        lease = cast(MainLeaseEvidenceRecord, lease_prior[0]) if lease_prior is not None else None
         composition = plan.composition
         if (
             preparation.plan_digest != canonical_digest(plan)
@@ -2438,6 +2487,18 @@ class MainGraduationJournal:
             or preparation.lease_digest != intent.lease_digest
             or preparation.policy_epoch != intent.policy_epoch
             or preparation.policy_epoch != plan.policy_epoch
+            or (
+                lease is not None
+                and (
+                    preparation.lease_identity != lease.owner
+                    or preparation.lease_digest != lease.lease_digest
+                    or preparation.policy_epoch != lease.policy_epoch
+                    or intent.lease_identity != lease.owner
+                    or intent.lease_digest != lease.lease_digest
+                    or intent.lease_epoch_digest != lease.lease_epoch_digest
+                    or intent.policy_epoch != lease.policy_epoch
+                )
+            )
         ):
             raise MainGraduationJournalError("preparation plan/intent binding differs")
         if re.fullmatch(r"refs/heads/avo/candidate/[0-9a-f]{64}", intent.candidate_ref) is None:

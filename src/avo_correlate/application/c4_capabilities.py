@@ -17,6 +17,7 @@ from avo_correlate.contracts.base import (
 from avo_correlate.contracts.main_graduation import (
     GitObject,
     MainMutationStage,
+    MainQueueConfigurationObservation,
     MainRef,
     main_release_external_key,
     main_stage_identity_digest,
@@ -107,6 +108,7 @@ class StageBound(C4Request):
     external_key: NonEmptyString
     external_identity: Sha256Digest
     queue_generation_digest: Sha256Digest | None = None
+    queue_configuration_digest: Sha256Digest | None = None
     _exclude_external: ClassVar[frozenset[str]] = frozenset()
 
     def _object(self) -> dict[str, Any]:
@@ -129,8 +131,28 @@ class StageBound(C4Request):
 
     @model_validator(mode="after")
     def valid_identity(self) -> Self:
-        if (self.stage in _QUEUE) != (self.queue_generation_digest is not None):
-            raise ValueError("queue generation presence does not match stage")
+        post_queue_observation = self.__class__.__name__ in {
+            "QueueObservationRequest",
+            "QueueObservationResult",
+        }
+        if self.stage in {"admission_check", "queue_enqueue"} and not post_queue_observation:
+            if self.queue_configuration_digest is None:
+                raise ValueError("pre-enqueue queue configuration is required")
+            if self.queue_generation_digest is not None:
+                raise ValueError("pre-enqueue stages cannot bind a queue generation")
+        elif self.stage in {"merge_group_hold", "release_transition"}:
+            if self.queue_generation_digest is None:
+                raise ValueError("post-enqueue queue generation is required")
+        elif post_queue_observation:
+            if self.queue_generation_digest is None:
+                raise ValueError("post-enqueue queue generation is required")
+            if self.queue_configuration_digest is None:
+                raise ValueError("post-enqueue queue configuration is required")
+        elif not post_queue_observation and (
+            self.queue_generation_digest is not None
+            or self.queue_configuration_digest is not None
+        ):
+            raise ValueError("queue identity is not valid for this stage")
         if self.external_key != self._key():
             raise ValueError("external key mismatch")
         expected = main_stage_identity_digest(
@@ -224,6 +246,25 @@ class PullRequestReconcileRequest(StageRequest):
             or self.head_tree == self.base_tree
         ):
             raise ValueError("reconcile target is not exact")
+        return self
+
+
+class PullRequestLookupRequest(StageRequest):
+    """Read-only lookup target for an operation-derived candidate branch."""
+
+    stage: Literal["pull_request_open"] = "pull_request_open"
+    candidate_ref: NonEmptyString
+    candidate_commit: GitObject
+    candidate_tree: GitObject
+    base_commit: GitObject
+    base_tree: GitObject
+
+    @model_validator(mode="after")
+    def lookup(self) -> Self:
+        if self.candidate_ref != _candidate(self.operation_id):
+            raise ValueError("pull request lookup ref is not operation-derived")
+        if self.candidate_commit == self.base_commit or self.candidate_tree == self.base_tree:
+            raise ValueError("pull request lookup head must differ from base")
         return self
 
 
@@ -514,7 +555,8 @@ class AdmissionObservationRequest(AdmissionIssueRequest, StageObservationRequest
 
 
 class QueueObservationRequest(QueueEnqueueRequest, StageObservationRequest):
-    pass
+    """Read-only evidence of the singleton created by enqueue."""
+
 
 
 class GroupHoldObservationRequest(GroupHoldIssueRequest, StageObservationRequest):
@@ -592,8 +634,20 @@ class PullRequestReconciliationCapability(Protocol):
     ) -> PullRequestObservationResult: ...
 
 
+class PullRequestLookupCapability(Protocol):
+    def lookup_pull_request(
+        self, request: PullRequestLookupRequest
+    ) -> PullRequestObservationResult: ...
+
+
 class QueueEnqueueCapability(Protocol):
     def enqueue(self, request: QueueEnqueueRequest) -> QueueEnqueueResult: ...
+
+
+class QueueConfigurationObservationCapability(Protocol):
+    """Read-only pre-enqueue queue policy capability."""
+
+    def observe_queue_configuration(self) -> MainQueueConfigurationObservation: ...
 
 
 class AdmissionIssuerCapability(Protocol):
@@ -609,6 +663,8 @@ class ReleaseIssuerCapability(Protocol):
 
 
 class ReadOnlyObservationCapability(Protocol):
+    def observe_queue_configuration(self) -> MainQueueConfigurationObservation: ...
+
     def observe_candidate(
         self, request: CandidateObservationRequest
     ) -> CandidateObservationResult: ...

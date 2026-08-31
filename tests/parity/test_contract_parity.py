@@ -25,6 +25,7 @@ def test_checked_in_schemas_match_generation(tmp_path: Path) -> None:
         "MainCompletionPackage.v2.schema.json",
         "MainQueueAdmissionObservation.v1.schema.json",
         "MainQueueObservation.v1.schema.json",
+        "MainGraduationIntent.v1.schema.json",
     }
     committed = {
         item.name: item.read_bytes()
