@@ -121,7 +121,8 @@ def _canonical_model(model: StrictModel) -> StrictModel:
 
 def _digest_record(model: type[StrictModel], values: dict[str, Any], field: str) -> StrictModel:
     values = dict(values)
-    values[field] = canonical_digest({key: value for key, value in values.items() if key != field})
+    probe = model.model_construct(**values, **{field: "sha256:" + "0" * 64})
+    values[field] = canonical_digest(probe.model_dump(exclude={field}, mode="json"))
     return model.model_validate(values)
 
 
@@ -136,6 +137,17 @@ def _same_binding(intent: MainMutationIntent, request: StageRequest) -> None:
         or request.external_identity != intent.external_identity.identity_digest
     ):
         raise C4StageExecutionError("stage request does not exactly match mutation intent")
+
+
+def _same_observation_binding(intent: MainMutationIntent, request: StageObservationRequest) -> None:
+    if (
+        request.operation_id != intent.operation_id
+        or request.repository_digest != intent.repository_digest
+        or request.target_ref != intent.target_ref
+        or request.stage != intent.stage
+        or request.lease_epoch_digest != intent.lease_epoch_digest
+    ):
+        raise C4StageExecutionError("observation request does not match mutation intent")
 
 
 class C4StageExecutor:
@@ -157,7 +169,7 @@ class C4StageExecutor:
         lease_fence: StageLeaseFence,
         capability: object,
         observation_capability: ReadOnlyObservationCapability | None = None,
-        authority_verifier: object | None = None,
+        authority_verifier: StageAuthorityVerifier,
         provider_identity: str | None = None,
         provider_api_version: str | None = None,
     ) -> None:
@@ -212,7 +224,12 @@ class C4StageExecutor:
                 return prior
             raise C4StageExecutionError("mutation intent was not durably recorded") from exc
 
-        self._last_moment_authority(intent, request)
+        try:
+            self._last_moment_authority(intent, request)
+        except C4StageExecutionError:
+            raise
+        except Exception as exc:
+            raise C4StageExecutionError("last-moment authority check failed") from exc
         try:
             result = self._dispatch(request)
         except Exception as exc:
@@ -318,7 +335,7 @@ class C4StageExecutor:
         expected = _OBSERVATION_REQUESTS.get(intent.stage)
         if expected is None or not isinstance(request, expected):
             raise C4StageExecutionError("observation request type does not match stage")
-        _same_binding(intent, request)
+        _same_observation_binding(intent, request)
         if self.observation_capability is None:
             raise C4StageExecutionError("read-only observation capability is missing")
 
@@ -365,12 +382,12 @@ class C4StageExecutor:
         if result.external_identity != intent.external_identity.identity_digest:
             raise C4StageExecutionError("provider result external identity differs")
         verifier = self.authority_verifier
-        if verifier is not None:
-            fn = getattr(verifier, "verify_stage_result", None) or getattr(
-                verifier, "verify_mutation_result", None
-            )
-            if callable(fn):
-                fn(result, request, intent)
+        fn = getattr(verifier, "verify_stage_result", None) or getattr(
+            verifier, "verify_mutation_result", None
+        )
+        if not callable(fn):
+            raise C4StageExecutionError("controller stage-result verifier is missing")
+        fn(result, request, intent)
 
     def _verify_receipt_authority(
         self, receipt: MainMutationReceipt, intent: MainMutationIntent
@@ -392,15 +409,15 @@ class C4StageExecutor:
     ) -> None:
         if result.stage != intent.stage or result.request_digest != request.request_digest:
             raise C4StageExecutionError("provider observation identity differs from request")
-        if result.external_identity != intent.external_identity.identity_digest:
-            raise C4StageExecutionError("provider observation external identity differs")
+        if result.external_identity != request.external_identity:
+            raise C4StageExecutionError("provider observation identity differs from request")
         verifier = self.authority_verifier
-        if verifier is not None:
-            fn = getattr(verifier, "verify_stage_observation", None) or getattr(
-                verifier, "verify_observation", None
-            )
-            if callable(fn):
-                fn(result, request, intent)
+        fn = getattr(verifier, "verify_stage_observation", None) or getattr(
+            verifier, "verify_observation", None
+        )
+        if not callable(fn):
+            raise C4StageExecutionError("controller observation verifier is missing")
+        fn(result, request, intent)
 
     def _receipt_values(self, intent: MainMutationIntent) -> dict[str, Any]:
         return {

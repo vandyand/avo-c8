@@ -19,15 +19,22 @@ OBJECT = "a" * 40
 
 
 class FakeTransport:
-    def __init__(self, response: tuple[int, Any]) -> None:
+    def __init__(
+        self, response: tuple[int, Any], *, get_response: tuple[int, Any] | None = None
+    ) -> None:
         self.response = response
+        self.get_response = get_response
         self.calls: list[tuple[str, str, Mapping[str, Any] | None]] = []
 
     def __call__(
         self, method: str, url: str, body: Any, _headers: Mapping[str, str]
     ) -> tuple[int, Any]:
         self.calls.append((method, url, body))
-        return self.response
+        return (
+            self.get_response
+            if method == "GET" and self.get_response is not None
+            else self.response
+        )
 
 
 def adapter(
@@ -90,21 +97,26 @@ def test_candidate_publication_uses_exact_ref_endpoint_and_body() -> None:
                 "ref": "refs/heads/avo/candidate/" + "a" * 64,
                 "object": {"type": "commit", "sha": OBJECT},
             },
-        )
+        ),
+        get_response=(404, {}),
     )
     value, _ = adapter(source=transport)
     result = value.publish_candidate(candidate_request())
     assert result.outcome == "applied"
-    assert transport.calls[0][0] == "POST"
-    assert transport.calls[0][1].endswith("/repos/owner/repo/git/refs")
-    assert transport.calls[0][2] == {
+    post = transport.calls[1]
+    assert transport.calls[0][0] == "GET"
+    assert post[0] == "POST"
+    assert post[1].endswith("/repos/owner/repo/git/refs")
+    assert post[2] == {
         "ref": "refs/heads/avo/candidate/" + "a" * 64,
         "sha": OBJECT,
     }
 
 
 def test_candidate_4xx_is_authoritative_rejection_without_dispatch() -> None:
-    transport = FakeTransport((422, {"message": "Reference already exists"}))
+    transport = FakeTransport(
+        (422, {"message": "Reference already exists"}), get_response=(404, {})
+    )
     value, _ = adapter(source=transport)
     result = value.publish_candidate(candidate_request())
     assert result.outcome == "rejected"
