@@ -342,27 +342,32 @@ class C4StageExecutor:
             self._check_receipt_binding(prior, intent)
             return prior
 
-        # An intent written by an earlier runner without a receipt is a
-        # durable indication that dispatch ownership was already claimed (or
-        # that its crash point is unknown).  It must go through recovery;
-        # allowing execute() to continue here would permit a duplicate write.
+        # Intent persistence and provider-dispatch ownership are separate
+        # durable boundaries.  An intent without the create-once owner marker
+        # proves that no runner crossed the provider boundary, so a restarted
+        # runner may safely compete for that marker.  Once the marker exists,
+        # recovery is read-only even when the receipt is missing.
         existing_intent = self.journal.read_mutation_intent(intent.intent_digest)
         if existing_intent is not None:
             if existing_intent[0] != intent:
                 raise C4StageExecutionError("durable mutation intent differs")
-            raise C4StageExecutionError("mutation intent has no receipt; recovery is required")
+            if self.journal.read_mutation_dispatch_owner(intent.intent_digest) is not None:
+                raise C4StageExecutionError(
+                    "mutation dispatch owner exists without receipt; recovery is required"
+                )
 
         self._check_prerequisites(intent)
-        try:
-            self.journal.record_mutation_intent(intent)
-        except Exception as exc:
-            # A create-once winner is safe to replay; an occupied target is
-            # deliberately surfaced as a fail-closed execution error.
-            prior = self._read_receipt_for_intent(intent.intent_digest)
-            if prior is not None:
-                self._check_receipt_binding(prior, intent)
-                return prior
-            raise C4StageExecutionError("mutation intent was not durably recorded") from exc
+        if existing_intent is None:
+            try:
+                self.journal.record_mutation_intent(intent)
+            except Exception as exc:
+                # A create-once winner is safe to replay; an occupied target is
+                # deliberately surfaced as a fail-closed execution error.
+                prior = self._read_receipt_for_intent(intent.intent_digest)
+                if prior is not None:
+                    self._check_receipt_binding(prior, intent)
+                    return prior
+                raise C4StageExecutionError("mutation intent was not durably recorded") from exc
 
         try:
             self._last_moment_authority(intent, request)

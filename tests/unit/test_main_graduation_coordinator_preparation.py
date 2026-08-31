@@ -22,6 +22,7 @@ from avo_correlate.application.c4_capabilities import (
     PullRequestCreateResult,
     PullRequestObservationResult,
     QueueEnqueueResult,
+    QueueObservationResult,
 )
 from avo_correlate.application.main_graduation_coordinator import (
     MainGraduationPreparationCoordinator,
@@ -168,7 +169,18 @@ class Provider:
     def observe_protection(self) -> MainProtectionManifest:
         return self.protection
 
-    def observe_queue(self) -> MainQueueObservation:
+    def observe_queue(
+        self, request: Any | None = None
+    ) -> MainQueueObservation | QueueObservationResult:
+        if request is not None:
+            return QueueObservationResult.build(
+                **request.model_dump(
+                    exclude={"request_digest", "external_key", "external_identity"}
+                ),
+                outcome="observed",
+                evidence_digest=CONFIG,
+                observed_at=NOW,
+            )
         self.queue_reads += 1
         if self.journal is None:
             raise AssertionError("journal was not configured")
@@ -357,8 +369,13 @@ class ForeignPrObservationProvider(CrashOnPullRequestProvider):
 class ChangedQueueGenerationProvider(Provider):
     """Model the required generation change when the PR enters the queue."""
 
-    def observe_queue(self) -> MainQueueObservation:
-        observed = super().observe_queue()
+    def observe_queue(
+        self, request: Any | None = None
+    ) -> MainQueueObservation | QueueObservationResult:
+        observed = super().observe_queue(request)
+        if request is not None:
+            return observed
+        assert isinstance(observed, MainQueueObservation)
         return observed.model_copy(
             update={"queue_generation_digest": canonical_digest({"generation": "changed"})}
         )
@@ -367,8 +384,13 @@ class ChangedQueueGenerationProvider(Provider):
 class ForeignPostQueueProvider(Provider):
     """Return singleton evidence bound to a different queue configuration."""
 
-    def observe_queue(self) -> MainQueueObservation:
-        observed = super().observe_queue()
+    def observe_queue(
+        self, request: Any | None = None
+    ) -> MainQueueObservation | QueueObservationResult:
+        observed = super().observe_queue(request)
+        if request is not None:
+            return observed
+        assert isinstance(observed, MainQueueObservation)
         return observed.model_copy(update={"queue_configuration_digest": POLICY})
 
 

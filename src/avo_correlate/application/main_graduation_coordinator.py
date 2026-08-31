@@ -1047,7 +1047,17 @@ class MainGraduationPreparationCoordinator:
             effective = executor.execute_effective(intent, request)
         else:
             receipt = self._receipt_for_intent(intent.intent_digest)
-            if receipt is None or receipt.outcome not in {"applied", "already_applied", "rejected"}:
+            dispatch_owner = self.journal.read_mutation_dispatch_owner(intent.intent_digest)
+            if receipt is None and dispatch_owner is None:
+                # The process stopped after the durable intent but before the
+                # irreversible local dispatch marker.  It is safe to compete
+                # for that marker and dispatch exactly once.
+                effective = executor.execute_effective(intent, request)
+            elif receipt is None or receipt.outcome not in {
+                "applied",
+                "already_applied",
+                "rejected",
+            }:
                 observation = self._observation_request(intent, request)
                 effective = executor.recover_effective(
                     intent, observation, original_request=request

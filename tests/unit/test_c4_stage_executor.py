@@ -850,10 +850,12 @@ def test_rejection_expiry_stale_lease_and_existing_intent_fail_closed(tmp_path: 
     assert provider.calls == 0
     journal3, intent3, request3, authority3 = _fixture(tmp_path / "three")
     journal3.record_mutation_intent(intent3)
-    with pytest.raises(C4StageExecutionError, match="recovery"):
-        _executor(journal3, CandidateProvider(), Clock(), Fence(), authority3).execute(
-            intent3, request3
-        )
+    intent_only_provider = CandidateProvider()
+    recovered = _executor(
+        journal3, intent_only_provider, Clock(), Fence(), authority3
+    ).execute(intent3, request3)
+    assert recovered.outcome == "applied"
+    assert intent_only_provider.calls == 1
 
 
 def test_transport_timeout_persists_ambiguity_and_fence(tmp_path: Path) -> None:
