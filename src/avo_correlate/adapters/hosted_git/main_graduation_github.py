@@ -594,6 +594,8 @@ class GitHubMainGraduationAdapter:
             or parsed["base_commit"] != base_commit
             or parsed["state"] != "open"
             or parsed["draft"]
+            or parsed["merged"] is not False
+            or parsed["head_commit"] == parsed["base_commit"]
         ):
             raise _Precondition("pull request is not the exact open non-draft candidate")
         self._read_commit(role, head_commit, expected_tree=head_tree)
@@ -828,8 +830,9 @@ class GitHubMainGraduationAdapter:
         )
         state = _str(raw, "state", "pull request")
         draft = raw.get("draft")
-        if not isinstance(draft, bool):
-            raise GitHubMainGraduationError("malformed pull request draft flag")
+        merged = raw.get("merged")
+        if not isinstance(draft, bool) or not isinstance(merged, bool):
+            raise GitHubMainGraduationError("malformed pull request draft or merged flag")
         return {
             "number": n,
             "url": url,
@@ -839,6 +842,7 @@ class GitHubMainGraduationAdapter:
             "head_ref": head_ref if head_ref.startswith("refs/") else "refs/heads/" + head_ref,
             "state": state,
             "draft": draft,
+            "merged": merged,
             "node_id": raw.get("node_id"),
         }
 
@@ -1152,6 +1156,7 @@ class GitHubMainGraduationAdapter:
                 pr_number != number
                 or _git(entry_base, "queue base") != base
                 or _git(entry_head, "queue head") != head
+                or entry_head == entry_base
             ):
                 raise _Precondition("queue singleton topology differs")
             if entry.get("solo") is not True:
@@ -1432,8 +1437,15 @@ class GitHubMainGraduationAdapter:
             or admission.pull_request_tree != request.pull_request_tree
             or admission.base_commit != request.base_commit
             or admission.base_tree != request.base_tree
+            or admission.queue_generation_digest != request.queue_generation_digest
         ):
             raise _Precondition("durable admission identity differs from current stage")
+        downstream_preparation = getattr(request, "preparation_authorization_digest", None)
+        if (
+            downstream_preparation is not None
+            and admission.preparation_authorization_digest != downstream_preparation
+        ):
+            raise _Precondition("durable admission preparation authorization differs")
         principal = cast(GitHubPrincipalBinding, self._principals["admission"])
         if (
             admission.issuer_identity,

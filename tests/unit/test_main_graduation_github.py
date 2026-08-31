@@ -186,6 +186,7 @@ def preparation_reads(
         "html_url": request.pull_request_url,
         "state": "open",
         "draft": False,
+        "merged": False,
         "node_id": "PR_node",
         "base": {
             "ref": "main",
@@ -488,3 +489,28 @@ def test_queue_generation_projection_matches_protected_main_provider() -> None:
     ).observe_queue()
     assert adapter_state["queue_manifest_digest"] == protected.queue_manifest_digest
     assert adapter_state["queue_generation_digest"] == protected.queue_generation_digest
+
+
+@pytest.mark.parametrize("field, value", [("merged", True), ("head_sha", "b" * 40)])
+def test_authoritative_pr_rejects_merged_or_equal_head_base(field: str, value: Any) -> None:
+    request = queue_request()
+    transport = preparation_reads(request, (200, {"total_count": 0, "check_runs": []}))
+    pr = transport.responses["/pulls/1"][1]
+    assert isinstance(pr, dict)
+    if field == "merged":
+        pr["merged"] = value
+    else:
+        head = pr["head"]
+        assert isinstance(head, dict)
+        head["sha"] = value
+    value_adapter, _ = adapter(preparation=transport)
+    with pytest.raises(GitHubMainGraduationRejected):
+        value_adapter._authoritative_pr(
+            "preparation",
+            1,
+            candidate_ref=f"refs/heads/avo/candidate/{request.operation_id.removeprefix('sha256:')}",
+            head_commit=value if field == "head_sha" else request.pull_request_head,
+            head_tree=request.base_tree if field == "head_sha" else request.pull_request_tree,
+            base_commit=request.base_commit,
+            base_tree=request.base_tree,
+        )
