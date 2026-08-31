@@ -17,10 +17,13 @@ from avo_correlate.adapters.artifacts.main_graduation_journal import MainGraduat
 from avo_correlate.application.c4_capabilities import (
     AdmissionIssueRequest,
     AdmissionObservationRequest,
+    AdmissionObservationResult,
     CandidateObservationRequest,
     CandidatePublicationRequest,
     PullRequestCreateRequest,
+    PullRequestCreateResult,
     PullRequestObservationRequest,
+    PullRequestObservationResult,
     QueueEnqueueRequest,
     QueueObservationRequest,
     StageMutationResult,
@@ -118,38 +121,6 @@ class _CaptureCapability:
         return invoke
 
 
-class _BasicAuthority:
-    """Minimal controller-side verifier for providers without a richer attester.
-
-    The executor still enforces exact request/result identity.  A supplied
-    authority verifier is preferred and is used for all result and observation
-    boundaries.
-    """
-
-    def verify_stage_result(
-        self, result: StageMutationResult, request: StageRequest, intent: MainMutationIntent
-    ) -> None:
-        if (
-            result.request_digest != request.request_digest
-            or result.external_identity != intent.external_identity.identity_digest
-        ):
-            raise MainGraduationPreparationError("provider result is not bound to exact request")
-
-    def verify_stage_observation(
-        self,
-        result: StageObservationResult,
-        request: Any,
-        intent: MainMutationIntent,
-    ) -> None:
-        if (
-            result.request_digest != request.request_digest
-            or result.external_identity != request.external_identity
-        ):
-            raise MainGraduationPreparationError(
-                "provider observation is not bound to exact request"
-            )
-
-
 def _digest_intent(values: dict[str, Any]) -> MainMutationIntent:
     probe = MainMutationIntent.model_construct(**values, intent_digest="sha256:" + "0" * 64)
     values = dict(values)
@@ -190,12 +161,13 @@ class MainGraduationPreparationCoordinator:
         clock: TrustedClock,
         lease_fence: StageLeaseFence,
         provider: object | None = None,
+        protected_main_provider: object | None = None,
         candidate_capability: object | None = None,
         pull_request_capability: object | None = None,
         admission_capability: object | None = None,
         queue_capability: object | None = None,
         observation_capability: object | None = None,
-        authority_verifier: StageAuthorityVerifier | None = None,
+        authority_verifier: StageAuthorityVerifier,
         attester: object | None = None,
         provider_identity: str | None = None,
         provider_api_version: str | None = None,
@@ -213,16 +185,21 @@ class MainGraduationPreparationCoordinator:
             "queue_enqueue": queue_capability or self.provider,
         }
         self.observation_capability = observation_capability or self.provider
-        self.authority_verifier = authority_verifier or cast(
-            StageAuthorityVerifier, _BasicAuthority()
-        )
+        self.read_provider = protected_main_provider or self.provider
+        if not callable(getattr(authority_verifier, "verify_stage_result", None)) or not callable(
+            getattr(authority_verifier, "verify_stage_observation", None)
+        ):
+            raise ValueError("controller-owned stage authority verifier is required")
+        if attester is None or not callable(getattr(attester, "attest_admission", None)):
+            raise ValueError("controller-owned main graduation attester is required")
+        self.authority_verifier = authority_verifier
         self.attester = attester
         self._last_stage_results: dict[str, StageMutationResult] = {}
         self.provider_identity = provider_identity or cast(
-            str | None, getattr(self.provider, "provider_identity", None)
+            str | None, getattr(self.read_provider, "provider_identity", None)
         )
         self.provider_api_version = provider_api_version or cast(
-            str | None, getattr(self.provider, "provider_api_version", None)
+            str | None, getattr(self.read_provider, "provider_api_version", None)
         )
         if not self.provider_identity or not self.provider_api_version:
             raise ValueError("provider identity and API version are required")
@@ -243,6 +220,7 @@ class MainGraduationPreparationCoordinator:
                 candidate_commit=plan.composition.candidate_commit,
                 preparation_authorization_digest=prep.authorization_digest,
             )
+            self._preflight(plan, prep, lease)
             candidate_intent, receipt = self._run_stage(
                 plan, prep, lease, candidate_request, None, "candidate_publication"
             )
@@ -258,7 +236,6 @@ class MainGraduationPreparationCoordinator:
                     reason=receipt.outcome,
                 )
 
-            pr = self._resolve_pr(candidate_request, receipt)
             pr_request = PullRequestCreateRequest.build(
                 operation_id=operation_id,
                 repository_digest=plan.repository_digest,
@@ -270,6 +247,7 @@ class MainGraduationPreparationCoordinator:
                 base_tree=plan.composition.base_tree,
                 preparation_authorization_digest=prep.authorization_digest,
             )
+            self._preflight(plan, prep, lease)
             pr_intent, receipt = self._run_stage(
                 plan, prep, lease, pr_request, candidate_intent, "pull_request_open"
             )
@@ -282,14 +260,30 @@ class MainGraduationPreparationCoordinator:
                     "pull_request_open",
                     receipts,
                     intents,
-                    pr=pr,
                     reason=receipt.outcome,
                 )
-            pr = self._resolve_pr(pr_request, receipt, prior=pr)
+            pr = self._resolve_pr(pr_request, receipt)
             self._verify_pr(plan, pr)
 
             queue = self._read_queue(operation_id)
             protection = self._read_protection(operation_id)
+            admission_seed = canonical_digest(
+                {
+                    "operation_id": operation_id,
+                    "stage": "admission_check",
+                    "repository_digest": plan.repository_digest,
+                    "queue_generation_digest": queue.queue_generation_digest,
+                    "pull_request_number": pr.number,
+                    "pull_request_head": pr.head_commit,
+                    "pull_request_tree": pr.head_tree,
+                    "base_commit": pr.base_commit,
+                    "base_tree": pr.base_tree,
+                    "preparation_authorization_digest": prep.authorization_digest,
+                    "issuer_identity": protection.isolated_release_issuer,
+                    "issuer_app_id": protection.release_issuer_app_id,
+                    "issuer_isolation_digest": protection.issuer_isolation_digest,
+                }
+            )
             admission_request = AdmissionIssueRequest.build(
                 operation_id=operation_id,
                 repository_digest=plan.repository_digest,
@@ -301,12 +295,13 @@ class MainGraduationPreparationCoordinator:
                 base_commit=pr.base_commit,
                 base_tree=pr.base_tree,
                 preparation_authorization_digest=prep.authorization_digest,
-                admission_run_id=self._run_id(operation_id, "admission"),
-                admission_nonce=self._nonce(operation_id, "admission"),
+                admission_run_id="avo-main-admission-" + admission_seed.removeprefix("sha256:"),
+                admission_nonce=main_stage_nonce(admission_seed),
                 issuer_identity=protection.isolated_release_issuer,
                 issuer_app_id=protection.release_issuer_app_id,
                 issuer_isolation_digest=protection.issuer_isolation_digest,
             )
+            self._preflight(plan, prep, lease)
             admission_intent, receipt = self._run_stage(
                 plan, prep, lease, admission_request, pr_intent, "admission_check"
             )
@@ -347,6 +342,7 @@ class MainGraduationPreparationCoordinator:
                 preparation_authorization_digest=prep.authorization_digest,
                 admission_observation_digest=admission_ref_digest,
             )
+            self._preflight(plan, prep, lease)
             queue_intent, receipt = self._run_stage(
                 plan, prep, lease, queue_request, admission_intent, "queue_enqueue"
             )
@@ -357,6 +353,8 @@ class MainGraduationPreparationCoordinator:
                 if receipt.outcome in {"applied", "already_applied"}
                 else "reconciliation_required"
             )
+            if state == "queued":
+                self._observe_queued(queue_request, plan, queue, pr)
             return self._result(
                 operation_id,
                 state,
@@ -418,41 +416,38 @@ class MainGraduationPreparationCoordinator:
         self.journal.assert_lease_evidence(request)
         if lease.expires_at <= self.clock.now():
             raise MainGraduationPreparationError("main lease has expired")
-        observe_main = getattr(self.provider, "observe_main", None)
-        if callable(observe_main):
-            main = observe_main()
-            if (
-                getattr(main, "repository_digest", None) != plan.repository_digest
-                or getattr(main, "ref", None) != plan.target_ref
-                or getattr(main, "commit", None) != plan.composition.base_commit
-                or getattr(main, "tree", None) != plan.composition.base_tree
-            ):
-                raise MainGraduationPreparationError("protected main base is stale or changed")
+        observe_main = getattr(self.read_provider, "observe_main", None)
+        if not callable(observe_main):
+            raise MainGraduationPreparationError("authoritative main observation is missing")
+        main = observe_main()
+        if (
+            getattr(main, "repository_digest", None) != plan.repository_digest
+            or getattr(main, "ref", None) != plan.target_ref
+            or getattr(main, "commit", None) != plan.composition.base_commit
+            or getattr(main, "tree", None) != plan.composition.base_tree
+        ):
+            raise MainGraduationPreparationError("protected main base is stale or changed")
         queue = self._read_queue(plan.operation_id)
         protection = self._read_protection(plan.operation_id)
-        fresh_protection = getattr(self.provider, "observe_protection", None)
-        if callable(fresh_protection):
-            try:
-                observed = fresh_protection()
-            except TypeError:
-                observed = None
-            if observed is not None and (
-                observed.manifest_digest != protection.manifest_digest
-                or observed.protection_epoch != protection.protection_epoch
-            ):
-                raise MainGraduationPreparationError("protected-main policy is stale")
-        fresh_queue = getattr(self.provider, "observe_queue", None)
-        if callable(fresh_queue):
-            try:
-                observed = fresh_queue()
-            except TypeError:
-                observed = None
-            if observed is not None and (
-                observed.queue_generation_digest != queue.queue_generation_digest
-                or observed.queue_manifest_digest != queue.queue_manifest_digest
-                or observed.protection_manifest_digest != queue.protection_manifest_digest
-            ):
-                raise MainGraduationPreparationError("merge queue generation is stale")
+        fresh_protection = getattr(self.read_provider, "observe_protection", None)
+        if not callable(fresh_protection):
+            raise MainGraduationPreparationError("authoritative protection observation is missing")
+        observed_protection = fresh_protection()
+        if (
+            observed_protection.manifest_digest != protection.manifest_digest
+            or observed_protection.protection_epoch != protection.protection_epoch
+        ):
+            raise MainGraduationPreparationError("protected-main policy is stale")
+        fresh_queue = getattr(self.read_provider, "observe_queue", None)
+        if not callable(fresh_queue):
+            raise MainGraduationPreparationError("authoritative queue observation is missing")
+        observed_queue = fresh_queue()
+        if (
+            observed_queue.queue_generation_digest != queue.queue_generation_digest
+            or observed_queue.queue_manifest_digest != queue.queue_manifest_digest
+            or observed_queue.protection_manifest_digest != queue.protection_manifest_digest
+        ):
+            raise MainGraduationPreparationError("merge queue generation is stale")
 
     def _read_queue(self, operation_id: str) -> MainQueueObservation:
         prior = self.journal.read_queue_observation(operation_id)
@@ -582,11 +577,14 @@ class MainGraduationPreparationCoordinator:
     def _observation_request(self, intent: MainMutationIntent, request: StageRequest) -> Any:
         values = request.model_dump(mode="json")
         values.pop("request_digest", None)
-        values["object_id"] = {
-            "candidate_publication": request.candidate_ref,
-            "admission_check": request.admission_run_id,
-            "queue_enqueue": request.pull_request_url,
-        }.get(request.stage, "unknown")
+        object_ids: dict[str, str] = {}
+        if request.stage == "candidate_publication":
+            object_ids[request.stage] = request.candidate_ref
+        elif request.stage == "admission_check":
+            object_ids[request.stage] = request.admission_run_id
+        elif request.stage == "queue_enqueue":
+            object_ids[request.stage] = request.pull_request_url
+        values["object_id"] = object_ids.get(request.stage, "unknown")
         if request.stage == "pull_request_open":
             pr = self._resolve_pr(request, None)
             values = {
@@ -628,6 +626,8 @@ class MainGraduationPreparationCoordinator:
             return prior
         captured = self._last_stage_results.get("pull_request_open")
         if captured is not None:
+            if not isinstance(captured, PullRequestCreateResult):
+                raise MainGraduationPreparationError("PR result is not typed")
             if bool(getattr(captured, "draft", False)) or str(
                 getattr(captured, "state", "open")
             ).casefold() not in {"open", "opened"}:
@@ -643,57 +643,53 @@ class MainGraduationPreparationCoordinator:
         durable_admission = self.journal.read_queue_admission(request.operation_id)
         if durable_admission is not None:
             evidence = cast(MainQueueAdmissionObservation, durable_admission[0])
-            return _PR(
-                evidence.pull_request_number,
-                evidence.pull_request_url,
-                evidence.head_commit,
-                evidence.head_tree,
-                evidence.base_commit,
-                evidence.base_tree,
-            )
-        # A same-call result is available through the capture proxy only in
-        # _run_stage; restart uses an approved provider lookup seam.
-        finder = next(
-            (
-                getattr(self.provider, name, None)
-                for name in ("find_pull_request", "find_exact_pull_request", "locate_pull_request")
-            ),
-            None,
+            return self._observe_pr(request, evidence.pull_request_number)
+        observe = getattr(self.provider, "observe_pull_request_by_candidate", None)
+        if not callable(observe):
+            raise MainGraduationPreparationError("typed PR recovery protocol is missing")
+        observed = observe(request)
+        if not isinstance(observed, PullRequestObservationResult):
+            raise MainGraduationPreparationError("PR recovery result is not typed")
+        return self._pr_from_observation(observed)
+
+    def _observe_pr(self, request: StageRequest, number: int) -> _PR:
+        observe = getattr(self.observation_capability, "observe_pull_request", None)
+        if not callable(observe):
+            raise MainGraduationPreparationError("read-only PR observation is missing")
+        observed = observe(self._pr_observation_request(request, number))
+        if not isinstance(observed, PullRequestObservationResult):
+            raise MainGraduationPreparationError("PR observation result is not typed")
+        return self._pr_from_observation(observed)
+
+    def _pr_observation_request(
+        self, request: StageRequest, number: int
+    ) -> PullRequestObservationRequest:
+        return PullRequestObservationRequest.build(
+            operation_id=request.operation_id,
+            repository_digest=request.repository_digest,
+            lease_epoch_digest=request.lease_epoch_digest,
+            pull_request_number=number,
+            candidate_ref=request.candidate_ref,
+            head_commit=request.candidate_commit,
+            head_tree=request.candidate_tree,
+            base_commit=request.base_commit,
+            base_tree=request.base_tree,
+            object_id=self._repository_name() + ":pull/" + str(number),
         )
-        if callable(finder):
-            value = finder(request)
-            if isinstance(value, _PR):
-                return value
-            if isinstance(value, Mapping):
-                if bool(value.get("draft", False)) or str(
-                    value.get("state", "open")
-                ).casefold() not in {
-                    "open",
-                    "opened",
-                }:
-                    raise MainGraduationPreparationError("pull request is draft or not open")
-                return _PR(
-                    int(value["number"]),
-                    str(value["url"]),
-                    str(value["head_commit"]),
-                    str(value["head_tree"]),
-                    str(value["base_commit"]),
-                    str(value["base_tree"]),
-                )
-            if bool(getattr(value, "draft", False)) or str(
-                getattr(value, "state", "open")
-            ).casefold() not in {"open", "opened"}:
-                raise MainGraduationPreparationError("pull request is draft or not open")
-            return _PR(
-                int(value.number),
-                str(value.url),
-                str(value.head_commit),
-                str(value.head_tree),
-                str(value.base_commit),
-                str(value.base_tree),
-            )
-        raise MainGraduationPreparationError(
-            "exact pull request identity is unavailable for recovery"
+
+    def _pr_from_observation(self, observed: PullRequestObservationResult) -> _PR:
+        if observed.outcome != "observed":
+            raise MainGraduationPreparationError("PR was not authoritatively observed")
+        repository_url = getattr(self.read_provider, "repository_url", None)
+        if not isinstance(repository_url, str) or not repository_url.startswith("https://"):
+            raise MainGraduationPreparationError("provider PR URL authority is missing")
+        return _PR(
+            observed.pull_request_number,
+            repository_url.rstrip("/") + "/pull/" + str(observed.pull_request_number),
+            observed.head_commit,
+            observed.head_tree,
+            observed.base_commit,
+            observed.base_tree,
         )
 
     def _verify_pr(self, plan: MainGraduationPlan, pr: _PR) -> None:
@@ -740,6 +736,20 @@ class MainGraduationPreparationCoordinator:
             "issuer_isolation_digest": request.issuer_isolation_digest,
             "observed_at": self.clock.now(),
         }
+        observed = self._observe_admission(request)
+        check = self._observe_admission_check(pr.head_commit)
+        if (
+            check.sha != request.pull_request_head
+            or check.run_id != request.admission_run_id
+            or check.nonce != request.admission_nonce
+            or check.app_id != request.issuer_app_id
+            or check.status != "completed"
+            or check.conclusion != "success"
+        ):
+            raise MainGraduationPreparationError("admission check is not exact provider proof")
+        if check.app_id == 15368:
+            raise MainGraduationPreparationError("validation App 15368 cannot issue admission")
+        values["observed_at"] = check.observed_at
         admission = MainQueueAdmissionObservation.model_validate(values)
         prior = self.journal.read_queue_admission(plan.operation_id)
         if prior is not None:
@@ -753,21 +763,81 @@ class MainGraduationPreparationCoordinator:
                     "durable admission differs from exact PR-head proof"
                 )
             return existing
-        fn = getattr(self.attester, "attest_admission", None) if self.attester is not None else None
-        if callable(fn):
-            try:
-                fn(
-                    admission,
-                    self._protected_pr(pr, plan),
-                    queue,
-                    preparation_authorization_digest=prep.authorization_digest,
-                    admission_check=self._admission_check(request),
-                    freshness_cutoff=self.clock.now(),
-                )
-            except TypeError:
-                fn(admission)
-        self.journal.record_queue_admission(admission)
-        return admission
+        del observed
+        validated = self.attester.attest_admission(
+            admission,
+            self._protected_pr(pr, plan),
+            queue,
+            preparation_authorization_digest=prep.authorization_digest,
+            admission_check=check,
+            freshness_cutoff=self.clock.now(),
+        )
+        if not isinstance(validated, MainQueueAdmissionObservation):
+            raise MainGraduationPreparationError("attester did not return typed admission evidence")
+        self.journal.record_queue_admission(validated)
+        return validated
+
+    def _observe_admission(self, request: AdmissionIssueRequest) -> StageObservationResult:
+        observe = getattr(self.observation_capability, "observe_admission", None)
+        if not callable(observe):
+            raise MainGraduationPreparationError("read-only admission observation is missing")
+        observation_request = AdmissionObservationRequest.build(
+            **request.model_dump(exclude={"request_digest", "external_key", "external_identity"}),
+            object_id=request.admission_run_id,
+        )
+        observed = observe(observation_request)
+        if not isinstance(observed, AdmissionObservationResult) or observed.outcome != "observed":
+            raise MainGraduationPreparationError("admission was not authoritatively observed")
+        observed_values = observed.model_dump(mode="json")
+        observed_values.pop("outcome", None)
+        observed_values.pop("evidence_digest", None)
+        observed_values.pop("observed_at", None)
+        expected_values = observation_request.model_dump(mode="json")
+        if observed_values != expected_values:
+            raise MainGraduationPreparationError(
+                "admission observation target differs from request"
+            )
+        return observed
+
+    def _observe_admission_check(self, head: str) -> MainCheckObservation:
+        observe = getattr(self.read_provider, "observe_pr_head_admission_check", None)
+        if not callable(observe):
+            raise MainGraduationPreparationError("provider admission-check observation is missing")
+        check = observe(head, freshness_cutoff=self.clock.now())
+        if not isinstance(check, MainCheckObservation):
+            raise MainGraduationPreparationError("admission-check observation is not typed")
+        return check
+
+    def _observe_queued(
+        self,
+        request: QueueEnqueueRequest,
+        plan: MainGraduationPlan,
+        durable_queue: MainQueueObservation,
+        pr: _PR,
+    ) -> MainQueueObservation:
+        observe = getattr(self.read_provider, "observe_queue", None)
+        if not callable(observe):
+            raise MainGraduationPreparationError("authoritative queue observation is missing")
+        observed = observe()
+        if not isinstance(observed, MainQueueObservation):
+            raise MainGraduationPreparationError("queue observation is not typed")
+        if (
+            observed.repository_digest != plan.repository_digest
+            or observed.target_ref != plan.target_ref
+            or observed.pull_request_number != pr.number
+            or observed.expected_base_commit != pr.base_commit
+            or observed.expected_base_tree != pr.base_tree
+            or observed.expected_group_parents != [pr.base_commit, pr.head_commit]
+            or observed.queue_generation_digest != request.queue_generation_digest
+            or observed.protection_manifest_digest != durable_queue.protection_manifest_digest
+            or observed.protection_epoch != durable_queue.protection_epoch
+            or observed.max_entries_per_group != 1
+            or observed.bypass_allowed
+            or observed.direct_merge_allowed
+            or observed.merge_method != "squash"
+        ):
+            raise MainGraduationPreparationError("queued PR is not exact singleton queue admission")
+        return observed
 
     def _protected_pr(self, pr: _PR, plan: MainGraduationPlan) -> Any:
         from avo_correlate.adapters.hosted_git.protected_main import MainPullRequestObservation
@@ -785,19 +855,6 @@ class MainGraduationPreparationCoordinator:
             "OPEN",
             False,
             self.clock.now(),
-        )
-
-    def _admission_check(self, request: AdmissionIssueRequest) -> MainCheckObservation:
-        return MainCheckObservation(
-            name="avo-main-release",
-            context="avo-main-release",
-            app_id=request.issuer_app_id,
-            sha=request.pull_request_head,
-            status="completed",
-            conclusion="success",
-            run_id=request.admission_run_id,
-            nonce=request.admission_nonce,
-            observed_at=self.clock.now(),
         )
 
     def _result(
@@ -828,21 +885,16 @@ class MainGraduationPreparationCoordinator:
         )
 
     def _repository_name(self) -> str:
-        value = getattr(self.provider, "repository_name", None)
+        value = getattr(self.read_provider, "repository_name", None)
         if isinstance(value, str) and value:
             return value
-        owner, repo = getattr(self.provider, "owner", None), getattr(self.provider, "repo", None)
+        owner, repo = (
+            getattr(self.read_provider, "owner", None),
+            getattr(self.read_provider, "repo", None),
+        )
         if isinstance(owner, str) and isinstance(repo, str):
             return owner + "/" + repo
         return "repository"
-
-    @staticmethod
-    def _run_id(operation_id: str, kind: str) -> str:
-        return "avo-main-" + kind + "-" + operation_id.removeprefix("sha256:")
-
-    @staticmethod
-    def _nonce(operation_id: str, kind: str) -> str:
-        return main_stage_nonce(canonical_digest({"operation_id": operation_id, "stage": kind}))
 
 
 def pr_candidate_ref_from_operation(operation_id: str) -> str:
