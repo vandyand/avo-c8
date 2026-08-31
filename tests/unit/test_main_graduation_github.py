@@ -137,7 +137,7 @@ def queue_request(admission_digest: str = DIGEST) -> QueueEnqueueRequest:
         operation_id=DIGEST,
         repository_digest=github_repository_digest("owner", "repo"),
         lease_epoch_digest=DIGEST,
-        queue_generation_digest=DIGEST,
+        queue_configuration_digest=DIGEST,
         pull_request_number=1,
         pull_request_url="https://github.com/owner/repo/pull/1",
         pull_request_identity=canonical_digest(
@@ -162,7 +162,7 @@ def admission_for(request: QueueEnqueueRequest) -> AdmissionIssueRequest:
         operation_id=request.operation_id,
         repository_digest=request.repository_digest,
         lease_epoch_digest=request.lease_epoch_digest,
-        queue_generation_digest=request.queue_generation_digest,
+        queue_configuration_digest=request.queue_configuration_digest,
         preparation_authorization_digest=request.preparation_authorization_digest,
         pull_request_number=request.pull_request_number,
         pull_request_head=request.pull_request_head,
@@ -201,6 +201,84 @@ def preparation_reads(
     }
     return RoutingTransport(
         {
+            "/graphql": (
+                200,
+                {
+                    "data": {
+                        "repository": {
+                            "mergeQueue": {
+                                "id": "queue-id",
+                                "configuration": {
+                                    "maximumEntriesToBuild": 1,
+                                    "maximumEntriesToMerge": 1,
+                                    "mergeMethod": "SQUASH",
+                                    "mergingStrategy": "ALLGREEN",
+                                },
+                                "entries": {"totalCount": 0, "nodes": []},
+                            }
+                        }
+                    }
+                },
+            ),
+            "/branches/main/protection": (
+                200,
+                {
+                    "required_status_checks": {
+                        "contexts": ["validation", "avo-main-release"],
+                        "checks": [
+                            {"context": "validation", "app_id": 15368},
+                            {"context": "avo-main-release", "app_id": 99},
+                        ],
+                    },
+                    "allow_force_pushes": False,
+                    "allow_deletions": False,
+                },
+            ),
+            "/rules/branches/main": (
+                200,
+                [
+                    {
+                        "ruleset_source_type": "Repository",
+                        "ruleset_source": "owner/repo",
+                        "ruleset_id": 1,
+                        "type": "merge_queue",
+                        "parameters": {
+                            "max_entries_to_merge": 1,
+                            "merge_method": "SQUASH",
+                            "grouping_strategy": "ALLGREEN",
+                        },
+                    }
+                ],
+            ),
+            "/rulesets/1": (
+                200,
+                {
+                    "id": 1,
+                    "name": "main queue",
+                    "source_type": "Repository",
+                    "source": "owner/repo",
+                    "target": "branch",
+                    "enforcement": "active",
+                    "bypass_actors": [],
+                    "rules": [
+                        {
+                            "type": "merge_queue",
+                            "parameters": {
+                                "max_entries_to_merge": 1,
+                                "merge_method": "SQUASH",
+                                "grouping_strategy": "ALLGREEN",
+                            },
+                        }
+                    ],
+                },
+            ),
+            "/git/ref/heads/main": (
+                200,
+                {
+                    "ref": "refs/heads/main",
+                    "object": {"type": "commit", "sha": request.base_commit},
+                },
+            ),
             "/pulls/1": (200, pr),
             f"/git/commits/{request.pull_request_head}": (
                 200,
@@ -383,7 +461,12 @@ def test_enqueue_rejects_unresolved_admission_without_enqueue_write(
     )
     with pytest.raises(GitHubMainGraduationRejected):
         value.enqueue(request)
-    assert not any(method == "POST" for method, _url, _body in transport.calls)
+    assert not any(
+        method == "POST"
+        and isinstance(body, Mapping)
+        and "enqueuePullRequest" in str(body.get("query", ""))
+        for method, _url, body in transport.calls
+    )
 
 
 def test_queue_generation_projection_matches_protected_main_provider() -> None:
@@ -476,7 +559,7 @@ def test_queue_generation_projection_matches_protected_main_provider() -> None:
         request.base_commit,
         request.base_tree,
     )
-    protected = ProtectedMainProvider(
+    protected_provider = ProtectedMainProvider(
         "owner",
         "repo",
         request.repository_digest,
@@ -486,7 +569,16 @@ def test_queue_generation_projection_matches_protected_main_provider() -> None:
         trusted_check_contexts=("validation",),
         token="token",
         transport=transport,
-    ).observe_queue()
+    )
+    entries = queue["entries"]
+    queue["entries"] = {"totalCount": 0, "nodes": []}
+    configuration = protected_provider.observe_queue_configuration()
+    queue["entries"] = entries
+    protected = protected_provider.observe_queue(
+        operation_id=configuration.operation_id,
+        queue_configuration_digest=configuration.queue_configuration_digest,
+        admission_observation_digest=DIGEST,
+    )
     assert adapter_state["queue_manifest_digest"] == protected.queue_manifest_digest
     assert adapter_state["queue_generation_digest"] == protected.queue_generation_digest
 

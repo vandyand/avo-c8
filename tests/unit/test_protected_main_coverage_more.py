@@ -26,6 +26,7 @@ from tests.unit.test_protected_main_adversarial import (
     E,
     FakeTransport,
     G,
+    post_enqueue_queue,
     provider,
     signed_webhook,
 )
@@ -60,7 +61,13 @@ def _check(
 def test_snapshot_and_alias_observations_cover_successful_read_paths() -> None:
     fake = FakeTransport()
     main = provider(fake)
-    snapshot = main.observe_snapshot(7)
+    queue = post_enqueue_queue(main, fake)
+    snapshot = main.observe_snapshot(
+        7,
+        operation_id=queue.operation_id,
+        queue_configuration_digest=queue.queue_configuration_digest,
+        admission_observation_digest=queue.admission_observation_digest,
+    )
     assert snapshot.group is None
     body, headers = signed_webhook(delivery="snapshot-group")
     grouped = main.observe_snapshot(
@@ -68,6 +75,9 @@ def test_snapshot_and_alias_observations_cover_successful_read_paths() -> None:
         group_sha=G,
         group_webhook_body=body,
         group_webhook_headers=headers,
+        operation_id=queue.operation_id,
+        queue_configuration_digest=queue.queue_configuration_digest,
+        admission_observation_digest=queue.admission_observation_digest,
     )
     assert grouped.group is not None
     assert grouped.group.pull_request_numbers == (7,)
@@ -246,7 +256,7 @@ def _valid_admission(main: Any, pr: Any, queue: Any) -> MainQueueAdmissionObserv
         admission_sha=pr.head_commit,
         admission_run_id="admission-run",
         admission_nonce="admission-nonce",
-        queue_generation_digest=queue.queue_generation_digest,
+        queue_configuration_digest=queue.queue_configuration_digest,
         protection_manifest_digest=queue.protection_manifest_digest,
         issuer_identity=provider_value.release_issuer_identity,
         release_issuer_app_id=provider_value.release_issuer_app_id,
@@ -266,7 +276,7 @@ def test_attester_admission_success_and_preparation_binding() -> None:
     fake.runs = [_check(sha=D, name="avo-main-release", app_id=9001, external_id="admission-nonce")]
     main = provider(fake)
     pr = main.observe_pull_request(7)
-    queue = main.observe_queue()
+    queue = post_enqueue_queue(main, fake)
     admission = _valid_admission(main, pr, queue)
     check = MainCheckObservation.model_construct(
         name="avo-main-release",
@@ -314,7 +324,7 @@ def test_attester_merge_group_checks_and_release_rejects_drift() -> None:
     ]
     main = provider(fake)
     body, headers = signed_webhook(delivery="attester-group")
-    queue = main.observe_queue()
+    queue = post_enqueue_queue(main, fake)
     group = main.observe_merge_group(
         G, webhook_body=body, webhook_headers=headers, queue=queue, pull_request_number=7
     )

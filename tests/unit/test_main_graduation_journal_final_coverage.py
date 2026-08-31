@@ -65,6 +65,11 @@ def _chain(journal: MainGraduationJournal) -> tuple[Any, dict[str, Any]]:
     object.__setattr__(package.intent, "candidate_ref", package.composition.candidate_ref)
     object.__setattr__(prep, "intent_digest", canonical_digest(package.intent))
     object.__setattr__(admission, "preparation_authorization_digest", canonical_digest(prep))
+    object.__setattr__(
+        package.queue_observation,
+        "admission_observation_digest",
+        canonical_digest(admission),
+    )
     object.__setattr__(hold, "preparation_authorization_digest", canonical_digest(prep))
     object.__setattr__(hold, "admission_observation_digest", canonical_digest(admission))
     object.__setattr__(
@@ -85,6 +90,7 @@ def _chain(journal: MainGraduationJournal) -> tuple[Any, dict[str, Any]]:
         "intent": package.intent,
         "preparation-authorization": prep,
         "queue-admission": admission,
+        "queue-configuration": package.queue_configuration,
         "release-hold": hold,
         "queue": package.queue_observation,
         "protection": package.protection_manifest,
@@ -321,7 +327,7 @@ def test_stage_binding_and_chronology_errors_are_recoverable(
             lambda: journal._require_admission(
                 package.hold_observation.model_copy(update={"queue_generation_digest": D2})
             ),
-            "generation",
+            "hold durable evidence binding differs",
         ),
         (
             lambda: journal._require_hold(

@@ -42,6 +42,7 @@ from avo_correlate.contracts.main_graduation import (
     MainProviderPostStateObservation,
     MainProviderReceipt,
     MainQueueAdmissionObservation,
+    MainQueueConfigurationObservation,
     MainQueueObservation,
     MainReconciliation,
     MainReleaseAuthorization,
@@ -396,6 +397,8 @@ def completion() -> MainCompletionPackage:
         repository_digest=R,
         queue_generation_digest=D,
         queue_manifest_digest=D,
+        queue_configuration_digest=D,
+        admission_observation_digest=D,
         expected_base_commit=BASE,
         expected_base_tree=TREE,
         protection_manifest_digest=D,
@@ -493,7 +496,7 @@ def completion() -> MainCompletionPackage:
         admission_sha=HEAD,
         admission_run_id="admission-run",
         admission_nonce="admission-nonce",
-        queue_generation_digest=D,
+        queue_configuration_digest=D,
         protection_manifest_digest=D,
         issuer_identity="isolated-release",
         release_issuer_app_id=9001,
@@ -815,6 +818,24 @@ def completion() -> MainCompletionPackage:
     object.__setattr__(post_state_probe, "observation_digest", canonical_digest(
         post_state_probe.model_dump(exclude={"observation_digest"}, mode="json")
     ))
+    queue = queue.model_copy(update={"admission_observation_digest": canonical_digest(admission)})
+    queue_configuration = MainQueueConfigurationObservation.model_construct(
+        operation_id=D,
+        repository_digest=R,
+        target_ref="refs/heads/main",
+        queue_configuration_digest=D,
+        expected_base_commit=BASE,
+        expected_base_tree=TREE,
+        protection_manifest_digest=D,
+        protection_epoch=D,
+        provider_identity="provider",
+        provider_api_version="v1",
+        merge_method="squash",
+        isolated_release_issuer="isolated-release",
+        release_issuer_app_id=9001,
+        issuer_isolation_digest=D,
+        observed_at=NOW,
+    )
     return MainCompletionPackage.model_construct(
         operation_id=D,
         repository_digest=R,
@@ -822,6 +843,7 @@ def completion() -> MainCompletionPackage:
         source_package=package,
         delta=delta,
         composition=comp,
+        queue_configuration=queue_configuration,
         queue_observation=queue,
         protection_manifest=protection,
         attestation_manifest=attestation,
@@ -849,6 +871,7 @@ def completion() -> MainCompletionPackage:
                 "main-graduation-delta",
                 "main-graduation-composition",
                 "main-graduation-queue-observation",
+                "main-graduation-queue-configuration",
                 "main-graduation-protection-manifest",
                 "main-graduation-attestation-manifest",
                 "main-graduation-merge-group-checks",
@@ -1073,6 +1096,8 @@ def test_remaining_contract_validators_and_aliases() -> None:
         "repository_digest": R,
         "queue_generation_digest": D,
         "queue_manifest_digest": D,
+        "queue_configuration_digest": D,
+        "admission_observation_digest": D,
         "expected_base_commit": BASE,
         "expected_base_tree": TREE,
         "protection_manifest_digest": D,
@@ -1445,7 +1470,7 @@ def test_completion_orchestration_and_conflict_edges(
     journal = MainGraduationJournal(tmp_path)
     package = completion()
     values = journal._child_values(package)
-    assert len(values) == 24
+    assert len(values) == 25
     called: list[str] = []
     monkeypatch.setattr(journal, "_require_exact", lambda kind, record: called.append(kind))
     monkeypatch.setattr(
@@ -1471,7 +1496,7 @@ def test_completion_orchestration_and_conflict_edges(
     )
     journal._verify_completion_prerequisites(package)
     assert called[:3] == ["source-package", "delta", "composition"]
-    assert len(called) == 33
+    assert len(called) == 34
     monkeypatch.setattr(
         journal,
         "_verify_completion_prerequisites",
@@ -1737,6 +1762,11 @@ def test_journal_deep_stage_bindings_validate_from_durable_map(
     object.__setattr__(package.intent, "candidate_ref", package.composition.candidate_ref)
     object.__setattr__(prep, "intent_digest", canonical_digest(package.intent))
     object.__setattr__(admission, "preparation_authorization_digest", canonical_digest(prep))
+    object.__setattr__(
+        package.queue_observation,
+        "admission_observation_digest",
+        canonical_digest(admission),
+    )
     object.__setattr__(hold, "preparation_authorization_digest", canonical_digest(prep))
     object.__setattr__(hold, "admission_observation_digest", canonical_digest(admission))
     object.__setattr__(
@@ -1761,6 +1791,7 @@ def test_journal_deep_stage_bindings_validate_from_durable_map(
         "intent": package.intent,
         "preparation-authorization": prep,
         "queue-admission": admission,
+        "queue-configuration": package.queue_configuration,
         "release-hold": hold,
         "queue": package.queue_observation,
         "protection": package.protection_manifest,

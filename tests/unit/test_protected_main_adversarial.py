@@ -18,16 +18,20 @@ from avo_correlate.adapters.hosted_git.github import (
 )
 from avo_correlate.adapters.hosted_git.protected_main import (
     MainGraduationAttester,
+    MainRefObservation,
     ProtectedMainProvider,
     ProtectedMainProviderError,
 )
 from avo_correlate.contracts.main_graduation import (
     MainCheckObservation,
     MainQueueAdmissionObservation,
+    MainQueueObservation,
     MainReleaseAuthorization,
     MainReleaseHoldObservation,
     MainReleaseTransitionReceipt,
 )
+
+QUEUE_ADMISSION_DIGEST = "sha256:" + "2" * 64
 
 A = "a" * 40
 B = "b" * 40
@@ -94,6 +98,17 @@ class FakeTransport:
         self.runs: list[JsonObject] = []
         self.check_pages: list[list[JsonObject]] | None = None
         self.check_total_count: int | None = None
+        self.queue_entries: list[JsonObject] = [
+            {
+                "id": "MQE_1",
+                "position": 1,
+                "state": "QUEUED",
+                "solo": True,
+                "pullRequest": {"number": 7},
+                "baseCommit": {"oid": A},
+                "headCommit": {"oid": D},
+            }
+        ]
 
     def __call__(
         self, method: str, url: str, body: JsonBody | None, headers: Mapping[str, str]
@@ -112,18 +127,8 @@ class FakeTransport:
                             "id": "MQ_1",
                             "configuration": self.queue_config,
                             "entries": {
-                                "totalCount": 1,
-                                "nodes": [
-                                    {
-                                        "id": "MQE_1",
-                                        "position": 1,
-                                        "state": "QUEUED",
-                                        "solo": True,
-                                        "pullRequest": {"number": 7},
-                                        "baseCommit": {"oid": A},
-                                        "headCommit": {"oid": D},
-                                    }
-                                ],
+                                "totalCount": len(self.queue_entries),
+                                "nodes": self.queue_entries,
                             },
                         }
                     }
@@ -187,6 +192,26 @@ def provider(fake: JsonTransport) -> ProtectedMainProvider:
     )
 
 
+def post_enqueue_queue(
+    main: ProtectedMainProvider,
+    fake: FakeTransport,
+    *,
+    base: MainRefObservation | None = None,
+    admission_digest: str = QUEUE_ADMISSION_DIGEST,
+) -> MainQueueObservation:
+    """Read split queue evidence in the same order as the C4 coordinator."""
+    original_entries = fake.queue_entries
+    fake.queue_entries = []
+    configuration = main.observe_queue_configuration()
+    fake.queue_entries = original_entries
+    return main.observe_queue(
+        base,
+        operation_id=configuration.operation_id,
+        queue_configuration_digest=configuration.queue_configuration_digest,
+        admission_observation_digest=admission_digest,
+    )
+
+
 def signed_webhook(
     *,
     sha: str = G,
@@ -238,7 +263,7 @@ def test_graphql_queue_is_official_endpoint_and_binds_singleton_entry() -> None:
     fake = FakeTransport()
     main = provider(fake)
     base = main.observe_main()
-    queue = main.observe_queue(base)
+    queue = post_enqueue_queue(main, fake, base=base)
     assert queue.expected_group_parents == [A, D]
     assert any(method == "POST" and url.endswith("/graphql") for method, url, _ in fake.calls)
     assert not any("merge-queue" in url for _, url, _ in fake.calls)
@@ -252,26 +277,11 @@ def test_effective_rules_endpoint_is_authority_even_for_wildcard_conditions() ->
     assert any(url.endswith("/rules/branches/main") for _, url, _ in fake.calls)
 
 
-def test_graphql_queue_can_be_observed_before_enqueue_without_inventing_group_topology() -> None:
+def test_graphql_queue_configuration_is_observed_before_enqueue_without_group_topology() -> None:
     fake = FakeTransport()
-    fake.queue_config = dict(fake.queue_config)
-    original = fake
-
-    def empty(
-        method: str, url: str, body: JsonBody | None, headers: Mapping[str, str]
-    ) -> tuple[int, JsonValue]:
-        status, payload = original(method, url, body, headers)
-        if url.endswith("/graphql"):
-            data = cast(dict[str, JsonValue], payload)
-            repository = cast(
-                dict[str, JsonValue], cast(dict[str, JsonValue], data["data"])["repository"]
-            )
-            queue = cast(dict[str, JsonValue], repository["mergeQueue"])
-            queue["entries"] = {"totalCount": 0, "nodes": []}
-        return status, payload
-
-    queue = provider(cast(JsonTransport, empty)).observe_queue()
-    assert queue.expected_group_parents == [A]
+    fake.queue_entries = []
+    configuration = provider(fake).observe_queue_configuration()
+    assert configuration.expected_base_commit == A
 
 
 @pytest.mark.parametrize(
@@ -281,8 +291,9 @@ def test_graphql_queue_can_be_observed_before_enqueue_without_inventing_group_to
 def test_queue_rejects_unsafe_graphql_configuration(field: str, value: JsonValue) -> None:
     fake = FakeTransport()
     fake.queue_config[field] = value
+    fake.queue_entries = []
     with pytest.raises(ProtectedMainProviderError):
-        provider(fake).observe_queue()
+        provider(fake).observe_queue_configuration()
 
 
 RULESET_MUTATIONS: list[dict[str, JsonValue]] = [
@@ -367,7 +378,7 @@ def test_queue_rejects_graphql_errors_and_missing_queue() -> None:
             release_issuer_identity="isolated-release", release_issuer_app_id=9001,
             issuer_isolation_digest=ISOLATION, trusted_check_contexts=("unit-validation",),
             token="token", transport=cast(JsonTransport, broken),
-        ).observe_queue()
+        ).observe_queue_configuration()
 
 
 @pytest.mark.parametrize("url", [
@@ -395,7 +406,7 @@ def test_pull_request_identity_state_substitution_is_rejected(field: str, value:
 def test_merge_group_requires_authenticated_event_and_rechecks_commit_topology() -> None:
     fake = FakeTransport()
     main = provider(fake)
-    queue = main.observe_queue()
+    queue = post_enqueue_queue(main, fake)
     body, headers = signed_webhook()
     group = main.observe_merge_group(
         G, webhook_body=body, webhook_headers=headers, queue=queue, pull_request_number=7
@@ -414,7 +425,7 @@ def test_merge_group_requires_authenticated_event_and_rechecks_commit_topology()
 def test_merge_group_rejects_same_head_different_pr_number_before_pr_read() -> None:
     fake = FakeTransport()
     main = provider(fake)
-    queue = main.observe_queue()
+    queue = post_enqueue_queue(main, fake)
     body, headers = signed_webhook(delivery="delivery-wrong-pr")
     with pytest.raises(ProtectedMainProviderError, match="PR membership"):
         main.observe_merge_group(
@@ -441,7 +452,7 @@ def test_merge_group_webhook_authentication_and_replay_are_fail_closed(
     with pytest.raises(ProtectedMainProviderError):
         main.observe_merge_group(G, webhook_body=body, webhook_headers=headers)
     body, headers = signed_webhook(delivery="delivery-replay")
-    queue = main.observe_queue()
+    queue = post_enqueue_queue(main, fake)
     main.observe_merge_group(
         G, webhook_body=body, webhook_headers=headers, queue=queue, pull_request_number=7
     )
@@ -493,7 +504,7 @@ def test_check_runs_require_complete_bounded_pagination() -> None:
 def test_merge_group_event_substitution_is_rejected(mutation: dict[str, JsonValue]) -> None:
     fake = FakeTransport()
     main = provider(fake)
-    queue = main.observe_queue()
+    queue = post_enqueue_queue(main, fake)
     body, headers = signed_webhook(changes=mutation)
     with pytest.raises(ProtectedMainProviderError):
         main.observe_merge_group(
@@ -608,7 +619,7 @@ def test_admission_attester_binds_issuer_isolation_and_pr_head_role() -> None:
     fake = FakeTransport()
     main = provider(fake)
     pr = main.observe_pull_request(7)
-    queue = main.observe_queue()
+    queue = post_enqueue_queue(main, fake)
     admission = MainQueueAdmissionObservation.model_construct(
         repository_digest=main.repository_digest,
         target_ref="refs/heads/main",
@@ -625,7 +636,7 @@ def test_admission_attester_binds_issuer_isolation_and_pr_head_role() -> None:
         admission_sha=D,
         admission_run_id="admission-run",
         admission_nonce="admission-nonce",
-        queue_generation_digest=queue.queue_generation_digest,
+        queue_configuration_digest=queue.queue_configuration_digest,
         protection_manifest_digest=queue.protection_manifest_digest,
         issuer_identity=main.release_issuer_identity,
         release_issuer_app_id=main.release_issuer_app_id,

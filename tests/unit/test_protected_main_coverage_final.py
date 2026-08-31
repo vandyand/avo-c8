@@ -29,6 +29,7 @@ from tests.unit.test_protected_main_adversarial import (
     FakeTransport,
     G,
     check,
+    post_enqueue_queue,
     provider,
     signed_webhook,
 )
@@ -47,7 +48,7 @@ def _hold_inputs() -> tuple[Any, Any, Any, Any, Any, Any, MainCheckObservation]:
     ]
     main = provider(fake)
     pr = main.observe_pull_request(7)
-    queue = main.observe_queue()
+    queue = post_enqueue_queue(main, fake)
     body, headers = signed_webhook(delivery="final-coverage-group")
     group = main.observe_merge_group(
         G,
@@ -284,15 +285,16 @@ def test_protection_ruleset_and_queue_configuration_rejections(mutation: str) ->
 def test_queue_configuration_rejections(mutation: dict[str, Any]) -> None:
     fake = FakeTransport()
     fake.queue_config.update(mutation)
+    fake.queue_entries = []
     with pytest.raises(ProtectedMainProviderError):
-        provider(fake).observe_queue()
+        provider(fake).observe_queue_configuration()
 
 
 def test_attest_admission_rejects_each_binding_and_check_edge() -> None:
     fake = FakeTransport()
     main = provider(fake)
     pr = main.observe_pull_request(7)
-    queue = main.observe_queue()
+    queue = post_enqueue_queue(main, fake)
     admission = _valid_admission(main, pr, queue)
     valid = MainCheckObservation.model_construct(
         name="avo-main-release",
@@ -314,7 +316,7 @@ def test_attest_admission_rejects_each_binding_and_check_edge() -> None:
         {"pull_request_number": 8},
         {"base_commit": D},
         {"admission_sha": A},
-        {"queue_generation_digest": "sha256:" + "0" * 64},
+        {"queue_configuration_digest": "sha256:" + "0" * 64},
         {"operation_id": "sha256:" + "0" * 64},
         {"issuer_identity": "other"},
         {"validation_app_id": 42},
@@ -432,7 +434,7 @@ def test_attest_merge_group_checks_wrong_check_and_duplicate_context() -> None:
         ),
     ]
     main = provider(fake)
-    queue = main.observe_queue()
+    queue = post_enqueue_queue(main, fake)
     body, headers = signed_webhook(delivery="final-check-group")
     group = main.observe_merge_group(
         G, webhook_body=body, webhook_headers=headers, queue=queue, pull_request_number=7

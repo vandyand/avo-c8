@@ -282,7 +282,7 @@ def test_create_result_server_identity_binds_queue_request() -> None:
         operation_id=DIGEST,
         repository_digest=DIGEST,
         lease_epoch_digest=DIGEST,
-        queue_generation_digest=DIGEST,
+        queue_configuration_digest=DIGEST,
         pull_request_number=result.pull_request_number,
         pull_request_url=result.pull_request_url,
         pull_request_identity=result.pull_request_identity,

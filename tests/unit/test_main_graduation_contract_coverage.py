@@ -391,6 +391,10 @@ def test_completion_validator_rejects_each_cross_stage_substitution() -> None:
         ("delta", package.delta.model_copy(update={"source_result_commit": BASE})),
         ("composition", package.composition.model_copy(update={"base_tree": BASE})),
         (
+            "queue_configuration",
+            package.queue_configuration.model_copy(update={"queue_configuration_digest": D2}),
+        ),
+        (
             "queue_observation",
             package.queue_observation.model_copy(update={"queue_generation_digest": D2}),
         ),
@@ -514,7 +518,7 @@ def test_completion_validator_reaches_later_fail_closed_edges() -> None:
         ),
         (
             "admission_observation",
-            package.admission_observation.model_copy(update={"queue_generation_digest": D2}),
+            package.admission_observation.model_copy(update={"queue_configuration_digest": D2}),
         ),
         (
             "queue_observation",

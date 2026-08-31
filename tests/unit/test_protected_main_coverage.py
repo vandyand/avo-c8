@@ -49,6 +49,7 @@ from tests.unit.test_protected_main_adversarial import (
     FakeTransport,
     G,
     check,
+    post_enqueue_queue,
     provider,
     signed_webhook,
 )
@@ -78,7 +79,7 @@ def _admission_payload() -> JsonObject:
             admission_sha=D,
             admission_run_id="admission-run",
             admission_nonce="admission-nonce",
-            queue_generation_digest="sha256:" + "6" * 64,
+            queue_configuration_digest="sha256:" + "6" * 64,
             protection_manifest_digest="sha256:" + "7" * 64,
             issuer_identity="isolated-release",
             release_issuer_app_id=9001,
@@ -106,7 +107,7 @@ def _hold_payload() -> JsonObject:
         group_tree=E,
         group_parents=[A, D],
         pull_request_number=7,
-        queue_generation_digest=admission.queue_generation_digest,
+        queue_generation_digest="sha256:" + "6" * 64,
         delivery_id="delivery-hold",
         body_digest="sha256:" + "8" * 64,
         observed_at=datetime(2026, 8, 29, 12, tzinfo=UTC),
@@ -157,7 +158,7 @@ def _hold_payload() -> JsonObject:
             base_commit=A,
             base_tree=C,
             composition_tree=E,
-            queue_generation_digest=admission.queue_generation_digest,
+            queue_generation_digest="sha256:" + "6" * 64,
             queue_members=[7],
             max_entries_per_group=1,
             hold_run_id="hold-run",
@@ -307,7 +308,7 @@ def test_rest_and_graphql_statuses_fail_closed(status: int) -> None:
     with pytest.raises((ProtectedMainRejected, ProtectedMainProviderError)):
         main.observe_repository()
     with pytest.raises((ProtectedMainRejected, ProtectedMainProviderError)):
-        main.observe_queue()
+        main.observe_queue_configuration()
     assert fake is not None
 
 
@@ -367,7 +368,7 @@ def test_webhook_body_parse_edges_fail_closed(body: bytes) -> None:
 def test_webhook_semantic_and_ref_binding_failures(mutation: JsonObject) -> None:
     fake = FakeTransport()
     main = provider(fake)
-    queue = main.observe_queue()
+    queue = post_enqueue_queue(main, fake)
     body, headers = signed_webhook(delivery="semantic-" + str(len(fake.calls)))
     decoded = cast(JsonObject, json.loads(body))
     for key, value in mutation.items():
