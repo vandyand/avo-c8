@@ -15,9 +15,11 @@ from avo_correlate.application.c4_capabilities import (
     GroupHoldIssuerCapability,
     GroupHoldIssueRequest,
     LeaseFence,
+    PullRequestCreateResult,
     PullRequestPreparationCapability,
     PullRequestReconcileRequest,
     QueueEnqueueCapability,
+    QueueEnqueueRequest,
     ReadOnlyObservationCapability,
     ReleaseIssuerCapability,
     ReleaseIssueRequest,
@@ -173,6 +175,7 @@ def _group_values() -> dict[str, object]:
         pull_request_tree=head_tree,
         group_sha=group,
         group_tree=group_tree,
+        expected_group_tree=group_tree,
         group_parents=parents,
         expected_group_parents=parents,
         group_topology_digest=canonical_digest(
@@ -183,6 +186,7 @@ def _group_values() -> dict[str, object]:
                 "pull_request_head": head,
                 "pull_request_tree": head_tree,
                 "expected_group_parents": parents,
+                "expected_group_tree": group_tree,
                 "queue_generation_digest": queue,
                 "merge_method": "squash",
             }
@@ -206,6 +210,8 @@ def test_group_hold_binds_full_pending_topology_and_rejects_pr_head_reuse() -> N
         GroupHoldIssueRequest.build(**{**values, "group_sha": values["pull_request_head"]})
     with pytest.raises(ValidationError):
         GroupHoldIssueRequest.build(**{**values, "queue_members": [10]})
+    with pytest.raises(ValidationError):
+        GroupHoldIssueRequest.build(**{**values, "group_tree": "0" * 40})
 
 
 def test_release_binds_pending_hold_and_success_transition() -> None:
@@ -227,6 +233,72 @@ def test_release_binds_pending_hold_and_success_transition() -> None:
                     exclude={"external_key", "external_identity", "request_digest"}
                 ),
                 "issuer_app_id": 15368,
+            }
+        )
+    with pytest.raises(ValidationError):
+        ReleaseIssueRequest.build(
+            **{
+                **release.model_dump(
+                    exclude={"external_key", "external_identity", "request_digest"}
+                ),
+                "group_tree": "0" * 40,
+            }
+        )
+
+
+def test_create_result_server_identity_binds_queue_request() -> None:
+    pull_request_url = "https://example.test/org/repo/pull/9"
+    pull_request_identity = canonical_digest(
+        {
+            "operation_id": DIGEST,
+            "repository_digest": DIGEST,
+            "pull_request_number": 9,
+            "pull_request_url": pull_request_url,
+        }
+    )
+    result_values = dict(
+        operation_id=DIGEST,
+        repository_digest=DIGEST,
+        lease_epoch_digest=DIGEST,
+        stage="pull_request_open",
+        queue_generation_digest=None,
+        candidate_ref=f"refs/heads/avo/candidate/{'a' * 64}",
+        candidate_commit=OBJECT,
+        candidate_tree="b" * 40,
+        base_commit="c" * 40,
+        base_tree="d" * 40,
+        preparation_authorization_digest=DIGEST,
+        pull_request_number=9,
+        pull_request_url=pull_request_url,
+        pull_request_identity=pull_request_identity,
+        outcome="applied",
+        response_digest=DIGEST,
+        observed_at=datetime.now(UTC),
+        dispatch_started=True,
+    )
+    result = PullRequestCreateResult.build(**result_values)
+
+    queue = QueueEnqueueRequest.build(
+        operation_id=DIGEST,
+        repository_digest=DIGEST,
+        lease_epoch_digest=DIGEST,
+        queue_generation_digest=DIGEST,
+        pull_request_number=result.pull_request_number,
+        pull_request_url=result.pull_request_url,
+        pull_request_identity=result.pull_request_identity,
+        pull_request_head=result.candidate_commit,
+        pull_request_tree=result.candidate_tree,
+        base_commit=result.base_commit,
+        base_tree=result.base_tree,
+        preparation_authorization_digest=DIGEST,
+        admission_observation_digest=DIGEST,
+    )
+    assert queue.pull_request_identity == result.pull_request_identity
+    with pytest.raises(ValidationError):
+        QueueEnqueueRequest.build(
+            **{
+                **queue.model_dump(exclude={"external_key", "external_identity", "request_digest"}),
+                "pull_request_identity": DIGEST,
             }
         )
 

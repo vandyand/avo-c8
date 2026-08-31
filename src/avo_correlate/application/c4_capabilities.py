@@ -38,7 +38,14 @@ def _candidate(op: str) -> str:
 
 
 def _topology(
-    base: str, tree: str, pr: int, head: str, head_tree: str, parents: list[str], queue: str
+    base: str,
+    tree: str,
+    pr: int,
+    head: str,
+    head_tree: str,
+    parents: list[str],
+    expected_group_tree: str,
+    queue: str,
 ) -> Sha256Digest:
     return canonical_digest(
         {
@@ -48,8 +55,22 @@ def _topology(
             "pull_request_head": head,
             "pull_request_tree": head_tree,
             "expected_group_parents": parents,
+            "expected_group_tree": expected_group_tree,
             "queue_generation_digest": queue,
             "merge_method": "squash",
+        }
+    )
+
+
+def _pull_request_identity(
+    operation_id: str, repository_digest: str, pull_request_number: int, pull_request_url: str
+) -> Sha256Digest:
+    return canonical_digest(
+        {
+            "operation_id": operation_id,
+            "repository_digest": repository_digest,
+            "pull_request_number": pull_request_number,
+            "pull_request_url": pull_request_url,
         }
     )
 
@@ -227,12 +248,27 @@ class AdmissionIssueRequest(StageRequest):
 class QueueEnqueueRequest(StageRequest):
     stage: Literal["queue_enqueue"] = "queue_enqueue"
     pull_request_number: StrictInt = Field(gt=0)
+    pull_request_url: NonEmptyString
+    pull_request_identity: Sha256Digest
     pull_request_head: GitObject
     pull_request_tree: GitObject
     base_commit: GitObject
     base_tree: GitObject
     preparation_authorization_digest: Sha256Digest
     admission_observation_digest: Sha256Digest
+
+    @model_validator(mode="after")
+    def queue_pr_identity(self) -> Self:
+        if self.pull_request_url.startswith("https://") is False:
+            raise ValueError("queue requires canonical HTTPS pull request URL")
+        if self.pull_request_identity != _pull_request_identity(
+            self.operation_id,
+            self.repository_digest,
+            self.pull_request_number,
+            self.pull_request_url,
+        ):
+            raise ValueError("queue pull request identity mismatch")
+        return self
 
 
 class GroupFields(StageRequest):
@@ -241,6 +277,7 @@ class GroupFields(StageRequest):
     pull_request_tree: GitObject
     group_sha: GitObject
     group_tree: GitObject
+    expected_group_tree: GitObject
     group_parents: list[GitObject] = Field(min_length=1)
     expected_group_parents: list[GitObject] = Field(min_length=1)
     group_topology_digest: Sha256Digest
@@ -258,6 +295,8 @@ class GroupFields(StageRequest):
             raise ValueError("group requires singleton PR membership")
         if self.group_sha == self.pull_request_head or self.group_tree == self.pull_request_tree:
             raise ValueError("group SHA/tree must differ from PR head")
+        if self.group_tree != self.expected_group_tree:
+            raise ValueError("group tree must equal the deterministic expected group tree")
         if (
             self.group_parents != self.expected_group_parents
             or not self.group_parents
@@ -272,6 +311,7 @@ class GroupFields(StageRequest):
             self.pull_request_head,
             self.pull_request_tree,
             self.expected_group_parents,
+            self.expected_group_tree,
             self.queue_generation_digest or "",
         ):
             raise ValueError("group topology digest mismatch")
@@ -341,6 +381,33 @@ class StageMutationResult(StageBound):
     _exclude_external: ClassVar[frozenset[str]] = _exclude_request
     _time = field_validator("observed_at")(require_aware_datetime)
 
+    @classmethod
+    def build(cls, **values: object) -> Self:
+        """Build a provider DTO with the exact request-equivalent identity."""
+
+        d: dict[str, Any] = dict(values)
+        d.setdefault("target_ref", "refs/heads/main")
+        d.pop("external_key", None)
+        d.pop("external_identity", None)
+        d.pop("request_digest", None)
+        temporary = cls.model_construct(
+            **d, external_key="x", external_identity=_ZERO, request_digest=_ZERO
+        )
+        d["external_key"] = temporary._key()
+        temporary = cls.model_construct(**d, external_identity=_ZERO, request_digest=_ZERO)
+        d["external_identity"] = main_stage_identity_digest(
+            temporary.operation_id,
+            temporary.stage,
+            temporary.external_key,
+            queue_generation_digest=temporary.queue_generation_digest,
+            repository_digest=temporary.repository_digest,
+            target_ref=temporary.target_ref,
+        )
+        d["request_digest"] = canonical_digest(
+            cls.model_construct(**d, request_digest=_ZERO)._request()
+        )
+        return cls.model_validate(d)
+
     @model_validator(mode="after")
     def mutation(self) -> Self:
         if (self.outcome == "rejected") == self.dispatch_started:
@@ -369,6 +436,9 @@ class PullRequestCreateResult(StageMutationResult):
     base_commit: GitObject
     base_tree: GitObject
     preparation_authorization_digest: Sha256Digest
+    pull_request_number: StrictInt = Field(gt=0)
+    pull_request_url: NonEmptyString
+    pull_request_identity: Sha256Digest
 
     @model_validator(mode="after")
     def pull_request(self) -> Self:
@@ -376,6 +446,15 @@ class PullRequestCreateResult(StageMutationResult):
             raise ValueError("pull request result ref is not operation-derived")
         if self.candidate_commit == self.base_commit or self.candidate_tree == self.base_tree:
             raise ValueError("pull request result head must differ from base")
+        if not self.pull_request_url.startswith("https://"):
+            raise ValueError("pull request result URL must use HTTPS")
+        if self.pull_request_identity != _pull_request_identity(
+            self.operation_id,
+            self.repository_digest,
+            self.pull_request_number,
+            self.pull_request_url,
+        ):
+            raise ValueError("pull request result identity mismatch")
         return self
 
 
