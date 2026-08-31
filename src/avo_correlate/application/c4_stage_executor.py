@@ -121,7 +121,8 @@ def _canonical_model(model: StrictModel) -> StrictModel:
 
 def _digest_record(model: type[StrictModel], values: dict[str, Any], field: str) -> StrictModel:
     values = dict(values)
-    probe = model.model_construct(**values, **{field: "sha256:" + "0" * 64})
+    probe_values = {**values, field: "sha256:" + "0" * 64}
+    probe = cast(Any, model).model_construct(**probe_values)
     values[field] = canonical_digest(probe.model_dump(exclude={field}, mode="json"))
     return model.model_validate(values)
 
@@ -174,6 +175,7 @@ def _immutable_stage_projection(request: StageRequest) -> dict[str, Any]:
     )
     if request.stage == "pull_request_open":
         projection.pop("pull_request_number", None)
+        projection.pop("preparation_authorization_digest", None)
     return projection
 
 

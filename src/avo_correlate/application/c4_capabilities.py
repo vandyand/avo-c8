@@ -439,6 +439,11 @@ class PullRequestCreateResult(StageMutationResult):
     pull_request_number: StrictInt = Field(gt=0)
     pull_request_url: NonEmptyString
     pull_request_identity: Sha256Digest
+    _exclude_request: ClassVar[frozenset[str]] = (
+        StageMutationResult._exclude_request
+        | frozenset({"pull_request_number", "pull_request_url", "pull_request_identity"})
+    )
+    _exclude_external: ClassVar[frozenset[str]] = _exclude_request
 
     @model_validator(mode="after")
     def pull_request(self) -> Self:

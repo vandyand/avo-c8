@@ -294,7 +294,7 @@ class MainGraduationPreparationCoordinator:
                 pull_request_tree=pr.head_tree,
                 base_commit=pr.base_commit,
                 base_tree=pr.base_tree,
-                preparation_authorization_digest=prep.authorization_digest,
+                preparation_authorization_digest=canonical_digest(prep),
                 admission_run_id="avo-main-admission-" + admission_seed.removeprefix("sha256:"),
                 admission_nonce=main_stage_nonce(admission_seed),
                 issuer_identity=protection.isolated_release_issuer,
@@ -339,7 +339,7 @@ class MainGraduationPreparationCoordinator:
                 pull_request_tree=pr.head_tree,
                 base_commit=pr.base_commit,
                 base_tree=pr.base_tree,
-                preparation_authorization_digest=prep.authorization_digest,
+                preparation_authorization_digest=canonical_digest(prep),
                 admission_observation_digest=admission_ref_digest,
             )
             self._preflight(plan, prep, lease)
@@ -717,7 +717,7 @@ class MainGraduationPreparationCoordinator:
             "operation_id": plan.operation_id,
             "repository_digest": plan.repository_digest,
             "target_ref": plan.target_ref,
-            "preparation_authorization_digest": prep.authorization_digest,
+            "preparation_authorization_digest": canonical_digest(prep),
             "package_digest": plan.package.package_digest,
             "composition_digest": plan.composition.composition_digest,
             "pull_request_number": pr.number,
@@ -768,7 +768,7 @@ class MainGraduationPreparationCoordinator:
             admission,
             self._protected_pr(pr, plan),
             queue,
-            preparation_authorization_digest=prep.authorization_digest,
+            preparation_authorization_digest=canonical_digest(prep),
             admission_check=check,
             freshness_cutoff=self.clock.now(),
         )
