@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -583,6 +584,27 @@ def test_queue_generation_projection_matches_protected_main_provider() -> None:
     )
     assert adapter_state["queue_manifest_digest"] == protected.queue_manifest_digest
     assert adapter_state["queue_generation_digest"] == protected.queue_generation_digest
+
+
+def test_authoritative_queue_rejects_group_topology_digest_drift() -> None:
+    value, _ = adapter()
+    state = {
+        "queue_generation_digest": DIGEST,
+        "queue_configuration_digest": DIGEST,
+        "group_topology_digest": "sha256:" + "b" * 64,
+    }
+    value._queue_state = lambda *_args, **_kwargs: state
+    request = SimpleNamespace(
+        pull_request_number=1,
+        pull_request_head=OBJECT,
+        base_commit="b" * 40,
+        base_tree="c" * 40,
+        queue_generation_digest=DIGEST,
+        queue_configuration_digest=DIGEST,
+        group_topology_digest="sha256:" + "f" * 64,
+    )
+    with pytest.raises(GitHubMainGraduationRejected, match="group topology"):
+        value._authoritative_queue("observer", request)
 
 
 @pytest.mark.parametrize("field, value", [("merged", True), ("head_sha", "b" * 40)])

@@ -674,19 +674,12 @@ class MainGraduationCompletionCoordinator:
             raise MainGraduationCompletionError(
                 "authenticated merge-group observation differs from queued preparation"
             )
-        topology = canonical_digest(
-            {
-                "base_commit": plan.composition.base_commit,
-                "base_tree": plan.composition.base_tree,
-                "pull_request_number": admission.pull_request_number,
-                "pull_request_head": admission.head_commit,
-                "pull_request_tree": admission.head_tree,
-                "expected_group_parents": queue.expected_group_parents,
-                "expected_group_tree": plan.composition.candidate_tree,
-                "queue_generation_digest": queue.queue_generation_digest,
-                "merge_method": "squash",
-            }
-        )
+        # The queue observation is the authority for the provider's topology
+        # identity.  The group shape is still checked above against the
+        # queue's expected parents and below against the deterministic tree,
+        # but the digest must not be recomputed with a second, controller-
+        # specific payload shape.
+        topology = queue.group_topology_digest
         seed = canonical_digest(
             {
                 "operation_id": plan.operation_id,
@@ -719,6 +712,10 @@ class MainGraduationCompletionCoordinator:
             issuer_isolation_digest=protection.issuer_isolation_digest,
             admission_observation_digest=canonical_digest(admission),
         )
+        if request.group_topology_digest != queue.group_topology_digest:
+            raise MainGraduationCompletionError(
+                "group hold topology is not bound to queued provider evidence"
+            )
         intent = self._stage_intent_for_hold(request, prep, plan, lease)
         # This is the authenticated provider observation boundary.  Publish
         # its receipt before the hold check or any other hold-side mutation so

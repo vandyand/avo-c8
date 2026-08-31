@@ -812,6 +812,10 @@ class GitHubMainGraduationAdapter:
             or observed_configuration != expected_configuration
         ):
             raise _Precondition("queue configuration differs from authorization")
+        expected_topology = getattr(request, "group_topology_digest", None)
+        observed_topology = state.get("group_topology_digest")
+        if expected_topology is not None and observed_topology != expected_topology:
+            raise _Precondition("queue group topology differs from authorization")
         return state
 
     def _authoritative_group(self, role: str, request: Any) -> JsonObject:
@@ -1348,6 +1352,18 @@ class GitHubMainGraduationAdapter:
                 "queue_manifest_digest": manifest,
             }
         )
+        topology = None
+        if pr_number > 0:
+            topology = canonical_digest(
+                {
+                    "expected_group_parents": [base, entry_head],
+                    "pull_request_number": pr_number,
+                    "merge_method": method.casefold(),
+                    "provider_identity": self.provider_identity,
+                    "provider_api_version": self.provider_api_version,
+                    "queue_manifest_digest": manifest,
+                }
+            )
         return {
             "queue_id": queue_id,
             "entry_id": entry_id,
@@ -1362,6 +1378,7 @@ class GitHubMainGraduationAdapter:
             "queue_manifest_digest": manifest,
             "queue_generation_digest": generation,
             "queue_configuration_digest": queue_configuration_digest,
+            "group_topology_digest": topology,
         }
 
     def _check(

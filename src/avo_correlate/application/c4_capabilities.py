@@ -38,31 +38,6 @@ def _candidate(op: str) -> str:
     return f"refs/heads/avo/candidate/{op.removeprefix('sha256:')}"
 
 
-def _topology(
-    base: str,
-    tree: str,
-    pr: int,
-    head: str,
-    head_tree: str,
-    parents: list[str],
-    expected_group_tree: str,
-    queue: str,
-) -> Sha256Digest:
-    return canonical_digest(
-        {
-            "base_commit": base,
-            "base_tree": tree,
-            "pull_request_number": pr,
-            "pull_request_head": head,
-            "pull_request_tree": head_tree,
-            "expected_group_parents": parents,
-            "expected_group_tree": expected_group_tree,
-            "queue_generation_digest": queue,
-            "merge_method": "squash",
-        }
-    )
-
-
 def _pull_request_identity(
     operation_id: str, repository_digest: str, pull_request_number: int, pull_request_url: str
 ) -> Sha256Digest:
@@ -345,17 +320,12 @@ class GroupFields(StageRequest):
             or len(set(self.group_parents)) != len(self.group_parents)
         ):
             raise ValueError("group topology is not complete and expected")
-        if self.group_topology_digest != _topology(
-            self.base_commit,
-            self.base_tree,
-            self.pull_request_number,
-            self.pull_request_head,
-            self.pull_request_tree,
-            self.expected_group_parents,
-            self.expected_group_tree,
-            self.queue_generation_digest or "",
-        ):
-            raise ValueError("group topology digest mismatch")
+        # ``group_topology_digest`` is provider-bound queue evidence.  Its
+        # payload is defined by ``MainQueueObservation`` and includes provider
+        # identity/API and the queue manifest, so this capability cannot
+        # recompute it from the controller's group fields.  The completion
+        # coordinator binds this value to the validated queue observation and
+        # the durable journal checks that binding again.
 
 
 class GroupHoldIssueRequest(GroupFields):
