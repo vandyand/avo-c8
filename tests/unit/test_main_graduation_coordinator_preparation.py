@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from avo_correlate.adapters.artifacts.main_graduation_journal import MainGraduationJournal
 from avo_correlate.adapters.git.main_composition import MainBaseSnapshot, MainCompositionAdapter
@@ -352,15 +352,21 @@ class ForeignPrObservationProvider(CrashOnPullRequestProvider):
 
 
 class ChangedQueueGenerationProvider(Provider):
-    """Model a provider that changes generation when the PR enters the queue."""
+    """Model the required generation change when the PR enters the queue."""
 
     def observe_queue(self) -> MainQueueObservation:
         observed = super().observe_queue()
-        if self.queue_reads >= 6:
-            return observed.model_copy(
-                update={"queue_generation_digest": canonical_digest({"generation": "changed"})}
-            )
-        return observed
+        return observed.model_copy(
+            update={"queue_generation_digest": canonical_digest({"generation": "changed"})}
+        )
+
+
+class ForeignPostQueueProvider(Provider):
+    """Return singleton evidence bound to a different queue configuration."""
+
+    def observe_queue(self) -> MainQueueObservation:
+        observed = super().observe_queue()
+        return observed.model_copy(update={"queue_configuration_digest": POLICY})
 
 
 class ForeignAdmissionObservationProvider(Provider):
@@ -448,13 +454,15 @@ def _fixture(
         "acquired_at": NOW - timedelta(minutes=1),
         "expires_at": NOW + timedelta(hours=1),
     }
-    lease_probe = MainLeaseEvidenceRecord.model_construct(
+    lease_probe = cast(Any, MainLeaseEvidenceRecord).model_construct(
         **lease_values, lease_digest=CONFIG, evidence_digest=CONFIG
     )
     lease_values["lease_digest"] = canonical_digest(
         lease_probe.model_dump(exclude={"lease_digest", "evidence_digest"}, mode="json")
     )
-    lease_probe = MainLeaseEvidenceRecord.model_construct(**lease_values, evidence_digest=CONFIG)
+    lease_probe = cast(Any, MainLeaseEvidenceRecord).model_construct(
+        **lease_values, evidence_digest=CONFIG
+    )
     lease = MainLeaseEvidenceRecord.model_validate(
         lease_values
         | {
@@ -486,7 +494,7 @@ def _fixture(
         "policy_epoch": POLICY,
         "recorded_at": NOW,
     }
-    intent_probe = MainGraduationIntent.model_construct(
+    intent_probe = cast(Any, MainGraduationIntent).model_construct(
         **intent_values, intent_digest=CONFIG
     )
     intent = MainGraduationIntent.model_validate(
@@ -517,7 +525,7 @@ def _fixture(
         "policy_epoch": POLICY,
         "authorized_at": NOW,
     }
-    auth_probe = MainPreparationAuthorization.model_construct(
+    auth_probe = cast(Any, MainPreparationAuthorization).model_construct(
         **auth_values, authorization_digest=CONFIG
     )
     preparation = MainPreparationAuthorization.model_validate(
@@ -601,10 +609,10 @@ def test_restart_after_lost_pr_response_recovers_read_only_and_queues_once(tmp_p
     before = list(provider.calls)
     replay = coordinator.resume(MAIN_OPERATION)
 
-    assert result.state == "reconciliation_required", result
-    assert replay.state == "reconciliation_required"
-    assert provider.calls == before == ["candidate", "pr-crash"]
-    assert journal.read_queue_admission(MAIN_OPERATION) is None
+    assert result.state == "queued", result
+    assert replay.state == "queued"
+    assert provider.calls == before == ["candidate", "pr-crash", "admission", "enqueue"]
+    assert journal.read_queue_admission(MAIN_OPERATION) is not None
 
 
 def test_foreign_pr_observation_fails_closed_before_admission_or_queue(tmp_path: Path) -> None:
@@ -612,7 +620,7 @@ def test_foreign_pr_observation_fails_closed_before_admission_or_queue(tmp_path:
     result = _coordinator(journal, provider).prepare(MAIN_OPERATION)
 
     assert result.state == "quarantined"
-    assert result.reason == "observation target differs from original stage request"
+    assert result.reason is not None and "invalid PullRequestObservationResult" in result.reason
     assert provider.calls == ["candidate", "pr-crash"]
     assert journal.read_queue_admission(MAIN_OPERATION) is None
 
@@ -622,24 +630,29 @@ def test_foreign_admission_observation_fails_closed_before_queue(tmp_path: Path)
     result = _coordinator(journal, provider).prepare(MAIN_OPERATION)
 
     assert result.state == "quarantined"
-    assert result.reason == "admission observation target differs from request"
+    assert result.reason is not None and "invalid AdmissionObservationResult" in result.reason
     assert provider.calls == ["candidate", "pr", "admission"]
     assert journal.read_queue_admission(MAIN_OPERATION) is None
 
 
-def test_provider_queue_generation_change_is_quarantined_after_all_mutations(
+def test_provider_queue_generation_changes_after_enqueue_and_replays_read_only(
     tmp_path: Path,
 ) -> None:
     journal, provider = _fixture(tmp_path, ChangedQueueGenerationProvider)
     result = _coordinator(journal, provider).prepare(MAIN_OPERATION)
 
-    # ProtectedMainProvider includes queue membership in its generation digest.
-    # The coordinator currently compares that post-enqueue generation with the
-    # pre-enqueue request, so this test records the production reconciliation gap.
-    assert result.state == "quarantined"
-    assert result.reason == "queued PR is not exact singleton queue admission"
+    assert result.state == "queued"
     assert provider.calls == ["candidate", "pr", "admission", "enqueue"]
     assert journal.read_queue_admission(MAIN_OPERATION) is not None
+
+
+def test_foreign_post_queue_configuration_fails_closed(tmp_path: Path) -> None:
+    journal, provider = _fixture(tmp_path, ForeignPostQueueProvider)
+    result = _coordinator(journal, provider).prepare(MAIN_OPERATION)
+
+    assert result.state == "quarantined"
+    assert provider.calls == ["candidate", "pr", "admission", "enqueue"]
+    assert journal.read_queue_observation(MAIN_OPERATION) is None
 
 
 def test_preparation_surface_has_no_release_or_main_mutation_capability(tmp_path: Path) -> None:
