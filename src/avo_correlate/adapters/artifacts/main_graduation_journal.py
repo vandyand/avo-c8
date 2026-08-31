@@ -3200,6 +3200,62 @@ class MainGraduationJournal:
             self._read("mutation-intent", intent_digest),
         )
 
+    def read_mutation_intent_by_operation_stage(
+        self, operation_id: Sha256Digest, stage: MainMutationStage
+    ) -> tuple[MainMutationIntent, ArtifactRef] | None:
+        """Read the canonical mutation intent for one operation-stage pair.
+
+        The operation/stage index is the durable idempotency slot used by the
+        coordinator on restart.  It is deliberately read through the same
+        envelope and artifact checks as the digest readers so a missing,
+        forged, or retargeted index fails closed instead of looking like a
+        fresh stage.
+        """
+        key = canonical_digest({"operation_id": operation_id, "stage": stage})
+        path = self._operation_stage_identity_path(
+            MainMutationIntent.model_construct(
+                operation_id=operation_id,
+                stage=stage,
+            )
+        )
+        if not path.is_file():
+            return None
+        envelope = self._read_phase_envelope(path, "mutation-intent", key)
+        try:
+            data = self._store.read_bytes(envelope.reference)
+            if (
+                len(data) != envelope.reference.size_bytes
+                or _digest_bytes(data) != envelope.reference.digest
+            ):
+                raise ValueError("operation-stage intent artifact hash mismatch")
+            intent = MainMutationIntent.model_validate_json(data)
+        except MainGraduationJournalError:
+            raise
+        except (
+            OSError,
+            RuntimeError,
+            ValueError,
+            TypeError,
+            UnicodeError,
+            json.JSONDecodeError,
+        ) as exc:
+            raise MainGraduationJournalError(
+                "operation-stage mutation intent is malformed"
+            ) from exc
+        if (
+            envelope.operation_id != operation_id
+            or intent.operation_id != operation_id
+            or intent.stage != stage
+            or canonical_bytes(intent) != data
+        ):
+            raise MainGraduationRecordConflictError(
+                "operation-stage mutation intent identity differs"
+            )
+        # This also verifies the external-object and stage identity indexes,
+        # parent chain, and all phase-A authority bindings.
+        self._assert_stage_identity(intent)
+        return intent, envelope.reference
+
     def claim_mutation_dispatch(
         self,
         *,

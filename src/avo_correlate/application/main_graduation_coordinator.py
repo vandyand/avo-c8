@@ -14,7 +14,10 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, cast
 
-from avo_correlate.adapters.artifacts.main_graduation_journal import MainGraduationJournal
+from avo_correlate.adapters.artifacts.main_graduation_journal import (
+    MainGraduationJournal,
+    MainGraduationJournalError,
+)
 from avo_correlate.application.c4_capabilities import (
     AdmissionIssueRequest,
     AdmissionObservationRequest,
@@ -212,17 +215,17 @@ class MainGraduationPreparationCoordinator:
         """Resume or execute from one durable operation/state root."""
         try:
             plan, prep, lease, queue_configuration = self._load(operation_id)
-            # A completed preparation is recognized from the durable C4
-            # evidence chain before any provider mutation capability is
-            # touched.  This is important on a fresh process restart: an
-            # exact queued state is a read-only terminal state.
-            queued = self._durable_queued(plan, prep, queue_configuration)
-            if queued is not None:
-                return queued
-
             queue_configuration = self._preflight(
                 plan, prep, lease, queue_configuration
             )
+            # A completed preparation is recognized from the durable C4
+            # evidence chain only after current main/protection/queue state
+            # has been revalidated.  The fast path is read-only, but it is
+            # still an authority decision and must not trust stale evidence.
+            queued = self._durable_queued(plan, prep, lease, queue_configuration)
+            if queued is not None:
+                return queued
+
             receipts: dict[str, Sha256Digest] = {}
             intents: dict[str, Sha256Digest] = {}
 
@@ -416,7 +419,11 @@ class MainGraduationPreparationCoordinator:
                 queue=queue if state == "queued" else None,
                 reason=None if state == "queued" else receipt.outcome,
             )
-        except (MainGraduationPreparationError, C4StageExecutionError) as exc:
+        except (
+            MainGraduationPreparationError,
+            C4StageExecutionError,
+            MainGraduationJournalError,
+        ) as exc:
             return PreparationResult(
                 operation_id=operation_id, state="quarantined", reason=str(exc)
             )
@@ -697,44 +704,179 @@ class MainGraduationPreparationCoordinator:
         self,
         plan: MainGraduationPlan,
         prep: MainPreparationAuthorization,
+        lease: MainLeaseEvidenceRecord,
         queue_configuration: MainQueueConfigurationObservation | None,
     ) -> PreparationResult | None:
-        """Return an exact persisted terminal state without provider writes."""
-        prior = self.journal.read_queue_observation(plan.operation_id)
+        """Return an exact persisted terminal state without provider writes.
+
+        Every stage is reconstructed from the current deterministic inputs and
+        compared with its operation/stage idempotency slot.  This makes a
+        restart with a different clock safe: it can reuse only the original
+        intent and its terminal receipt/resolution, never mint a new chain.
+        """
+        prior_queue = self.journal.read_queue_observation(plan.operation_id)
         admission_prior = self.journal.read_queue_admission(plan.operation_id)
-        if prior is None or admission_prior is None or queue_configuration is None:
+        if prior_queue is None or admission_prior is None or queue_configuration is None:
             return None
-        queue = self._read_queue(plan.operation_id)
-        admission = cast(MainQueueAdmissionObservation, admission_prior[0])
-        admission = self._canonical_dto(admission, MainQueueAdmissionObservation)
+        self._read_queue(plan.operation_id)
+        admission = self._canonical_dto(admission_prior[0], MainQueueAdmissionObservation)
+        self._verify_provider_dto("admission", admission)
         self._validate_queue_configuration(plan, prep, queue_configuration)
+
+        # The admission record is the durable source for the server-assigned
+        # PR number.  Its URL is checked against the current configured
+        # repository before it is used to reconstruct later requests.
+        pr = self._pr_from_fields(
+            admission.pull_request_number,
+            admission.pull_request_url,
+            admission.head_commit,
+            admission.head_tree,
+            admission.base_commit,
+            admission.base_tree,
+        )
+        self._verify_pr(plan, pr)
         if (
-            queue.queue_configuration_digest != queue_configuration.queue_configuration_digest
+            admission.operation_id != plan.operation_id
+            or admission.preparation_authorization_digest != canonical_digest(prep)
             or admission.queue_configuration_digest
             != queue_configuration.queue_configuration_digest
-            or queue.admission_observation_digest != canonical_digest(admission)
-            or queue.pull_request_number != admission.pull_request_number
-            or queue.expected_group_parents != [admission.base_commit, admission.head_commit]
-            or queue.expected_base_commit != plan.composition.base_commit
-            or queue.expected_base_tree != plan.composition.base_tree
+            or admission.protection_manifest_digest
+            != queue_configuration.protection_manifest_digest
+            or admission.issuer_identity != plan.release_issuer_binding.issuer_id
+            or admission.release_issuer_app_id != plan.release_issuer_binding.app_id
+            or admission.issuer_isolation_digest
+            != plan.release_issuer_binding.isolation_digest
         ):
-            raise MainGraduationPreparationError("durable queued state is not exact C4 evidence")
+            raise MainGraduationPreparationError("durable admission is not exact C4 evidence")
+
+        candidate_request = CandidatePublicationRequest.build(
+            operation_id=plan.operation_id,
+            repository_digest=plan.repository_digest,
+            lease_epoch_digest=lease.lease_epoch_digest,
+            candidate_ref=prep_candidate_ref(plan),
+            candidate_commit=plan.composition.candidate_commit,
+            preparation_authorization_digest=prep.authorization_digest,
+        )
+        pr_request = PullRequestCreateRequest.build(
+            operation_id=plan.operation_id,
+            repository_digest=plan.repository_digest,
+            lease_epoch_digest=lease.lease_epoch_digest,
+            candidate_ref=pr_candidate_ref(plan),
+            candidate_commit=plan.composition.candidate_commit,
+            candidate_tree=plan.composition.candidate_tree,
+            base_commit=plan.composition.base_commit,
+            base_tree=plan.composition.base_tree,
+            preparation_authorization_digest=prep.authorization_digest,
+        )
+        protection = self._read_protection(plan.operation_id)
+        admission_seed = canonical_digest(
+            {
+                "operation_id": plan.operation_id,
+                "stage": "admission_check",
+                "repository_digest": plan.repository_digest,
+                "queue_configuration_digest": queue_configuration.queue_configuration_digest,
+                "pull_request_number": pr.number,
+                "pull_request_head": pr.head_commit,
+                "pull_request_tree": pr.head_tree,
+                "base_commit": pr.base_commit,
+                "base_tree": pr.base_tree,
+                "preparation_authorization_digest": prep.authorization_digest,
+                "issuer_identity": protection.isolated_release_issuer,
+                "issuer_app_id": protection.release_issuer_app_id,
+                "issuer_isolation_digest": protection.issuer_isolation_digest,
+            }
+        )
+        admission_request = AdmissionIssueRequest.build(
+            operation_id=plan.operation_id,
+            repository_digest=plan.repository_digest,
+            lease_epoch_digest=lease.lease_epoch_digest,
+            queue_configuration_digest=queue_configuration.queue_configuration_digest,
+            pull_request_number=pr.number,
+            pull_request_head=pr.head_commit,
+            pull_request_tree=pr.head_tree,
+            base_commit=pr.base_commit,
+            base_tree=pr.base_tree,
+            preparation_authorization_digest=canonical_digest(prep),
+            admission_run_id="avo-main-admission-" + admission_seed.removeprefix("sha256:"),
+            admission_nonce=main_stage_nonce(admission_seed),
+            issuer_identity=protection.isolated_release_issuer,
+            issuer_app_id=protection.release_issuer_app_id,
+            issuer_isolation_digest=protection.issuer_isolation_digest,
+        )
+        # Re-read the PR-head admission and isolated required check.  This is
+        # authority verification, not a mutation, and ensures a forged/stale
+        # durable admission cannot authorize the fast path.
+        admission = self._admit(
+            plan, prep, queue_configuration, protection, pr, admission_request
+        )
+        queue_request = QueueEnqueueRequest.build(
+            operation_id=plan.operation_id,
+            repository_digest=plan.repository_digest,
+            lease_epoch_digest=lease.lease_epoch_digest,
+            queue_configuration_digest=queue_configuration.queue_configuration_digest,
+            pull_request_number=pr.number,
+            pull_request_url=pr.url,
+            pull_request_identity=canonical_digest(
+                {
+                    "operation_id": plan.operation_id,
+                    "repository_digest": plan.repository_digest,
+                    "pull_request_number": pr.number,
+                    "pull_request_url": pr.url,
+                }
+            ),
+            pull_request_head=pr.head_commit,
+            pull_request_tree=pr.head_tree,
+            base_commit=pr.base_commit,
+            base_tree=pr.base_tree,
+            preparation_authorization_digest=canonical_digest(prep),
+            admission_observation_digest=canonical_digest(admission),
+        )
+
+        stage_requests: tuple[tuple[str, StageRequest], ...] = (
+            ("candidate_publication", candidate_request),
+            ("pull_request_open", pr_request),
+            ("admission_check", admission_request),
+            ("queue_enqueue", queue_request),
+        )
+        stages: dict[str, tuple[MainMutationIntent, C4StageExecutionResult]] = {}
+        for stage, request in stage_requests:
+            parent = stages.get(
+                {
+                    "candidate_publication": "",
+                    "pull_request_open": "candidate_publication",
+                    "admission_check": "pull_request_open",
+                    "queue_enqueue": "admission_check",
+                }[stage]
+            )
+            stages[stage] = self._durable_stage(plan, prep, lease, request, parent, stage)
+
+        # Confirm the durable post-queue evidence still describes current
+        # provider queue state.  This also invokes the controller authority
+        # verifier over the queue and rejects a changed generation/config.
+        current_queue = self._observe_queued(
+            queue_request, plan, queue_configuration, admission, pr
+        )
+        durable_queue = self._canonical_dto(prior_queue[0], MainQueueObservation)
+        if current_queue.model_dump(mode="json") != durable_queue.model_dump(mode="json"):
+            # Timestamp is observational metadata; every identity field must
+            # remain exact across restart.
+            current_values = current_queue.model_dump(mode="json")
+            durable_values = durable_queue.model_dump(mode="json")
+            current_values.pop("observed_at", None)
+            durable_values.pop("observed_at", None)
+            if current_values != durable_values:
+                raise MainGraduationPreparationError(
+                    "durable post-enqueue queue differs from current authority"
+                )
         return self._result(
             plan.operation_id,
             "queued",
             "queue_enqueue",
-            {},
-            {},
-            pr=_PR(
-                admission.pull_request_number,
-                admission.pull_request_url,
-                admission.head_commit,
-                admission.head_tree,
-                admission.base_commit,
-                admission.base_tree,
-            ),
+            {stage: value[1].receipt.receipt_digest for stage, value in stages.items()},
+            {stage: value[0].intent_digest for stage, value in stages.items()},
+            pr=pr,
             admission=admission,
-            queue=queue,
+            queue=durable_queue,
         )
 
     def _read_protection(self, operation_id: str) -> MainProtectionManifest:
@@ -759,7 +901,23 @@ class MainGraduationPreparationCoordinator:
             )
         return protection
 
-    def _run_stage(
+    def _stage_executor(self, stage: str) -> C4StageExecutor:
+        """Construct an executor for read-only durable stage classification."""
+        return C4StageExecutor(
+            journal=self.journal,
+            clock=self.clock,
+            lease_fence=self.lease_fence,
+            capability=self._capabilities[stage],
+            observation_capability=cast(Any, self.observation_capability),
+            authority_verifier=self.authority_verifier,
+            provider_identity=self.provider_identity,
+            provider_api_version=self.provider_api_version,
+            provider_repository=cast(
+                str | None, getattr(self.provider, "repository_name", None)
+            ),
+        )
+
+    def _intent_values(
         self,
         plan: MainGraduationPlan,
         prep: MainPreparationAuthorization,
@@ -767,7 +925,8 @@ class MainGraduationPreparationCoordinator:
         request: StageRequest,
         parent: tuple[MainMutationIntent, C4StageExecutionResult] | None,
         stage: str,
-    ) -> tuple[MainMutationIntent, C4StageExecutionResult]:
+        recorded_at: Any,
+    ) -> dict[str, Any]:
         parent_receipt: MainMutationReceipt | None = None
         parent_resolution: Sha256Digest | None = None
         if parent is not None:
@@ -780,7 +939,7 @@ class MainGraduationPreparationCoordinator:
                 parent_resolution = parent_execution.parent_resolution_digest
             else:
                 parent_receipt = parent_execution.receipt
-        values: dict[str, Any] = {
+        return {
             "repository_digest": request.repository_digest,
             "target_ref": request.target_ref,
             "operation_id": request.operation_id,
@@ -797,9 +956,72 @@ class MainGraduationPreparationCoordinator:
             "preparation_authorization_digest": prep.authorization_digest,
             "external_identity": _external_identity(request),
             "request_digest": request.request_digest,
-            "recorded_at": self.clock.now(),
+            "recorded_at": recorded_at,
         }
-        intent = _digest_intent(values)
+
+    def _durable_stage(
+        self,
+        plan: MainGraduationPlan,
+        prep: MainPreparationAuthorization,
+        lease: MainLeaseEvidenceRecord,
+        request: StageRequest,
+        parent: tuple[MainMutationIntent, C4StageExecutionResult] | None,
+        stage: str,
+    ) -> tuple[MainMutationIntent, C4StageExecutionResult]:
+        prior = self.journal.read_mutation_intent_by_operation_stage(
+            request.operation_id, stage  # type: ignore[arg-type]
+        )
+        if prior is None:
+            raise MainGraduationPreparationError(
+                f"durable {stage} mutation intent is missing"
+            )
+        durable = self._canonical_dto(prior[0], MainMutationIntent)
+        values = self._intent_values(
+            plan,
+            prep,
+            lease,
+            request,
+            parent,
+            stage,
+            durable.recorded_at,
+        )
+        expected = _digest_intent(values)
+        if expected != durable:
+            raise MainGraduationPreparationError(
+                f"durable {stage} mutation intent differs from current request"
+            )
+        receipt = self._receipt_for_intent(durable.intent_digest)
+        if receipt is None:
+            raise MainGraduationPreparationError(
+                f"durable {stage} mutation receipt is missing"
+            )
+        effective = self._stage_executor(stage).effective_result(durable, receipt)
+        if effective.effective_outcome not in {"applied", "already_applied"}:
+            raise MainGraduationPreparationError(
+                f"durable {stage} mutation is not terminally successful"
+            )
+        return durable, effective
+
+    def _run_stage(
+        self,
+        plan: MainGraduationPlan,
+        prep: MainPreparationAuthorization,
+        lease: MainLeaseEvidenceRecord,
+        request: StageRequest,
+        parent: tuple[MainMutationIntent, C4StageExecutionResult] | None,
+        stage: str,
+    ) -> tuple[MainMutationIntent, C4StageExecutionResult]:
+        prior = self.journal.read_mutation_intent_by_operation_stage(
+            request.operation_id, stage  # type: ignore[arg-type]
+        )
+        recorded_at = self.clock.now() if prior is None else prior[0].recorded_at
+        intent = _digest_intent(
+            self._intent_values(plan, prep, lease, request, parent, stage, recorded_at)
+        )
+        if prior is not None and intent != prior[0]:
+            raise MainGraduationPreparationError(
+                f"durable {stage} mutation intent differs from current request"
+            )
         capture = _CaptureCapability(
             self._capabilities[stage],
             {
