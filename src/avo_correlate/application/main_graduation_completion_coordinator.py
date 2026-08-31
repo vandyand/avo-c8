@@ -11,6 +11,7 @@ resolve an uncertain dispatch.
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -23,6 +24,7 @@ from avo_correlate.adapters.artifacts.main_graduation_journal import (
 from avo_correlate.application.c4_capabilities import (
     GroupHoldIssueRequest,
     GroupHoldObservationRequest,
+    QueueObservationRequest,
     ReleaseIssueRequest,
     ReleaseObservationRequest,
     StageRequest,
@@ -471,10 +473,9 @@ class MainGraduationCompletionCoordinator:
             or protection.provider_api_version != self.provider_api_version
         ):
             raise MainGraduationCompletionError("protection provider identity differs")
-        observe_queue = getattr(self.provider, "observe_queue", None)
-        if revalidate_provider and callable(observe_queue):
-            fresh_queue = observe_queue()
-            if hasattr(fresh_queue, "model_dump"):
+        if revalidate_provider:
+            fresh_queue = self._observe_queue(plan, prep, queue, admission)
+            if isinstance(fresh_queue, MainQueueObservation):
                 expected = queue.model_dump(mode="json")
                 actual = fresh_queue.model_dump(mode="json")
                 expected.pop("observed_at", None)
@@ -520,25 +521,126 @@ class MainGraduationCompletionCoordinator:
         queue: MainQueueObservation,
         pull_request_number: int,
     ) -> object:
-        if supplied is not None:
-            receipt = getattr(supplied, "webhook_receipt", None)
-            if receipt is None or not isinstance(receipt, MainMergeGroupWebhookReceipt):
+        # A caller-supplied DTO is never webhook authority.  A durable receipt
+        # can be replayed after the provider observation was authenticated and
+        # indexed, which is the only safe input after a crash between receipt
+        # publication and hold dispatch.
+        del supplied
+        durable = self._read(
+            queue.operation_id, "merge-group-webhook-receipt", MainMergeGroupWebhookReceipt
+        )
+        if durable is not None:
+            receipt = durable
+            if (
+                receipt.operation_id != queue.operation_id
+                or receipt.repository_digest != queue.repository_digest
+                or receipt.target_ref != queue.target_ref
+            ):
                 raise MainGraduationCompletionError(
-                    "authenticated merge-group webhook receipt is required"
+                    "durable merge-group webhook receipt is bound to another operation"
                 )
-            return supplied
+            return type(
+                "DurableMergeGroupObservation",
+                (),
+                {
+                    "repository_digest": receipt.repository_digest,
+                    "group_sha": receipt.group_sha,
+                    "group_tree": receipt.group_tree,
+                    "group_parents": tuple(receipt.group_parents),
+                    "pull_request_numbers": (receipt.pull_request_number,),
+                    "queue_generation_digest": receipt.queue_generation_digest,
+                    "observed_at": receipt.observed_at,
+                    "webhook_receipt": receipt,
+                },
+            )()
         if not group_sha:
             raise MainGraduationCompletionError("merge-group SHA is required")
         observe = getattr(self.provider, "observe_merge_group", None)
         if not callable(observe):
             raise MainGraduationCompletionError("protected-main merge-group observation is missing")
-        return observe(
+        observed = observe(
             group_sha,
             webhook_body=webhook_body,
             webhook_headers=webhook_headers,
             queue=queue,
             pull_request_number=pull_request_number,
         )
+        receipt = getattr(observed, "webhook_receipt", None)
+        if not isinstance(receipt, MainMergeGroupWebhookReceipt):
+            raise MainGraduationCompletionError(
+                "provider merge-group observation lacks an authenticated receipt"
+            )
+        try:
+            MainMergeGroupWebhookReceipt.model_validate(receipt.model_dump(mode="json"))
+        except Exception as exc:
+            raise MainGraduationCompletionError(
+                "provider merge-group receipt failed controller validation"
+            ) from exc
+        return observed
+
+    def _observe_queue(
+        self,
+        plan: MainGraduationPlan,
+        prep: MainPreparationAuthorization,
+        queue: MainQueueObservation,
+        admission: MainQueueAdmissionObservation,
+    ) -> object:
+        """Read post-enqueue queue state using the provider's exact API shape."""
+
+        observe = getattr(self.provider, "observe_queue", None)
+        if not callable(observe):
+            observe = getattr(self.observation_capability, "observe_queue", None)
+        if not callable(observe):
+            raise MainGraduationCompletionError("authoritative queue observation is missing")
+        try:
+            parameters = inspect.signature(observe).parameters
+        except (TypeError, ValueError):
+            parameters = {}
+        if "operation_id" in parameters:
+            fresh = observe(
+                operation_id=plan.operation_id,
+                queue_configuration_digest=queue.queue_configuration_digest,
+                admission_observation_digest=canonical_digest(admission),
+            )
+        elif "request" in parameters:
+            lease_value = self._read(
+                plan.operation_id, "lease-evidence-record", MainLeaseEvidenceRecord
+            )
+            if lease_value is None:
+                raise MainGraduationCompletionError("durable lease evidence is missing")
+            request = QueueObservationRequest.build(
+                operation_id=plan.operation_id,
+                repository_digest=plan.repository_digest,
+                target_ref=plan.target_ref,
+                lease_epoch_digest=lease_value.lease_epoch_digest,
+                queue_generation_digest=queue.queue_generation_digest,
+                queue_configuration_digest=queue.queue_configuration_digest,
+                pull_request_number=admission.pull_request_number,
+                pull_request_url=admission.pull_request_url,
+                pull_request_identity=canonical_digest(
+                    {
+                        "operation_id": plan.operation_id,
+                        "repository_digest": plan.repository_digest,
+                        "pull_request_number": admission.pull_request_number,
+                        "pull_request_url": admission.pull_request_url,
+                    }
+                ),
+                pull_request_head=admission.head_commit,
+                pull_request_tree=admission.head_tree,
+                base_commit=queue.expected_base_commit,
+                base_tree=queue.expected_base_tree,
+                preparation_authorization_digest=prep.authorization_digest,
+                admission_observation_digest=canonical_digest(admission),
+                object_id=admission.pull_request_url,
+            )
+            fresh = observe(request)
+        else:
+            fresh = observe()
+        if isinstance(fresh, MainQueueObservation):
+            return MainQueueObservation.model_validate(fresh.model_dump(mode="json"))
+        if getattr(fresh, "outcome", None) != "observed":
+            raise MainGraduationCompletionError("provider rejected queued preparation observation")
+        return fresh
 
     def _issue_hold(
         self,
@@ -618,6 +720,10 @@ class MainGraduationCompletionCoordinator:
             admission_observation_digest=canonical_digest(admission),
         )
         intent = self._stage_intent_for_hold(request, prep, plan, lease)
+        # This is the authenticated provider observation boundary.  Publish
+        # its receipt before the hold check or any other hold-side mutation so
+        # a crash leaves a replayable authority record.
+        self.journal.record_merge_group_webhook_receipt(receipt)
         executor = C4StageExecutor(
             journal=self.journal,
             clock=self.clock,
@@ -628,18 +734,11 @@ class MainGraduationCompletionCoordinator:
             provider_identity=self.provider_identity,
             provider_api_version=self.provider_api_version,
         )
-        result = executor.execute_effective(intent, request)
-        if result.effective_outcome in {"ambiguous", "reconciliation_required"}:
-            observation = GroupHoldObservationRequest.build(
-                **request.model_dump(
-                    exclude={"request_digest", "external_key", "external_identity"}
-                ),
-                object_id=request.hold_run_id,
-            )
-            result = executor.recover_effective(intent, observation, original_request=request)
+        result = self._execute_or_recover(
+            executor, intent, request, GroupHoldObservationRequest, request.hold_run_id
+        )
         if result.effective_outcome not in {"applied", "already_applied"}:
             raise MainGraduationCompletionError("merge-group hold is not terminally applied")
-        self.journal.record_merge_group_webhook_receipt(receipt)
         checks = self._group_checks(group_sha, plan, attestation, queue)
         self.journal.record_merge_group_checks(checks)
         hold_values: dict[str, object] = {
@@ -685,6 +784,60 @@ class MainGraduationCompletionCoordinator:
         self.journal.record_release_hold(hold)
         return hold, intent
 
+    def _execute_or_recover(
+        self,
+        executor: C4StageExecutor,
+        intent: MainMutationIntent,
+        request: StageRequest,
+        observation_type: type[Any],
+        object_id: str,
+    ) -> Any:
+        """Run a stage once, recovering an owner/receipt crash read-only."""
+
+        durable_receipt = self._mutation_receipt(intent.intent_digest)
+        owner_reader = getattr(self.journal, "read_mutation_dispatch_owner", None)
+        owner = owner_reader(intent.intent_digest) if callable(owner_reader) else None
+        if owner is not None and durable_receipt is None:
+            effective = executor.recover_effective(
+                intent,
+                observation_type.build(
+                    **request.model_dump(
+                        exclude={"request_digest", "external_key", "external_identity"}
+                    ),
+                    object_id=object_id,
+                ),
+                original_request=request,
+            )
+        else:
+            try:
+                effective = executor.execute_effective(intent, request)
+            except C4StageExecutionError:
+                owner = owner_reader(intent.intent_digest) if callable(owner_reader) else None
+                if owner is None or self._mutation_receipt(intent.intent_digest) is not None:
+                    raise
+                effective = executor.recover_effective(
+                    intent,
+                    observation_type.build(
+                        **request.model_dump(
+                            exclude={"request_digest", "external_key", "external_identity"}
+                        ),
+                        object_id=object_id,
+                    ),
+                    original_request=request,
+                )
+        if effective.effective_outcome in {"ambiguous", "reconciliation_required"}:
+            effective = executor.recover_effective(
+                intent,
+                observation_type.build(
+                    **request.model_dump(
+                        exclude={"request_digest", "external_key", "external_identity"}
+                    ),
+                    object_id=object_id,
+                ),
+                original_request=request,
+            )
+        return effective
+
     def _stage_intent_for_hold(
         self,
         request: StageRequest,
@@ -698,9 +851,7 @@ class MainGraduationCompletionCoordinator:
         parent = self._read_stage_intent(plan.operation_id, "queue_enqueue")
         if parent is None:
             raise MainGraduationCompletionError("durable queue enqueue intent is missing")
-        receipt = self._mutation_receipt(parent.intent_digest)
-        if receipt is None:
-            raise MainGraduationCompletionError("queue enqueue is not terminally applied")
+        parent_proof = self._parent_proof(parent)
         from avo_correlate.contracts.main_graduation import MainExternalIdentity
 
         ext = MainExternalIdentity.model_validate(
@@ -723,8 +874,14 @@ class MainGraduationCompletionCoordinator:
                 "stage": request.stage,
                 "parent_stage": "queue_enqueue",
                 "parent_intent_digest": parent.intent_digest,
-                "parent_receipt": receipt,
-                "parent_resolution_digest": None,
+                "parent_receipt": (
+                    parent_proof if isinstance(parent_proof, MainMutationReceipt) else None
+                ),
+                "parent_resolution_digest": (
+                    parent_proof.resolution_digest
+                    if isinstance(parent_proof, MainMutationFenceResolution)
+                    else None
+                ),
                 "lease_identity": lease.owner,
                 "lease_digest": lease.lease_digest,
                 "lease_epoch_digest": lease.lease_epoch_digest,
@@ -745,15 +902,21 @@ class MainGraduationCompletionCoordinator:
     ) -> MainMutationReceipt | MainMutationFenceResolution:
         receipt = self._mutation_receipt(intent.intent_digest)
         if receipt is None:
-            raise MainGraduationCompletionError("merge-group hold mutation receipt is missing")
+            raise MainGraduationCompletionError(
+                f"{intent.stage} mutation receipt is missing"
+            )
         if receipt.outcome in {"applied", "already_applied"}:
             return receipt
         resolution_reader = getattr(self.journal, "read_mutation_fence_resolution_by_intent", None)
         if callable(resolution_reader):
             prior = resolution_reader(intent.intent_digest)
-            if prior is not None and prior[0].outcome == "observed":
+            if (
+                prior is not None
+                and prior[0].outcome == "observed"
+                and prior[0].observed_outcome in {"applied", "already_applied"}
+            ):
                 return cast(MainMutationFenceResolution, prior[0])
-        raise MainGraduationCompletionError("merge-group hold is not terminally applied")
+        raise MainGraduationCompletionError(f"{intent.stage} is not terminally applied")
 
     def _group_checks(
         self,
@@ -764,10 +927,39 @@ class MainGraduationCompletionCoordinator:
     ) -> MainMergeGroupChecks:
         observe = getattr(self.provider, "observe_merge_group_checks", None)
         if not callable(observe):
+            observe = getattr(self.observation_capability, "observe_merge_group_checks", None)
+        if not callable(observe):
             raise MainGraduationCompletionError("merge-group check observation is missing")
-        raw = observe(group_sha, freshness_cutoff=self.clock.now())
+        freshness = self.clock.now()
+        try:
+            parameters = inspect.signature(observe).parameters
+        except (TypeError, ValueError):
+            parameters = {}
+        # ProtectedMainProvider's typed contract requires all four identity
+        # bindings.  Older fixture adapters expose only freshness_cutoff; the
+        # conditional keeps those adapters useful without weakening the
+        # production call.
+        required = {
+            "operation_id": plan.operation_id,
+            "package_digest": plan.package.package_digest,
+            "composition_digest": plan.composition.composition_digest,
+            "config_digest": queue.queue_configuration_digest,
+            "freshness_cutoff": freshness,
+        }
+        kwargs = {name: value for name, value in required.items() if name in parameters}
+        raw = observe(group_sha, **kwargs)
         if isinstance(raw, MainMergeGroupChecks):
-            return MainMergeGroupChecks.model_validate(raw.model_dump(mode="json"))
+            checks = MainMergeGroupChecks.model_validate(raw.model_dump(mode="json"))
+            if (
+                checks.operation_id != plan.operation_id
+                or checks.package_digest != plan.package.package_digest
+                or checks.composition_digest != plan.composition.composition_digest
+                or checks.config_digest != queue.queue_configuration_digest
+            ):
+                raise MainGraduationCompletionError(
+                    "merge-group checks are bound to stale preparation"
+                )
+            return checks
         checks = tuple(cast(MainCheckObservation, item) for item in raw)
         contexts = tuple(sorted({item.context for item in checks}))
         if not contexts or "avo-main-release" in contexts:
@@ -783,8 +975,8 @@ class MainGraduationCompletionCoordinator:
             allowlisted_contexts=list(contexts),
             config_digest=queue.queue_configuration_digest,
             validation_app_id=15368,
-            freshness_cutoff=self.clock.now(),
-            observed_at=self.clock.now(),
+            freshness_cutoff=freshness,
+            observed_at=freshness,
         )
 
     def _issue_authorization(
@@ -830,8 +1022,16 @@ class MainGraduationCompletionCoordinator:
     def _read_claim_for_authorization(
         self, operation_id: str, authorization: MainReleaseAuthorization
     ) -> MainReleaseClaim | None:
-        # Claim identity is derived from the immutable authorization/hold; the
-        # journal has no operation-local claim index by design.
+        # The journal derives the deterministic key from durable authorization,
+        # hold, and lease predecessors.  It also repairs the local pointer if
+        # a process crashed after global claim CAS and before local indexing.
+        recover = getattr(self.journal, "recover_release_claim_for_authorization", None)
+        if callable(recover):
+            value = recover(operation_id, authorization)
+            return None if value is None else cast(MainReleaseClaim, value[0])
+
+        # Compatibility fallback for older journal doubles used by callers;
+        # concrete journals always take the verified recovery path above.
         directory = self.journal.root / "main-graduation-index" / "release-claim"
         for path in sorted(directory.glob("*.json")) if directory.is_dir() else ():
             digest = "sha256:" + path.stem
@@ -949,22 +1149,10 @@ class MainGraduationCompletionCoordinator:
             provider_identity=self.provider_identity,
             provider_api_version=self.provider_api_version,
         )
-        mutation = self._mutation_receipt(intent.intent_digest)
-        effective = (
-            executor.effective_result(intent, mutation)
-            if mutation is not None
-            else executor.execute_effective(intent, request)
+        effective = self._execute_or_recover(
+            executor, intent, request, ReleaseObservationRequest, hold.group_sha
         )
         resolution = effective.authoritative_resolution
-        if effective.effective_outcome in {"ambiguous", "reconciliation_required"}:
-            observation = ReleaseObservationRequest.build(
-                **request.model_dump(
-                    exclude={"request_digest", "external_key", "external_identity"}
-                ),
-                object_id=hold.group_sha,
-            )
-            effective = executor.recover_effective(intent, observation, original_request=request)
-            resolution = effective.authoritative_resolution
         mutation = effective.receipt
         if mutation.outcome in {"applied", "already_applied"}:
             outcome = "transitioned" if mutation.outcome == "applied" else "already_transitioned"
@@ -1060,7 +1248,30 @@ class MainGraduationCompletionCoordinator:
         )
         observed_at = cast(datetime, getattr(main, "observed_at", self.clock.now()))
         provider_receipt = self._read(plan.operation_id, "provider-receipt", MainProviderReceipt)
-        if provider_receipt is None:
+        existing_reconciliation = self._read(
+            plan.operation_id, "reconciliation", MainReconciliation
+        )
+        existing_post_state = self._read(
+            plan.operation_id, "provider-post-state-observation", MainProviderPostStateObservation
+        )
+        new_provider_receipt = provider_receipt is None
+        if provider_receipt is not None:
+            if (
+                provider_receipt.repository_digest != plan.repository_digest
+                or provider_receipt.target_ref != plan.target_ref
+                or provider_receipt.release_authorization_digest
+                != authorization.authorization_digest
+                or provider_receipt.provider_identity != self.provider_identity
+                or provider_receipt.provider_api_version != self.provider_api_version
+                or provider_receipt.result_commit != commit
+                or provider_receipt.result_tree != tree
+                or provider_receipt.result_parents != parents
+                or provider_receipt.response_digest != response
+            ):
+                raise MainGraduationCompletionError(
+                    "fresh provider post-state differs from durable provider receipt"
+                )
+        else:
             provider_receipt = MainProviderReceipt(
                 operation_id=plan.operation_id,
                 repository_digest=plan.repository_digest,
@@ -1075,8 +1286,18 @@ class MainGraduationCompletionCoordinator:
                 response_digest=response,
                 observed_at=observed_at,
             )
-            self.journal.record_provider_receipt(provider_receipt)
-        reconciliation = self._read(plan.operation_id, "reconciliation", MainReconciliation)
+        if existing_reconciliation is not None and (
+            existing_reconciliation.operation_id != plan.operation_id
+            or existing_reconciliation.repository_digest != plan.repository_digest
+            or existing_reconciliation.target_ref != plan.target_ref
+            or existing_reconciliation.main_commit != commit
+            or existing_reconciliation.main_tree != tree
+            or existing_reconciliation.main_parents != parents
+        ):
+            raise MainGraduationCompletionError(
+                "fresh provider post-state differs from durable reconciliation"
+            )
+        reconciliation = existing_reconciliation
         if reconciliation is None:
             state = (
                 "completed"
@@ -1101,32 +1322,63 @@ class MainGraduationCompletionCoordinator:
                 claimed_transition_receipt_digest=claimed.receipt_digest,
             )
             self.journal.record_reconciliation(reconciliation)
-        post_state = self._read(
-            plan.operation_id, "provider-post-state-observation", MainProviderPostStateObservation
-        )
+        fresh_values = {
+            "operation_id": plan.operation_id,
+            "repository_digest": plan.repository_digest,
+            "target_ref": plan.target_ref,
+            "release_authorization_digest": authorization.authorization_digest,
+            "provider_identity": self.provider_identity,
+            "provider_api_version": self.provider_api_version,
+            "result_commit": provider_receipt.result_commit,
+            "result_tree": provider_receipt.result_tree,
+            "result_parents": provider_receipt.result_parents,
+            "response_digest": provider_receipt.response_digest,
+            "observed_at": provider_receipt.observed_at,
+        }
+        if existing_post_state is not None:
+            for name in (
+                "operation_id",
+                "repository_digest",
+                "target_ref",
+                "release_authorization_digest",
+                "provider_identity",
+                "provider_api_version",
+                "result_commit",
+                "result_tree",
+                "result_parents",
+                "response_digest",
+            ):
+                if getattr(existing_post_state, name) != fresh_values[name]:
+                    raise MainGraduationCompletionError(
+                        "fresh provider post-state differs from durable observation"
+                    )
+        if new_provider_receipt:
+            self.journal.record_provider_receipt(provider_receipt)
+        post_state = existing_post_state
         if post_state is None:
             post_state = _digest_record(
                 MainProviderPostStateObservation,
-                {
-                    "operation_id": plan.operation_id,
-                    "repository_digest": plan.repository_digest,
-                    "target_ref": plan.target_ref,
-                    "release_authorization_digest": authorization.authorization_digest,
-                    "provider_identity": self.provider_identity,
-                    "provider_api_version": self.provider_api_version,
-                    "result_commit": provider_receipt.result_commit,
-                    "result_tree": provider_receipt.result_tree,
-                    "result_parents": provider_receipt.result_parents,
-                    "response_digest": provider_receipt.response_digest,
-                    "observed_at": provider_receipt.observed_at,
-                },
+                fresh_values,
                 "observation_digest",
             )
-            self.journal.record("provider-post-state-observation", post_state)
+            recorder = getattr(self.journal, "record_provider_post_state_observation", None)
+            if callable(recorder):
+                recorder(post_state)
+            else:
+                self.journal.record("provider-post-state-observation", post_state)
         return provider_receipt, reconciliation, post_state
 
     def _mutation_receipt(self, digest: str) -> MainMutationReceipt | None:
         value = self.journal.read_mutation_receipt(digest)
+        if value is not None:
+            return value[0]
+        # Mutation receipts are content-addressed by receipt_digest, while
+        # stage intents link them by intent_digest.  Recovery must support the
+        # latter identity without treating a missing digest-index lookup as a
+        # fresh stage.
+        reader = getattr(self.journal, "_read_receipt_for_intent", None)
+        if callable(reader):
+            value = reader(digest)
         return None if value is None else value[0]
 
     def _read_stage_intent(self, operation_id: str, stage: str) -> MainMutationIntent | None:
