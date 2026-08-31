@@ -220,7 +220,16 @@ class CompletionProvider(Provider):
         from avo_correlate.application.c4_capabilities import ReleaseObservationResult
 
         self.release_observation_calls += 1
-        outcome = "ambiguous" if not self.applied or self.no_result else "observed"
+        # The first read models a transport/process boundary where the
+        # provider cannot yet return authoritative post-state, even though
+        # the release may already have applied.  A later fresh-process read
+        # can observe the applied state; the explicit no-result fixture keeps
+        # that state ambiguous forever.
+        outcome = (
+            "ambiguous"
+            if self.no_result or not self.applied or self.release_observation_calls == 1
+            else "observed"
+        )
         main = self.observe_main()
         post_values = {
             "schema_version": 1,
@@ -347,6 +356,11 @@ def test_timeout_then_expired_fresh_recovery_completes_read_only_and_replays_exa
     assert provider.release_calls == 1
     assert provider.release_observation_calls == 1
     assert journal.read_completion(MAIN_OPERATION) is None
+    intent = journal.read_mutation_intent_by_operation_stage(
+        MAIN_OPERATION, "release_transition"
+    )
+    assert intent is not None
+    assert journal.read_mutation_fence_resolution_by_intent(intent[0].intent_digest) is None
 
     provider.clock.current = NOW + timedelta(minutes=10)
     fresh = _fresh_journal(journal)
