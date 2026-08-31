@@ -46,6 +46,7 @@ from avo_correlate.domain.canonical import canonical_digest
 _GIT_OBJECT = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _CANDIDATE_HEAD = re.compile(r"^(?:refs/heads/)?avo/candidate/[0-9a-f]{64}$")
+_REPOSITORY_COMPONENT = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$")
 
 # GitHub exposes merge queues through GraphQL.  There is no supported REST
 # ``/merge-queue`` or ``/merge-queue/groups`` resource.  Keep the query
@@ -82,6 +83,17 @@ query ProtectedMainMergeQueue($owner: String!, $name: String!, $branch: String!)
 
 class ProtectedMainProviderError(RuntimeError):
     """An observation was malformed, stale, or failed a protected-main gate."""
+
+
+def _repository_binding(owner: object, repo: object) -> tuple[str, str]:
+    if (
+        not isinstance(owner, str)
+        or not isinstance(repo, str)
+        or _REPOSITORY_COMPONENT.fullmatch(owner) is None
+        or _REPOSITORY_COMPONENT.fullmatch(repo) is None
+    ):
+        raise ValueError("invalid GitHub repository binding")
+    return owner, repo
 
 
 class ProtectedMainRejected(ProtectedMainProviderError):
@@ -273,8 +285,7 @@ class ProtectedMainProvider:
         transport: JsonTransport | None = None,
         webhook_secret: str | None = None,
     ) -> None:
-        if not owner or not repo or any(char in owner + repo for char in "/\\"):
-            raise ValueError("invalid GitHub repository binding")
+        owner, repo = _repository_binding(owner, repo)
         if repository_digest != github_repository_digest(owner, repo):
             raise ValueError("repository digest does not match configured GitHub repository")
         if not release_issuer_identity.strip() or release_issuer_app_id <= 0:
@@ -296,8 +307,8 @@ class ProtectedMainProvider:
             or any(not item for item in contexts)
         ):
             raise ValueError("trusted check contexts must be non-empty and unique")
-        self.owner = owner
-        self.repo = repo
+        self._owner = owner
+        self._repo = repo
         self.repository_digest = repository_digest
         self.release_issuer_identity = release_issuer_identity
         self.release_issuer_app_id = release_issuer_app_id
@@ -322,6 +333,24 @@ class ProtectedMainProvider:
         _headers: Mapping[str, str],
     ) -> tuple[int, JsonValue]:
         raise ProtectedMainProviderError("a fake or explicitly configured transport is required")
+
+    @property
+    def owner(self) -> str:
+        return self._owner
+
+    @property
+    def repo(self) -> str:
+        return self._repo
+
+    @property
+    def repository_name(self) -> str:
+        """The immutable owner/repository identity used by the coordinator."""
+        return f"{self.owner}/{self.repo}"
+
+    @property
+    def repository_url(self) -> str:
+        """The canonical HTTPS URL for this repository (without a suffix)."""
+        return f"https://github.com/{self.repository_name}"
 
     @property
     def repository_path(self) -> str:
@@ -542,6 +571,20 @@ class ProtectedMainProvider:
     def observe_main(self) -> MainRefObservation:
         return self.observe_ref()
 
+    def _validate_pull_request_identity(self, raw: JsonObject, number: int) -> str:
+        """Validate the repository and URL identity shared by PR reads."""
+        if _int(raw, "number", "pull request") != number:
+            raise ProtectedMainProviderError("pull request number differs from request")
+        url = _str(raw, "html_url", "pull request")
+        if url != f"{self.repository_url}/pull/{number}":
+            raise ProtectedMainProviderError("pull request URL is not exact")
+        expected_name = self.repository_name
+        for side, label in (("base", "pull request base"), ("head", "pull request head")):
+            repository = _nested(_nested(raw, side, "pull request"), "repo", label)
+            if _str(repository, "full_name", label) != expected_name:
+                raise ProtectedMainProviderError(f"{label} is not same-repository")
+        return url
+
     def observe_pull_request(
         self,
         number: int,
@@ -554,17 +597,9 @@ class ProtectedMainProvider:
         if isinstance(number, bool) or number <= 0:
             raise ProtectedMainProviderError("pull request number must be positive")
         raw = _object(self._call(self.repository_path + f"/pulls/{number}"), "pull request")
-        if _int(raw, "number", "pull request") != number:
-            raise ProtectedMainProviderError("pull request number differs from request")
+        url = self._validate_pull_request_identity(raw, number)
         base = _nested(raw, "base", "pull request")
         head = _nested(raw, "head", "pull request")
-        base_repo = _nested(base, "repo", "pull request base")
-        head_repo = _nested(head, "repo", "pull request head")
-        expected_name = f"{self.owner}/{self.repo}".casefold()
-        if _str(base_repo, "full_name", "pull request base repo").casefold() != expected_name:
-            raise ProtectedMainProviderError("pull request base is not same-repository")
-        if _str(head_repo, "full_name", "pull request head repo").casefold() != expected_name:
-            raise ProtectedMainProviderError("pull request head is not same-repository")
         base_ref = _str(base, "ref", "pull request base")
         if base_ref not in {"main", "refs/heads/main"}:
             raise ProtectedMainProviderError("pull request is retargeted")
@@ -585,12 +620,7 @@ class ProtectedMainProvider:
             raise ProtectedMainProviderError("pull request is not open and unmerged")
         if _bool(raw, "draft", "pull request"):
             raise ProtectedMainProviderError("draft pull request cannot be admitted")
-        url = _str(raw, "html_url", "pull request")
-        expected_url_value = f"https://github.com/{self.owner}/{self.repo}/pull/{number}"
-        if (
-            url != expected_url_value
-            or (expected_url is not None and url != expected_url)
-        ):
+        if expected_url is not None and url != expected_url:
             raise ProtectedMainProviderError("pull request URL is not exact")
         if expected_base_commit is not None and base_commit != _git(
             expected_base_commit, "expected base"
@@ -664,6 +694,8 @@ class ProtectedMainProvider:
             raise ProtectedMainProviderError("pull request search exceeded bounds")
         exact: list[int] = []
         for item in items:
+            number = _int(item, "number", "pull request search result")
+            self._validate_pull_request_identity(item, number)
             head = _nested(item, "head", "pull request search result")
             base = _nested(item, "base", "pull request search result")
             item_head_ref = _str(head, "ref", "pull request search head")
@@ -679,7 +711,6 @@ class ProtectedMainProvider:
                 raise ProtectedMainProviderError("pull request search returned a foreign head ref")
             if item_base_sha != base_commit:
                 raise ProtectedMainProviderError("pull request search returned a foreign base")
-            number = _int(item, "number", "pull request search result")
             if item_head_sha == head_commit:
                 exact.append(number)
             else:

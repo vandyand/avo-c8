@@ -1,4 +1,4 @@
-# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportAttributeAccessIssue=false, reportIndexIssue=false, reportUnnecessaryCast=false, reportUnusedClass=false
+# pyright: reportUnknownMemberType=false, reportUnknownVariableType=false, reportUnknownArgumentType=false, reportAttributeAccessIssue=false, reportIndexIssue=false, reportUnnecessaryCast=false, reportUnusedClass=false, reportPrivateUsage=false, reportMissingImports=false, reportUntypedFunctionDecorator=false, reportUnknownParameterType=false
 
 """Filesystem-backed C4 preparation coordinator coverage."""
 
@@ -7,6 +7,8 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
+
+import pytest
 
 from avo_correlate.adapters.artifacts.main_graduation_journal import MainGraduationJournal
 from avo_correlate.adapters.git.main_composition import MainBaseSnapshot, MainCompositionAdapter
@@ -40,6 +42,7 @@ from avo_correlate.contracts.main_graduation import (
 from avo_correlate.contracts.main_graduation_phase_a import (
     MainLeaseEvidenceRecord,
     MainMutationFenceResolution,
+    MainMutationIntent,
     MainMutationReceipt,
 )
 from avo_correlate.domain.canonical import canonical_digest
@@ -589,6 +592,63 @@ def _coordinator(
     )
 
 
+def _fresh_journal(journal: MainGraduationJournal) -> MainGraduationJournal:
+    """Reopen the same durable root as a new process would."""
+
+    return MainGraduationJournal(
+        journal.root,
+        release_issuer_binding=journal._release_issuer_binding,
+        policy_epoch=journal._policy_epoch,
+        composition_root=journal._composition_root,
+        repository_digest=journal._composition_repository_digest,
+        base_reader=journal._composition_base_reader,
+        phase_a_authority_verifier=journal._phase_a_authority_verifier,
+    )
+
+
+class CrashAfterDispatchProvider(Provider):
+    """Apply one provider mutation, then lose its response."""
+
+    def __init__(self, base: str, tree: str, candidate: str, candidate_tree: str) -> None:
+        super().__init__(base, tree, candidate, candidate_tree)
+        self.crash_stage: str | None = None
+
+    def _crash(self, stage: str) -> None:
+        if self.crash_stage == stage:
+            self.crash_stage = None
+            raise RuntimeError("response lost after applied mutation")
+
+    def publish_candidate(self, request: CandidatePublicationRequest) -> CandidatePublicationResult:
+        result = super().publish_candidate(request)
+        self._crash("candidate_publication")
+        return result
+
+    def create_pull_request(self, request: PullRequestCreateRequest) -> PullRequestCreateResult:
+        result = super().create_pull_request(request)
+        self._crash("pull_request_open")
+        return result
+
+    def issue_admission(self, request: Any) -> Any:
+        result = super().issue_admission(request)
+        self._crash("admission_check")
+        return result
+
+    def enqueue(self, request: Any) -> QueueEnqueueResult:
+        result = super().enqueue(request)
+        self._crash("queue_enqueue")
+        return result
+
+
+def _durable_intents(journal: MainGraduationJournal) -> dict[str, MainMutationIntent]:
+    values: dict[str, MainMutationIntent] = {}
+    for path in (journal.root / "main-graduation-index" / "mutation-intent").glob("*.json"):
+        digest = "sha256:" + path.stem
+        value = journal.read_mutation_intent(digest)
+        assert value is not None
+        values[value[0].stage] = value[0]
+    return values
+
+
 def test_happy_path_is_exact_four_stage_and_replay_is_read_only(tmp_path: Path) -> None:
     journal, provider = _fixture(tmp_path)
     coordinator = _coordinator(journal, provider)
@@ -613,6 +673,96 @@ def test_restart_after_lost_pr_response_recovers_read_only_and_queues_once(tmp_p
     assert replay.state == "queued"
     assert provider.calls == before == ["candidate", "pr-crash", "admission", "enqueue"]
     assert journal.read_queue_admission(MAIN_OPERATION) is not None
+
+
+@pytest.mark.parametrize(
+    "stage",
+    ["candidate_publication", "pull_request_open", "admission_check", "queue_enqueue"],
+)
+def test_fresh_process_recovers_after_intent_before_dispatch_crash(
+    tmp_path: Path, stage: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    journal, provider = _fixture(tmp_path)
+    original = journal.record_mutation_intent
+    crashed = False
+
+    def record_then_crash(intent: MainMutationIntent) -> Any:
+        nonlocal crashed
+        result = original(intent)
+        if intent.stage == stage and not crashed:
+            crashed = True
+            raise RuntimeError("crash after intent before dispatch")
+        return result
+
+    monkeypatch.setattr(journal, "record_mutation_intent", record_then_crash)
+    first = _coordinator(journal, provider).prepare(MAIN_OPERATION)
+    assert first.state == "quarantined"
+    assert crashed
+
+    fresh = _fresh_journal(journal)
+    provider.journal = fresh
+    replay = _coordinator(fresh, provider).prepare(MAIN_OPERATION)
+    assert replay.state == "queued", replay
+    assert provider.calls.count("candidate") == 1
+    assert provider.calls.count("pr") == 1
+    assert provider.calls.count("admission") == 1
+    assert provider.calls.count("enqueue") == 1
+
+    intents = _durable_intents(fresh)
+    assert set(intents) == {
+        "candidate_publication",
+        "pull_request_open",
+        "admission_check",
+        "queue_enqueue",
+    }
+    assert all(intent.recorded_at == NOW for intent in intents.values())
+    assert replay.stage_intents == {
+        key: intent.intent_digest for key, intent in intents.items()
+    }
+
+
+@pytest.mark.parametrize(
+    "stage",
+    ["candidate_publication", "pull_request_open", "admission_check", "queue_enqueue"],
+)
+def test_fresh_process_recovers_after_applied_mutation_response_loss(
+    tmp_path: Path, stage: str
+) -> None:
+    journal, provider = _fixture(tmp_path, CrashAfterDispatchProvider)
+    provider.crash_stage = stage
+    first = _coordinator(journal, provider).prepare(MAIN_OPERATION)
+    assert first.state == "queued", first
+
+    before = list(provider.calls)
+    fresh = _fresh_journal(journal)
+    provider.journal = fresh
+    replay = _coordinator(fresh, provider).prepare(MAIN_OPERATION)
+    assert replay.state == "queued", replay
+    assert provider.calls == before
+    assert all(before.count(call) == 1 for call in ("candidate", "pr", "admission", "enqueue"))
+
+
+@pytest.mark.parametrize(
+    "stage",
+    ["candidate_publication", "pull_request_open", "admission_check", "queue_enqueue"],
+)
+def test_fresh_process_rejects_missing_stage_chain_artifact_or_index(
+    tmp_path: Path, stage: str
+) -> None:
+    journal, provider = _fixture(tmp_path)
+    result = _coordinator(journal, provider).prepare(MAIN_OPERATION)
+    assert result.state == "queued"
+    intent = _durable_intents(journal)[stage]
+    reference = journal.read_mutation_intent(intent.intent_digest)
+    assert reference is not None
+    # Remove the content-addressed record while retaining the index.  A fresh
+    # process must quarantine instead of treating the stage as replayable.
+    assert journal.delete_artifact(reference[1].digest)
+    fresh = _fresh_journal(journal)
+    provider.journal = fresh
+    replay = _coordinator(fresh, provider).prepare(MAIN_OPERATION)
+    assert replay.state == "quarantined"
+    assert provider.calls == ["candidate", "pr", "admission", "enqueue"]
 
 
 def test_foreign_pr_observation_fails_closed_before_admission_or_queue(tmp_path: Path) -> None:

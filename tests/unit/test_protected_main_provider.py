@@ -16,6 +16,7 @@ from avo_correlate.adapters.hosted_git.protected_main import (
     ProtectedMainProvider,
     ProtectedMainProviderError,
 )
+from tests.unit.test_protected_main_adversarial import FakeTransport
 
 SHA = "a" * 40
 OTHER = "b" * 40
@@ -97,3 +98,27 @@ def test_wrong_sha_and_mutation_authority_fail_closed() -> None:
         main.observe_pr_head_admission_check(SHA, freshness_cutoff=datetime(2026, 1, 1, tzinfo=UTC))
     assert not hasattr(main, "merge")
     assert not hasattr(main, "enqueue")
+
+
+def test_canonical_repository_binding_rejects_foreign_pr_url_and_names() -> None:
+    main = provider(FakeTransport())
+    assert main.repository_name == "avo/repo"
+    assert main.repository_url == "https://github.com/avo/repo"
+    with pytest.raises(AttributeError):
+        main.repository_name = "other/repo"  # pyright: ignore[reportAttributeAccessIssue]
+    with pytest.raises(AttributeError):
+        main.repository_url = "https://github.com/other/repo"  # pyright: ignore[reportAttributeAccessIssue]
+
+    foreign_url = FakeTransport()
+    foreign_url.pr["html_url"] = "https://github.com/other/repo/pull/7"
+    with pytest.raises(ProtectedMainProviderError):
+        provider(foreign_url).observe_pull_request(7)
+
+    foreign_name = FakeTransport()
+    base = foreign_name.pr["base"]
+    assert isinstance(base, dict)
+    base_repo = base["repo"]
+    assert isinstance(base_repo, dict)
+    base_repo["full_name"] = "other/repo"
+    with pytest.raises(ProtectedMainProviderError):
+        provider(foreign_name).observe_pull_request(7)

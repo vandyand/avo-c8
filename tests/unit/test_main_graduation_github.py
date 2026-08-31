@@ -18,6 +18,8 @@ from avo_correlate.adapters.hosted_git.protected_main import ProtectedMainProvid
 from avo_correlate.application.c4_capabilities import (
     AdmissionIssueRequest,
     CandidatePublicationRequest,
+    PullRequestLookupRequest,
+    PullRequestReconcileRequest,
     QueueEnqueueRequest,
 )
 from avo_correlate.domain.canonical import canonical_digest
@@ -606,3 +608,114 @@ def test_authoritative_pr_rejects_merged_or_equal_head_base(field: str, value: A
             base_commit=request.base_commit,
             base_tree=request.base_tree,
         )
+
+
+def test_production_binding_is_canonical_and_pr_lookup_reconcile_is_same_repository() -> None:
+    request = queue_request()
+    candidate_ref = "refs/heads/avo/candidate/" + request.operation_id.removeprefix("sha256:")
+    pr: dict[str, Any] = {
+        "number": 1,
+        "html_url": "https://github.com/owner/repo/pull/1",
+        "state": "open",
+        "draft": False,
+        "merged": False,
+        "base": {
+            "ref": "main",
+            "sha": request.base_commit,
+            "repo": {"full_name": "owner/repo"},
+        },
+        "head": {
+            "ref": candidate_ref,
+            "sha": request.pull_request_head,
+            "repo": {"full_name": "owner/repo"},
+        },
+    }
+
+    def transport(
+        method: str, url: str, body: Any, headers: Mapping[str, Any]
+    ) -> tuple[int, Any]:
+        del body, headers
+        if method == "GET" and "/pulls?state=all" in url:
+            return 200, [pr]
+        if method == "GET" and url.endswith("/pulls/1"):
+            return 200, pr
+        if method == "GET" and url.endswith("/git/commits/" + request.pull_request_head):
+            return 200, {
+                "sha": request.pull_request_head,
+                "tree": {"sha": request.pull_request_tree},
+                "parents": [],
+            }
+        if method == "GET" and url.endswith("/git/commits/" + request.base_commit):
+            return 200, {
+                "sha": request.base_commit,
+                "tree": {"sha": request.base_tree},
+                "parents": [],
+            }
+        raise AssertionError((method, url))
+
+    value, _ = adapter(observer=RoutingTransport({}))
+    # Use the public binding exposed to the coordinator and verify it cannot
+    # be replaced by a caller after construction.
+    assert value.repository_name == "owner/repo"
+    assert value.repository_url == "https://github.com/owner/repo"
+    with pytest.raises(AttributeError):
+        value.repository_name = "other/repo"  # pyright: ignore[reportAttributeAccessIssue]
+    with pytest.raises(AttributeError):
+        value.repository_url = "https://github.com/other/repo"  # pyright: ignore[reportAttributeAccessIssue]
+
+    value, _ = adapter(observer=RoutingTransport({}))
+    value._read_only_transports["observer"] = transport
+    lookup = PullRequestLookupRequest.build(
+        operation_id=request.operation_id,
+        repository_digest=request.repository_digest,
+        lease_epoch_digest=request.lease_epoch_digest,
+        candidate_ref=candidate_ref,
+        candidate_commit=request.pull_request_head,
+        candidate_tree=request.pull_request_tree,
+        base_commit=request.base_commit,
+        base_tree=request.base_tree,
+    )
+    observed = value.lookup_pull_request(lookup)
+    assert observed.object_id == "https://github.com/owner/repo/pull/1"
+
+    reconcile = PullRequestReconcileRequest.build(
+        operation_id=request.operation_id,
+        repository_digest=request.repository_digest,
+        lease_epoch_digest=request.lease_epoch_digest,
+        pull_request_number=1,
+        candidate_ref=candidate_ref,
+        head_commit=request.pull_request_head,
+        head_tree=request.pull_request_tree,
+        base_commit=request.base_commit,
+        base_tree=request.base_tree,
+        repository_name=value.repository_name,
+    )
+    reconciled = value.reconcile_pull_request(reconcile)
+    assert reconciled.object_id == "owner/repo:pull/1"
+
+    foreign_url = {**pr, "html_url": "https://github.com/other/repo/pull/1"}
+    foreign_name = {
+        **pr,
+        "base": {**pr["base"], "repo": {"full_name": "other/repo"}},
+    }
+    for foreign in (foreign_url, foreign_name):
+        value._read_only_transports["observer"] = (
+            lambda *_args, foreign=foreign, **_kwargs: (200, [foreign])
+        )
+        with pytest.raises(GitHubMainGraduationRejected):
+            value.lookup_pull_request(lookup)
+
+    foreign_reconcile = PullRequestReconcileRequest.build(
+        operation_id=request.operation_id,
+        repository_digest=request.repository_digest,
+        lease_epoch_digest=request.lease_epoch_digest,
+        pull_request_number=1,
+        candidate_ref=candidate_ref,
+        head_commit=request.pull_request_head,
+        head_tree=request.pull_request_tree,
+        base_commit=request.base_commit,
+        base_tree=request.base_tree,
+        repository_name="other/repo",
+    )
+    with pytest.raises(ValueError, match="repository binding"):
+        value.reconcile_pull_request(foreign_reconcile)

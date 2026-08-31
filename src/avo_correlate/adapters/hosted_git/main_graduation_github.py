@@ -61,6 +61,7 @@ _OBJECT = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _CANDIDATE = re.compile(r"^refs/heads/avo/candidate/[0-9a-f]{64}$")
 _URL = re.compile(r"^https://github\.com/([^/]+)/([^/]+)/pull/([1-9][0-9]*)$")
+_REPOSITORY_COMPONENT = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$")
 
 # This query and mutation are intentionally pinned strings.  A REST merge (or
 # an invented queue endpoint) is not an equivalent operation on GitHub.
@@ -110,6 +111,17 @@ class GitHubMainGraduationRejected(GitHubMainGraduationError):
 
 class GitHubMainGraduationAmbiguous(GitHubMainGraduationError):
     """A call crossed the transport boundary without an authoritative result."""
+
+
+def _repository_binding(owner: object, repo: object) -> tuple[str, str]:
+    if (
+        not isinstance(owner, str)
+        or not isinstance(repo, str)
+        or _REPOSITORY_COMPONENT.fullmatch(owner) is None
+        or _REPOSITORY_COMPONENT.fullmatch(repo) is None
+    ):
+        raise ValueError("invalid GitHub repository binding")
+    return owner, repo
 
 
 class GraduationTransport(Protocol):
@@ -222,8 +234,7 @@ class GitHubMainGraduationAdapter:
         api_base: str = "https://api.github.com",
         provider_api_version: str = "2022-11-28",
     ) -> None:
-        if not owner or not repo or any(c in owner + repo for c in "/\\"):
-            raise ValueError("invalid GitHub repository binding")
+        owner, repo = _repository_binding(owner, repo)
         if repository_digest != github_repository_digest(owner, repo):
             raise ValueError("repository digest does not match GitHub repository")
         if not _DIGEST.fullmatch(repository_digest):
@@ -285,7 +296,8 @@ class GitHubMainGraduationAdapter:
             raise ValueError("protected-main check configuration is invalid")
         if observer_principal is not None and id(observer_principal) in {id(p) for p in principals}:
             raise ValueError("observer requires a distinct principal binding")
-        self.owner, self.repo, self.repository_digest = owner, repo, repository_digest
+        self._owner, self._repo = owner, repo
+        self.repository_digest = repository_digest
         self.api_base = api_base.rstrip("/")
         self.provider_api_version = provider_api_version
         self._transports = {
@@ -317,6 +329,24 @@ class GitHubMainGraduationAdapter:
         self.trusted_check_contexts = trusted_check_contexts
         self.validation_app_id = validation_app_id
         self.provider_identity = provider_identity
+
+    @property
+    def owner(self) -> str:
+        return self._owner
+
+    @property
+    def repo(self) -> str:
+        return self._repo
+
+    @property
+    def repository_name(self) -> str:
+        """The immutable owner/repository identity used by the coordinator."""
+        return f"{self.owner}/{self.repo}"
+
+    @property
+    def repository_url(self) -> str:
+        """The canonical HTTPS URL for this repository (without a suffix)."""
+        return f"https://github.com/{self.repository_name}"
 
     @property
     def repository_path(self) -> str:
@@ -811,18 +841,14 @@ class GitHubMainGraduationAdapter:
             raise _Precondition("pull request number differs")
         url = _str(raw, "html_url", "pull request")
         match = _URL.fullmatch(url)
-        if (
-            match is None
-            or (match.group(1), match.group(2)) != (self.owner, self.repo)
-            or int(match.group(3)) != n
-        ):
+        if match is None or url != f"{self.repository_url}/pull/{n}":
             raise _Precondition("foreign or malformed pull request URL")
         base, head = _nested(raw, "base", "pull request"), _nested(raw, "head", "pull request")
         base_repo, head_repo = (
             _nested(base, "repo", "pull request base"),
             _nested(head, "repo", "pull request head"),
         )
-        expected_repo = f"{self.owner}/{self.repo}"
+        expected_repo = self.repository_name
         if (
             _str(base_repo, "full_name", "pull request base repo") != expected_repo
             or _str(head_repo, "full_name", "pull request head repo") != expected_repo
@@ -984,7 +1010,7 @@ class GitHubMainGraduationAdapter:
         request = self._validate_request(
             request, PullRequestReconcileRequest, self.repository_digest
         )
-        if request.repository_name != f"{self.owner}/{self.repo}":
+        if request.repository_name != self.repository_name:
             raise ValueError("pull request repository binding differs")
         parsed = self._authoritative_pr(
             "observer" if self._read_only_transports else "preparation",
