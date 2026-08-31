@@ -301,7 +301,7 @@ class MainGraduationCompletionCoordinator:
         transition, claimed, mutation, resolution, release_intent = self._release(
             plan, prep, lease, hold, authorization, claim, hold_intent
         )
-        if claimed.outcome not in {"transitioned", "already_transitioned"}:
+        if claimed is None or claimed.outcome not in {"transitioned", "already_transitioned"}:
             return CompletionResult(
                 operation_id,
                 "reconciliation_required",
@@ -355,7 +355,11 @@ class MainGraduationCompletionCoordinator:
         )
         self.journal.record_completion(package)
         return CompletionResult(
-            operation_id, "completed", package, "release_transition", artifacts=artifacts
+            operation_id,
+            "completed",
+            package,
+            "release_transition",
+            artifacts={kind: reference.digest for kind, reference in artifacts.items()},
         )
 
     def _load(
@@ -1108,7 +1112,7 @@ class MainGraduationCompletionCoordinator:
         hold_intent: MainMutationIntent,
     ) -> tuple[
         MainReleaseTransitionReceipt,
-        MainClaimedReleaseTransitionReceipt,
+        MainClaimedReleaseTransitionReceipt | None,
         MainMutationReceipt,
         MainMutationFenceResolution | None,
         MainMutationIntent,
@@ -1212,7 +1216,15 @@ class MainGraduationCompletionCoordinator:
             )
             self.journal.record_release_transition(transition)
         claimed = self._read_claimed(claim)
-        if claimed is None:
+        # An ambiguous dispatch is deliberately represented by the immutable
+        # legacy transition observation.  Do not mint a claimed receipt until
+        # a durable, observed fence resolution proves the terminal outcome.
+        terminal_observed = mutation.outcome in {"applied", "already_applied"} or (
+            resolution is not None
+            and resolution.outcome == "observed"
+            and resolution.observed_outcome in {"applied", "already_applied"}
+        )
+        if claimed is None and terminal_observed:
             claimed = _digest_record(
                 MainClaimedReleaseTransitionReceipt,
                 {
@@ -1311,6 +1323,13 @@ class MainGraduationCompletionCoordinator:
             raise MainGraduationCompletionError(
                 "fresh provider post-state differs from durable reconciliation"
             )
+        # The provider receipt is the durable authority that reconciliation
+        # and post-state observation refer to.  Publish it before either
+        # dependent record so a crash cannot leave reconciliation ahead of its
+        # provider evidence.
+        if new_provider_receipt:
+            self.journal.record_provider_receipt(provider_receipt)
+
         reconciliation = existing_reconciliation
         if reconciliation is None:
             state = (
@@ -1366,8 +1385,6 @@ class MainGraduationCompletionCoordinator:
                     raise MainGraduationCompletionError(
                         "fresh provider post-state differs from durable observation"
                     )
-        if new_provider_receipt:
-            self.journal.record_provider_receipt(provider_receipt)
         post_state = existing_post_state
         if post_state is None:
             post_state = _digest_record(
@@ -1403,8 +1420,8 @@ class MainGraduationCompletionCoordinator:
         value = self.journal.read_claimed_release_transition(claim.claim_digest)
         return None if value is None else value[0]
 
-    def _record_completion(self, *records: Any) -> dict[str, Sha256Digest]:
-        result: dict[str, Sha256Digest] = {}
+    def _record_completion(self, *records: Any) -> dict[str, ArtifactRef]:
+        result: dict[str, ArtifactRef] = {}
         kinds = (
             "plan",
             "attestations",
@@ -1434,7 +1451,7 @@ class MainGraduationCompletionCoordinator:
                 ref = method(kind, record)
             else:
                 ref = method(record)
-            result[kind] = ref.digest
+            result[kind] = ref
         return result
 
     def _build_package(
@@ -1458,7 +1475,7 @@ class MainGraduationCompletionCoordinator:
         provider_receipt: MainProviderReceipt,
         post_state: MainProviderPostStateObservation,
         reconciliation: MainReconciliation,
-        recorded: Mapping[str, Sha256Digest],
+        recorded: Mapping[str, ArtifactRef],
     ) -> MainCompletionPackage:
         def read(kind: str, digest: str | None = None) -> tuple[Any, ArtifactRef]:
             if kind in {
@@ -1490,52 +1507,94 @@ class MainGraduationCompletionCoordinator:
             return value
 
         children = [
-            ("main-graduation-source-package", read("source-package")[0]),
-            ("main-graduation-delta", read("delta")[0]),
-            ("main-graduation-composition", read("composition")[0]),
-            ("main-graduation-queue-configuration", config),
-            ("main-graduation-queue-observation", queue),
-            ("main-graduation-protection-manifest", protection),
-            ("main-graduation-attestation-manifest", attestation),
-            ("main-graduation-merge-group-checks", read("merge-group-checks")[0]),
-            ("main-graduation-merge-group-webhook-receipt", hold.merge_group_receipt),
-            ("main-graduation-release-issuer-binding", read("release-issuer-binding")[0]),
-            ("main-graduation-plan", plan),
-            ("main-graduation-intent", read("intent")[0]),
-            ("main-graduation-preparation-authorization", read("preparation-authorization")[0]),
-            ("main-graduation-queue-admission", admission),
-            ("main-graduation-release-hold", hold),
-            ("main-graduation-release-authorization", authorization),
-            ("main-graduation-release-transition", transition),
-            ("main-graduation-provider-receipt", provider_receipt),
-            ("main-graduation-provider-post-state-observation", post_state),
-            ("main-graduation-reconciliation", reconciliation),
-            ("main-graduation-lease-evidence-record", lease),
-            ("main-graduation-release-claim", claim),
-            ("main-graduation-claimed-release-transition", claimed),
-            ("main-graduation-mutation-intent", release_intent),
-            ("main-graduation-mutation-receipt", mutation),
+            ("main-graduation-source-package", "source-package", read("source-package")[0]),
+            ("main-graduation-delta", "delta", read("delta")[0]),
+            ("main-graduation-composition", "composition", read("composition")[0]),
+            ("main-graduation-queue-configuration", "queue-configuration", config),
+            ("main-graduation-queue-observation", "queue", queue),
+            ("main-graduation-protection-manifest", "protection", protection),
+            ("main-graduation-attestation-manifest", "attestations", attestation),
+            (
+                "main-graduation-merge-group-checks",
+                "merge-group-checks",
+                read("merge-group-checks")[0],
+            ),
+            (
+                "main-graduation-merge-group-webhook-receipt",
+                "merge-group-webhook-receipt",
+                hold.merge_group_receipt,
+            ),
+            (
+                "main-graduation-release-issuer-binding",
+                "release-issuer-binding",
+                read("release-issuer-binding")[0],
+            ),
+            ("main-graduation-plan", "plan", plan),
+            ("main-graduation-intent", "intent", read("intent")[0]),
+            (
+                "main-graduation-preparation-authorization",
+                "preparation-authorization",
+                read("preparation-authorization")[0],
+            ),
+            ("main-graduation-queue-admission", "queue-admission", admission),
+            ("main-graduation-release-hold", "release-hold", hold),
+            ("main-graduation-release-authorization", "release-authorization", authorization),
+            ("main-graduation-release-transition", "release-transition", transition),
+            ("main-graduation-provider-receipt", "provider-receipt", provider_receipt),
+            (
+                "main-graduation-provider-post-state-observation",
+                "provider-post-state-observation",
+                post_state,
+            ),
+            ("main-graduation-reconciliation", "reconciliation", reconciliation),
+            ("main-graduation-lease-evidence-record", "lease-evidence-record", lease),
+            ("main-graduation-release-claim", "release-claim", claim),
+            ("main-graduation-claimed-release-transition", "claimed-release-transition", claimed),
+            ("main-graduation-mutation-intent", "mutation-intent", release_intent),
+            ("main-graduation-mutation-receipt", "mutation-receipt", mutation),
         ]
         if resolution is not None:
-            children.append(("main-graduation-mutation-fence-resolution", resolution))
-        refs: list[ArtifactRef] = []
-        for role, value in children:
-            refs.append(
-                ArtifactRef(
-                    digest=canonical_digest(value),
-                    size_bytes=len(canonical_bytes(value)),
-                    media_type=f"application/vnd.avo.{role}+json",
-                    role=role,
-                    created_at=cast(datetime, getattr(value, "observed_at", self.clock.now())),
+            children.append(
+                (
+                    "main-graduation-mutation-fence-resolution",
+                    "mutation-fence-resolution",
+                    resolution,
                 )
             )
-        source = cast(MainSourcePackageBinding, children[0][1])
-        delta = cast(MainDeltaManifest, children[1][1])
-        comp = cast(MainCompositionArtifact, children[2][1])
-        intent = cast(MainGraduationIntent, children[11][1])
-        binding = cast(MainReleaseIssuerBinding, children[9][1])
-        prep = cast(MainPreparationAuthorization, children[12][1])
-        checks = cast(MainMergeGroupChecks, children[7][1])
+        refs: list[ArtifactRef] = []
+        for role, kind, value in children:
+            reference = recorded.get(kind)
+            if reference is None:
+                key = None
+                if kind == "release-claim":
+                    key = claim.claim_digest
+                elif kind == "claimed-release-transition":
+                    key = claimed.claim_digest
+                elif kind == "mutation-intent":
+                    key = release_intent.intent_digest
+                elif kind == "mutation-receipt":
+                    key = mutation.receipt_digest
+                elif kind == "mutation-fence-resolution" and resolution is not None:
+                    key = resolution.resolution_digest
+                durable = read(kind, key)
+                reference = durable[1]
+            if (
+                reference.role != role
+                or reference.media_type != f"application/vnd.avo.{role}+json"
+                or reference.digest != canonical_digest(value)
+                or reference.size_bytes != len(canonical_bytes(value))
+            ):
+                raise MainGraduationCompletionError(
+                    f"durable completion child artifact metadata differs: {role}"
+                )
+            refs.append(reference)
+        source = cast(MainSourcePackageBinding, children[0][2])
+        delta = cast(MainDeltaManifest, children[1][2])
+        comp = cast(MainCompositionArtifact, children[2][2])
+        intent = cast(MainGraduationIntent, children[11][2])
+        binding = cast(MainReleaseIssuerBinding, children[9][2])
+        prep = cast(MainPreparationAuthorization, children[12][2])
+        checks = cast(MainMergeGroupChecks, children[7][2])
         return MainCompletionPackage.model_validate(
             {
                 "operation_id": operation_id,
