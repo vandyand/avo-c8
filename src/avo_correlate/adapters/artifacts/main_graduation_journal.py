@@ -1181,13 +1181,17 @@ class MainGraduationJournal:
             ) from exc
 
     def _cas_release_claim(self, record: MainReleaseClaim, reference: ArtifactRef) -> None:
-        path = (
-            self._indexes / "release-claim-key" / f"{record.claim_key.removeprefix('sha256:')}.json"
-        )
+        path = self._release_claim_key_path(record.claim_key)
         envelope = self._phase_reference_envelope(
             "release-claim", record.claim_key, record, reference
         )
         self._cas_global_envelope(path, envelope, record, "release claim")
+
+    def _release_claim_key_path(self, claim_key: str) -> Path:
+        _check_digest(claim_key)
+        return self._indexes / "release-claim-key" / (
+            f"{claim_key.removeprefix('sha256:')}.json"
+        )
 
     def _cas_global_envelope(
         self, path: Path, envelope: StrictModel, record: StrictModel, description: str
@@ -1514,17 +1518,18 @@ class MainGraduationJournal:
         return resolution, envelope.reference
 
     def _assert_release_claim(self, record: MainReleaseClaim) -> None:
-        path = (
-            self._indexes
-            / "release-claim-key"
-            / (f"{record.claim_key.removeprefix('sha256:')}.json")
-        )
+        path = self._release_claim_key_path(record.claim_key)
         if not path.is_file():
             raise MainGraduationJournalError("release claim is not globally indexed")
         current = self._read_phase_envelope(path, "release-claim", record.claim_key)
         if current.operation_id != record.operation_id:
             raise MainGraduationRecordConflictError("release claim operation identity differs")
-        if self._store.read_bytes(current.reference) != canonical_bytes(record):
+        data = self._store.read_bytes(current.reference)
+        if (
+            len(data) != current.reference.size_bytes
+            or _digest_bytes(data) != current.reference.digest
+            or data != canonical_bytes(record)
+        ):
             raise MainGraduationRecordConflictError("release claim identity differs")
 
     def _close_target_fence_if_resolved(self, resolution: MainMutationFenceResolution) -> None:
@@ -3399,6 +3404,215 @@ class MainGraduationJournal:
         return cast(
             tuple[MainReleaseClaim, ArtifactRef] | None, self._read("release-claim", claim_digest)
         )
+
+    def _read_release_claim_global_by_key(
+        self, claim_key: str
+    ) -> tuple[MainReleaseClaim, ArtifactRef] | None:
+        """Read a claim from its global identity, including its authority chain.
+
+        The operation-local claim pointer is intentionally not consulted here.
+        This is the recovery trust boundary for the crash window between the
+        global claim CAS and creation of that pointer.
+        """
+        path = self._release_claim_key_path(claim_key)
+        if not path.is_file():
+            return None
+        envelope = self._read_phase_envelope(path, "release-claim", claim_key)
+        try:
+            data = self._store.read_bytes(envelope.reference)
+            if (
+                len(data) != envelope.reference.size_bytes
+                or _digest_bytes(data) != envelope.reference.digest
+            ):
+                raise ValueError("release claim artifact hash mismatch")
+            claim = MainReleaseClaim.model_validate_json(data)
+        except MainGraduationRecordConflictError:
+            raise
+        except (
+            OSError,
+            RuntimeError,
+            ValueError,
+            TypeError,
+            UnicodeError,
+            json.JSONDecodeError,
+        ) as exc:
+            raise MainGraduationJournalError("release claim global artifact is malformed") from exc
+        if (
+            envelope.operation_id != claim.operation_id
+            or claim.claim_key != claim_key
+            or canonical_bytes(claim) != data
+        ):
+            raise MainGraduationRecordConflictError("release claim global identity differs")
+        # Recheck all predecessors from the recovered artifact.  A valid CAS
+        # envelope alone is not authority to recreate a local pointer.
+        try:
+            self._validate_phase_chain("release-claim", claim)
+            self._assert_release_claim(claim)
+        except MainGraduationRecordConflictError:
+            raise
+        except MainGraduationJournalError:
+            raise
+        except (
+            OSError,
+            RuntimeError,
+            ValueError,
+            TypeError,
+            UnicodeError,
+            json.JSONDecodeError,
+        ) as exc:
+            raise MainGraduationJournalError(
+                "release claim global authority chain is unverifiable"
+            ) from exc
+        return claim, envelope.reference
+
+    def read_release_claim_by_key(
+        self, claim_key: Sha256Digest
+    ) -> tuple[MainReleaseClaim, ArtifactRef] | None:
+        """Verified read through the deterministic global claim key."""
+        _check_digest(claim_key)
+        return self._read_release_claim_global_by_key(claim_key)
+
+    # The longer spelling is useful at call sites that distinguish the claim
+    # digest (the local pointer key) from the deterministic claim key.
+    read_release_claim_by_claim_key = read_release_claim_by_key
+
+    def recover_release_claim_by_key(
+        self, claim_key: Sha256Digest
+    ) -> tuple[MainReleaseClaim, ArtifactRef] | None:
+        """Recover a globally committed claim and create its local pointer.
+
+        Recovery always uses the claim bytes and reference already committed by
+        global CAS.  In particular, it never evaluates a new clock value and
+        never mints a replacement ``claimed_at`` or ``claim_digest``.
+        """
+        prior = self.read_release_claim_by_key(claim_key)
+        if prior is None:
+            return None
+        claim, reference = prior
+        local = self.read_release_claim(claim.claim_digest)
+        if local is not None:
+            if local[0] != claim or not _same_artifact_ref(local[1], reference):
+                raise MainGraduationRecordConflictError(
+                    "release claim local pointer differs from global claim"
+                )
+            return local
+        data = canonical_bytes(claim)
+        restored = self._cas_phase_local(
+            "release-claim", claim.claim_digest, claim, reference, data
+        )
+        return claim, restored
+
+    recover_release_claim = recover_release_claim_by_key
+
+    @staticmethod
+    def _release_claim_key_for_chain(
+        authorization: MainReleaseAuthorization,
+        hold: MainReleaseHoldObservation,
+        lease: MainLeaseEvidenceRecord,
+    ) -> Sha256Digest:
+        """Derive the exact claim key from durable authority predecessors."""
+        return canonical_digest(
+            {
+                "repository_digest": authorization.repository_digest,
+                "target_ref": authorization.target_ref,
+                "operation_id": authorization.operation_id,
+                "authorization_digest": authorization.authorization_digest,
+                "hold_observation_digest": canonical_digest(hold),
+                "group_sha": authorization.group_sha,
+                "hold_run_id": authorization.hold_run_id,
+                "hold_nonce": authorization.hold_nonce,
+                "queue_generation_digest": authorization.queue_generation_digest,
+                "lease_epoch_digest": lease.lease_epoch_digest,
+                "lease_digest": authorization.lease_digest,
+                "release_issuer_identity": authorization.release_issuer_identity,
+                "issuer_isolation_digest": authorization.issuer_isolation_digest,
+                "authorization_expires_at": authorization.expires_at.isoformat(),
+                "lease_expires_at": lease.expires_at.isoformat(),
+                "release_issuer_app_id": authorization.release_issuer_app_id,
+                "target_scope_digest": main_target_scope_digest(
+                    authorization.repository_digest, authorization.target_ref
+                ),
+            }
+        )
+
+    def _release_claim_key_for_authorization(
+        self, operation_id: Sha256Digest, authorization_digest: Sha256Digest
+    ) -> Sha256Digest | None:
+        auth_prior = self._read("release-authorization", operation_id)
+        if auth_prior is None:
+            return None
+        authorization = cast(MainReleaseAuthorization, auth_prior[0])
+        if (
+            authorization.operation_id != operation_id
+            or authorization.authorization_digest != authorization_digest
+        ):
+            raise MainGraduationRecordConflictError(
+                "release authorization binding differs from requested claim"
+            )
+        hold_prior = self._read("release-hold", operation_id)
+        lease_prior = self._read("lease-evidence-record", operation_id)
+        if hold_prior is None or lease_prior is None:
+            raise MainGraduationJournalError(
+                "release claim recovery requires durable hold and lease evidence"
+            )
+        hold = cast(MainReleaseHoldObservation, hold_prior[0])
+        lease = cast(MainLeaseEvidenceRecord, lease_prior[0])
+        if any(
+            (
+                hold.operation_id != operation_id,
+                hold.repository_digest != authorization.repository_digest,
+                hold.target_ref != authorization.target_ref,
+                canonical_digest(hold) != authorization.hold_observation_digest,
+                lease.operation_id != operation_id,
+                lease.repository_digest != authorization.repository_digest,
+                lease.target_ref != authorization.target_ref,
+                lease.lease_digest != authorization.lease_digest,
+                lease.owner != authorization.lease_identity,
+            )
+        ):
+            raise MainGraduationRecordConflictError(
+                "release claim recovery authority chain differs"
+            )
+        return self._release_claim_key_for_chain(authorization, hold, lease)
+
+    def read_release_claim_for_authorization(
+        self,
+        operation_id: Sha256Digest,
+        authorization: MainReleaseAuthorization | Sha256Digest,
+    ) -> tuple[MainReleaseClaim, ArtifactRef] | None:
+        """Verified lookup bound to one operation and release authorization."""
+        _check_digest(operation_id)
+        authorization_digest = (
+            authorization.authorization_digest
+            if isinstance(authorization, MainReleaseAuthorization)
+            else authorization
+        )
+        _check_digest(authorization_digest)
+        key = self._release_claim_key_for_authorization(operation_id, authorization_digest)
+        return None if key is None else self.read_release_claim_by_key(key)
+
+    def recover_release_claim_for_authorization(
+        self,
+        operation_id: Sha256Digest,
+        authorization: MainReleaseAuthorization | Sha256Digest,
+    ) -> tuple[MainReleaseClaim, ArtifactRef] | None:
+        """Recover the exact claim bound to an operation authorization."""
+        _check_digest(operation_id)
+        authorization_digest = (
+            authorization.authorization_digest
+            if isinstance(authorization, MainReleaseAuthorization)
+            else authorization
+        )
+        _check_digest(authorization_digest)
+        key = self._release_claim_key_for_authorization(operation_id, authorization_digest)
+        return None if key is None else self.recover_release_claim_by_key(key)
+
+    read_release_claim_by_authorization = read_release_claim_for_authorization
+    recover_release_claim_by_authorization = recover_release_claim_for_authorization
+    read_release_claim_by_operation_authorization = read_release_claim_for_authorization
+    recover_release_claim_by_operation_authorization = (
+        recover_release_claim_for_authorization
+    )
 
     def record_unresolved_mutation_fence(self, record: MainUnresolvedMutationFence) -> ArtifactRef:
         return self._record("unresolved-mutation-fence", record)

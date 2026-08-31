@@ -606,6 +606,80 @@ def test_release_claim_global_envelope_operation_binding_is_verified(tmp_path: P
         journal._assert_release_claim(claim)  # pyright: ignore[reportPrivateUsage]
 
 
+def test_release_claim_global_cas_crash_is_recovered_without_reminting_claim(
+    tmp_path: Path,
+) -> None:
+    journal = _journal(tmp_path)
+    _disable_phase_prerequisites(journal)
+    values: dict[str, Any] = {
+        "repository_digest": R,
+        "target_ref": "refs/heads/main",
+        "operation_id": OP,
+        "authorization_digest": D2,
+        "hold_observation_digest": D3,
+        "group_sha": HEAD,
+        "hold_run_id": "hold-run",
+        "hold_nonce": "hold-nonce",
+        "queue_generation_digest": D2,
+        "lease_identity": "avo-controller",
+        "lease_digest": D2,
+        "lease_epoch_digest": D3,
+        "release_issuer_identity": "isolated-release",
+        "release_issuer_app_id": 9002,
+        "issuer_isolation_digest": D3,
+        "target_scope_digest": main_target_scope_digest(R, "refs/heads/main"),
+        "authorization_expires_at": NOW + timedelta(hours=1),
+        "lease_expires_at": NOW + timedelta(hours=1),
+        "claimed_at": NOW,
+    }
+    values["claim_key"] = canonical_digest(
+        {
+            "repository_digest": values["repository_digest"],
+            "target_ref": values["target_ref"],
+            "operation_id": values["operation_id"],
+            "authorization_digest": values["authorization_digest"],
+            "hold_observation_digest": values["hold_observation_digest"],
+            "group_sha": values["group_sha"],
+            "hold_run_id": values["hold_run_id"],
+            "hold_nonce": values["hold_nonce"],
+            "queue_generation_digest": values["queue_generation_digest"],
+            "lease_epoch_digest": values["lease_epoch_digest"],
+            "lease_digest": values["lease_digest"],
+            "release_issuer_identity": values["release_issuer_identity"],
+            "issuer_isolation_digest": values["issuer_isolation_digest"],
+            "authorization_expires_at": cast(
+                datetime, values["authorization_expires_at"]
+            ).isoformat(),
+            "lease_expires_at": cast(datetime, values["lease_expires_at"]).isoformat(),
+            "release_issuer_app_id": values["release_issuer_app_id"],
+            "target_scope_digest": values["target_scope_digest"],
+        }
+    )
+    probe = MainReleaseClaim.model_construct(**values, claim_digest=D)
+    values["claim_digest"] = canonical_digest(
+        probe.model_dump(exclude={"claim_digest"}, mode="json")
+    )
+    claim = MainReleaseClaim.model_validate(values)
+    reference = journal._store.put_bytes(  # pyright: ignore[reportPrivateUsage]
+        canonical_bytes(claim),
+        media_type="application/vnd.avo.main-graduation-release-claim+json",
+        role="main-graduation-release-claim",
+        max_bytes=journal._max,  # pyright: ignore[reportPrivateUsage]
+    )
+
+    # Publish only the global CAS identity, then emulate a process crash
+    # before the operation-local claim pointer is written.
+    journal._cas_release_claim(claim, reference)  # pyright: ignore[reportPrivateUsage]
+    local = journal._phase_local_path("release-claim", claim.claim_digest)  # pyright: ignore[reportPrivateUsage]
+    assert not local.exists()
+
+    recovered = journal.recover_release_claim_by_key(claim.claim_key)
+    assert recovered == (claim, reference)
+    assert journal.read_release_claim(claim.claim_digest) == (claim, reference)
+    # A later retry reads the committed claim and does not mint another digest.
+    assert journal.recover_release_claim_by_key(claim.claim_key) == (claim, reference)
+
+
 def test_release_claim_cannot_predate_authorization(tmp_path: Path) -> None:
     """A backdated claim must not satisfy the release-intent chronology chain."""
     journal = _journal(tmp_path)
