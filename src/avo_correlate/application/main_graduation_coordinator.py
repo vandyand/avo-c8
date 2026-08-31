@@ -9,6 +9,7 @@ for the plan, lease, preparation authorization, and phase-A records.
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, cast
@@ -22,6 +23,7 @@ from avo_correlate.application.c4_capabilities import (
     CandidatePublicationRequest,
     PullRequestCreateRequest,
     PullRequestCreateResult,
+    PullRequestLookupRequest,
     PullRequestObservationRequest,
     PullRequestObservationResult,
     QueueEnqueueRequest,
@@ -33,6 +35,7 @@ from avo_correlate.application.c4_capabilities import (
 )
 from avo_correlate.application.c4_stage_executor import (
     C4StageExecutionError,
+    C4StageExecutionResult,
     C4StageExecutor,
     StageAuthorityVerifier,
     StageLeaseFence,
@@ -44,6 +47,7 @@ from avo_correlate.contracts.main_graduation import (
     MainPreparationAuthorization,
     MainProtectionManifest,
     MainQueueAdmissionObservation,
+    MainQueueConfigurationObservation,
     MainQueueObservation,
 )
 from avo_correlate.contracts.main_graduation_phase_a import (
@@ -207,8 +211,18 @@ class MainGraduationPreparationCoordinator:
     def prepare(self, operation_id: Sha256Digest) -> PreparationResult:
         """Resume or execute from one durable operation/state root."""
         try:
-            plan, prep, lease = self._load(operation_id)
-            self._preflight(plan, prep, lease)
+            plan, prep, lease, queue_configuration = self._load(operation_id)
+            # A completed preparation is recognized from the durable C4
+            # evidence chain before any provider mutation capability is
+            # touched.  This is important on a fresh process restart: an
+            # exact queued state is a read-only terminal state.
+            queued = self._durable_queued(plan, prep, queue_configuration)
+            if queued is not None:
+                return queued
+
+            queue_configuration = self._preflight(
+                plan, prep, lease, queue_configuration
+            )
             receipts: dict[str, Sha256Digest] = {}
             intents: dict[str, Sha256Digest] = {}
 
@@ -220,13 +234,16 @@ class MainGraduationPreparationCoordinator:
                 candidate_commit=plan.composition.candidate_commit,
                 preparation_authorization_digest=prep.authorization_digest,
             )
-            self._preflight(plan, prep, lease)
-            candidate_intent, receipt = self._run_stage(
+            queue_configuration = self._preflight(
+                plan, prep, lease, queue_configuration
+            )
+            candidate_intent, candidate_execution = self._run_stage(
                 plan, prep, lease, candidate_request, None, "candidate_publication"
             )
+            receipt = candidate_execution.receipt
             intents["candidate_publication"] = candidate_intent.intent_digest
             receipts["candidate_publication"] = receipt.receipt_digest
-            if receipt.outcome not in {"applied", "already_applied"}:
+            if candidate_execution.effective_outcome not in {"applied", "already_applied"}:
                 return self._result(
                     operation_id,
                     "reconciliation_required",
@@ -247,13 +264,21 @@ class MainGraduationPreparationCoordinator:
                 base_tree=plan.composition.base_tree,
                 preparation_authorization_digest=prep.authorization_digest,
             )
-            self._preflight(plan, prep, lease)
-            pr_intent, receipt = self._run_stage(
-                plan, prep, lease, pr_request, candidate_intent, "pull_request_open"
+            queue_configuration = self._preflight(
+                plan, prep, lease, queue_configuration
             )
+            pr_intent, pr_execution = self._run_stage(
+                plan,
+                prep,
+                lease,
+                pr_request,
+                (candidate_intent, candidate_execution),
+                "pull_request_open",
+            )
+            receipt = pr_execution.receipt
             intents["pull_request_open"] = pr_intent.intent_digest
             receipts["pull_request_open"] = receipt.receipt_digest
-            if receipt.outcome not in {"applied", "already_applied"}:
+            if pr_execution.effective_outcome not in {"applied", "already_applied"}:
                 return self._result(
                     operation_id,
                     "reconciliation_required",
@@ -265,14 +290,13 @@ class MainGraduationPreparationCoordinator:
             pr = self._resolve_pr(pr_request, receipt)
             self._verify_pr(plan, pr)
 
-            queue = self._read_queue(operation_id)
             protection = self._read_protection(operation_id)
             admission_seed = canonical_digest(
                 {
                     "operation_id": operation_id,
                     "stage": "admission_check",
                     "repository_digest": plan.repository_digest,
-                    "queue_generation_digest": queue.queue_generation_digest,
+                    "queue_configuration_digest": queue_configuration.queue_configuration_digest,
                     "pull_request_number": pr.number,
                     "pull_request_head": pr.head_commit,
                     "pull_request_tree": pr.head_tree,
@@ -288,7 +312,7 @@ class MainGraduationPreparationCoordinator:
                 operation_id=operation_id,
                 repository_digest=plan.repository_digest,
                 lease_epoch_digest=lease.lease_epoch_digest,
-                queue_generation_digest=queue.queue_generation_digest,
+                queue_configuration_digest=queue_configuration.queue_configuration_digest,
                 pull_request_number=pr.number,
                 pull_request_head=pr.head_commit,
                 pull_request_tree=pr.head_tree,
@@ -301,13 +325,21 @@ class MainGraduationPreparationCoordinator:
                 issuer_app_id=protection.release_issuer_app_id,
                 issuer_isolation_digest=protection.issuer_isolation_digest,
             )
-            self._preflight(plan, prep, lease)
-            admission_intent, receipt = self._run_stage(
-                plan, prep, lease, admission_request, pr_intent, "admission_check"
+            queue_configuration = self._preflight(
+                plan, prep, lease, queue_configuration
             )
+            admission_intent, admission_execution = self._run_stage(
+                plan,
+                prep,
+                lease,
+                admission_request,
+                (pr_intent, pr_execution),
+                "admission_check",
+            )
+            receipt = admission_execution.receipt
             intents["admission_check"] = admission_intent.intent_digest
             receipts["admission_check"] = receipt.receipt_digest
-            if receipt.outcome not in {"applied", "already_applied"}:
+            if admission_execution.effective_outcome not in {"applied", "already_applied"}:
                 return self._result(
                     operation_id,
                     "reconciliation_required",
@@ -317,14 +349,16 @@ class MainGraduationPreparationCoordinator:
                     pr=pr,
                     reason=receipt.outcome,
                 )
-            admission = self._admit(plan, prep, queue, protection, pr, admission_request)
+            admission = self._admit(
+                plan, prep, queue_configuration, protection, pr, admission_request
+            )
             admission_ref_digest = canonical_digest(admission)
 
             queue_request = QueueEnqueueRequest.build(
                 operation_id=operation_id,
                 repository_digest=plan.repository_digest,
                 lease_epoch_digest=lease.lease_epoch_digest,
-                queue_generation_digest=queue.queue_generation_digest,
+                queue_configuration_digest=queue_configuration.queue_configuration_digest,
                 pull_request_number=pr.number,
                 pull_request_url=pr.url,
                 pull_request_identity=canonical_digest(
@@ -342,19 +376,35 @@ class MainGraduationPreparationCoordinator:
                 preparation_authorization_digest=canonical_digest(prep),
                 admission_observation_digest=admission_ref_digest,
             )
-            self._preflight(plan, prep, lease)
-            queue_intent, receipt = self._run_stage(
-                plan, prep, lease, queue_request, admission_intent, "queue_enqueue"
+            queue_configuration = self._preflight(
+                plan, prep, lease, queue_configuration
             )
+            queue_intent, queue_execution = self._run_stage(
+                plan,
+                prep,
+                lease,
+                queue_request,
+                (admission_intent, admission_execution),
+                "queue_enqueue",
+            )
+            receipt = queue_execution.receipt
             intents["queue_enqueue"] = queue_intent.intent_digest
             receipts["queue_enqueue"] = receipt.receipt_digest
             state = (
                 "queued"
-                if receipt.outcome in {"applied", "already_applied"}
+                if queue_execution.effective_outcome in {"applied", "already_applied"}
                 else "reconciliation_required"
             )
+            queue: MainQueueObservation | None = None
             if state == "queued":
-                self._observe_queued(queue_request, plan, queue, pr)
+                queue = self._observe_queued(
+                    queue_request,
+                    plan,
+                    queue_configuration,
+                    admission,
+                    pr,
+                )
+                self.journal.record_queue_observation(queue)
             return self._result(
                 operation_id,
                 state,
@@ -363,7 +413,7 @@ class MainGraduationPreparationCoordinator:
                 intents,
                 pr=pr,
                 admission=admission,
-                queue=queue,
+                queue=queue if state == "queued" else None,
                 reason=None if state == "queued" else receipt.outcome,
             )
         except (MainGraduationPreparationError, C4StageExecutionError) as exc:
@@ -377,7 +427,12 @@ class MainGraduationPreparationCoordinator:
 
     def _load(
         self, operation_id: str
-    ) -> tuple[MainGraduationPlan, MainPreparationAuthorization, MainLeaseEvidenceRecord]:
+    ) -> tuple[
+        MainGraduationPlan,
+        MainPreparationAuthorization,
+        MainLeaseEvidenceRecord,
+        MainQueueConfigurationObservation | None,
+    ]:
         plan_prior = self.journal.read_plan(operation_id)
         prep_prior = self.journal.read_preparation_authorization(operation_id)
         lease_prior = self.journal.read_lease_evidence_record(operation_id)
@@ -389,6 +444,9 @@ class MainGraduationPreparationCoordinator:
             cast(MainGraduationPlan, plan_prior[0]),
             cast(MainPreparationAuthorization, prep_prior[0]),
             cast(MainLeaseEvidenceRecord, lease_prior[0]),
+            None
+            if (queue_prior := self.journal.read_queue_configuration(operation_id)) is None
+            else cast(MainQueueConfigurationObservation, queue_prior[0]),
         )
 
     def _preflight(
@@ -396,7 +454,8 @@ class MainGraduationPreparationCoordinator:
         plan: MainGraduationPlan,
         prep: MainPreparationAuthorization,
         lease: MainLeaseEvidenceRecord,
-    ) -> None:
+        queue_configuration: MainQueueConfigurationObservation | None = None,
+    ) -> MainQueueConfigurationObservation:
         if (
             prep.scope != "candidate_publication_pr_preparation_queue_admission"
             or not prep.authorized
@@ -419,7 +478,8 @@ class MainGraduationPreparationCoordinator:
         observe_main = getattr(self.read_provider, "observe_main", None)
         if not callable(observe_main):
             raise MainGraduationPreparationError("authoritative main observation is missing")
-        main = observe_main()
+        main = self._canonical_provider_value(observe_main(), "main")
+        self._verify_provider_dto("main", main)
         if (
             getattr(main, "repository_digest", None) != plan.repository_digest
             or getattr(main, "ref", None) != plan.target_ref
@@ -427,33 +487,190 @@ class MainGraduationPreparationCoordinator:
             or getattr(main, "tree", None) != plan.composition.base_tree
         ):
             raise MainGraduationPreparationError("protected main base is stale or changed")
-        queue = self._read_queue(plan.operation_id)
+        if queue_configuration is None:
+            queue_configuration = self._observe_queue_configuration(plan.operation_id)
+            self.journal.record_queue_configuration(queue_configuration)
+        else:
+            queue_configuration = self._canonical_dto(
+                queue_configuration, MainQueueConfigurationObservation
+            )
+            self._verify_provider_dto("queue_configuration", queue_configuration)
+        assert queue_configuration is not None
+        self._validate_queue_configuration(plan, prep, queue_configuration)
         protection = self._read_protection(plan.operation_id)
         fresh_protection = getattr(self.read_provider, "observe_protection", None)
         if not callable(fresh_protection):
             raise MainGraduationPreparationError("authoritative protection observation is missing")
-        observed_protection = fresh_protection()
+        observed_protection = self._canonical_dto(
+            fresh_protection(), MainProtectionManifest
+        )
+        self._verify_provider_dto("protection", observed_protection)
         if (
             observed_protection.manifest_digest != protection.manifest_digest
             or observed_protection.protection_epoch != protection.protection_epoch
         ):
             raise MainGraduationPreparationError("protected-main policy is stale")
-        fresh_queue = getattr(self.read_provider, "observe_queue", None)
-        if not callable(fresh_queue):
-            raise MainGraduationPreparationError("authoritative queue observation is missing")
-        observed_queue = fresh_queue()
+        fresh_config = getattr(self.read_provider, "observe_queue_configuration", None)
+        if not callable(fresh_config):
+            raise MainGraduationPreparationError(
+                "authoritative queue configuration observation is missing"
+            )
+        observed_queue = self._canonical_dto(
+            self._invoke_queue_configuration(fresh_config, plan.operation_id),
+            MainQueueConfigurationObservation,
+        )
+        self._verify_provider_dto("queue_configuration", observed_queue)
         if (
-            observed_queue.queue_generation_digest != queue.queue_generation_digest
-            or observed_queue.queue_manifest_digest != queue.queue_manifest_digest
-            or observed_queue.protection_manifest_digest != queue.protection_manifest_digest
+            observed_queue.queue_configuration_digest
+            != queue_configuration.queue_configuration_digest
+            or observed_queue.expected_base_commit != queue_configuration.expected_base_commit
+            or observed_queue.expected_base_tree != queue_configuration.expected_base_tree
+            or observed_queue.protection_manifest_digest
+            != queue_configuration.protection_manifest_digest
         ):
-            raise MainGraduationPreparationError("merge queue generation is stale")
+            raise MainGraduationPreparationError("merge queue configuration is stale")
+        return queue_configuration
+
+    def _canonical_provider_value(self, value: object, kind: str) -> object:
+        """Reparse provider DTOs at the controller boundary.
+
+        Provider adapters normally return a typed dataclass or Pydantic model.
+        A model constructed without validation must not cross into durable
+        controller state, however, so Pydantic DTOs are always round-tripped.
+        Main ref observations are intentionally a small provider dataclass and
+        are checked structurally by the controller verifier below.
+        """
+        del kind
+        dumper = getattr(value, "model_dump_json", None)
+        validator = getattr(type(value), "model_validate_json", None)
+        if callable(dumper) and callable(validator):
+            try:
+                return validator(dumper())
+            except Exception as exc:
+                raise MainGraduationPreparationError(
+                    "provider DTO failed controller revalidation"
+                ) from exc
+        if value is None:
+            raise MainGraduationPreparationError("provider returned no observation")
+        return value
+
+    def _verify_provider_dto(self, kind: str, value: object) -> None:
+        names = {
+            "main": ("verify_main_observation", "verify_main", "verify_main_ref"),
+            "protection": (
+                "verify_protection_observation",
+                "verify_protection_manifest",
+                "verify_protection",
+            ),
+            "queue_configuration": (
+                "verify_queue_configuration_observation",
+                "verify_queue_configuration",
+                "verify_queue_config",
+            ),
+            "pull_request": (
+                "verify_pull_request_observation",
+                "verify_pull_request",
+                "verify_pr_observation",
+            ),
+            "admission": (
+                "verify_admission_observation",
+                "verify_admission",
+            ),
+            "check": (
+                "verify_check_observation",
+                "verify_admission_check",
+                "verify_check",
+            ),
+            "queue": (
+                "verify_queue_observation",
+                "verify_post_queue_observation",
+                "verify_queue",
+            ),
+        }[kind]
+        verifier = next(
+            (getattr(self.authority_verifier, name, None) for name in names), None
+        )
+        if not callable(verifier):
+            generic = getattr(self.authority_verifier, "verify_provider_dto", None)
+            if callable(generic):
+                def verify_generic(dto: object) -> None:
+                    generic(kind, dto)
+
+                verifier = verify_generic
+        if not callable(verifier):
+            raise MainGraduationPreparationError(
+                f"controller-owned {kind} verifier is required"
+            )
+        try:
+            verifier(value)
+        except Exception as exc:
+            raise MainGraduationPreparationError(
+                f"controller rejected provider {kind} observation"
+            ) from exc
+
+    def _invoke_queue_configuration(self, method: Any, operation_id: str) -> object:
+        try:
+            parameters = inspect.signature(method).parameters
+        except (TypeError, ValueError):
+            parameters = {}
+        if "operation_id" in parameters:
+            return method(operation_id=operation_id)
+        return method()
+
+    def _observe_queue_configuration(
+        self, operation_id: str
+    ) -> MainQueueConfigurationObservation:
+        observe = getattr(self.read_provider, "observe_queue_configuration", None)
+        if not callable(observe):
+            raise MainGraduationPreparationError(
+                "authoritative queue configuration observation is missing"
+            )
+        value = self._canonical_dto(
+            self._invoke_queue_configuration(observe, operation_id),
+            MainQueueConfigurationObservation,
+        )
+        self._verify_provider_dto("queue_configuration", value)
+        return value
+
+    def _validate_queue_configuration(
+        self,
+        plan: MainGraduationPlan,
+        prep: MainPreparationAuthorization,
+        queue: MainQueueConfigurationObservation,
+    ) -> None:
+        protection = self._read_protection(plan.operation_id)
+        if (
+            queue.operation_id != plan.operation_id
+            or queue.repository_digest != plan.repository_digest
+            or queue.target_ref != plan.target_ref
+            or queue.expected_base_commit != plan.composition.base_commit
+            or queue.expected_base_tree != plan.composition.base_tree
+            or queue.protection_manifest_digest
+            != protection.manifest_digest
+            or queue.protection_epoch != protection.protection_epoch
+            or queue.provider_identity != self.provider_identity
+            or queue.provider_api_version != self.provider_api_version
+            or queue.isolated_release_issuer != plan.release_issuer_binding.issuer_id
+            or queue.release_issuer_app_id != plan.release_issuer_binding.app_id
+            or queue.issuer_isolation_digest != plan.release_issuer_binding.isolation_digest
+            or not queue.queue_enabled
+            or queue.max_entries_per_group != 1
+            or queue.bypass_allowed
+            or queue.direct_merge_allowed
+            or queue.merge_method != "squash"
+        ):
+            raise MainGraduationPreparationError(
+                "queue configuration is not exact controller policy"
+            )
 
     def _read_queue(self, operation_id: str) -> MainQueueObservation:
         prior = self.journal.read_queue_observation(operation_id)
         if prior is None:
-            raise MainGraduationPreparationError("durable queue observation is missing")
-        queue = cast(MainQueueObservation, prior[0])
+            raise MainGraduationPreparationError(
+                "durable post-enqueue queue observation is missing"
+            )
+        queue = self._canonical_dto(prior[0], MainQueueObservation)
+        self._verify_provider_dto("queue", queue)
         if (
             not queue.queue_enabled
             or queue.max_entries_per_group != 1
@@ -464,11 +681,68 @@ class MainGraduationPreparationCoordinator:
             raise MainGraduationPreparationError("queue policy is not exact C4 policy")
         return queue
 
+    def _canonical_dto(self, value: object, expected: type[Any]) -> Any:
+        if not isinstance(value, expected):
+            raise MainGraduationPreparationError(
+                f"provider returned an untyped {expected.__name__} DTO"
+            )
+        try:
+            return expected.model_validate_json(value.model_dump_json())
+        except Exception as exc:
+            raise MainGraduationPreparationError(
+                f"provider returned invalid {expected.__name__} DTO"
+            ) from exc
+
+    def _durable_queued(
+        self,
+        plan: MainGraduationPlan,
+        prep: MainPreparationAuthorization,
+        queue_configuration: MainQueueConfigurationObservation | None,
+    ) -> PreparationResult | None:
+        """Return an exact persisted terminal state without provider writes."""
+        prior = self.journal.read_queue_observation(plan.operation_id)
+        admission_prior = self.journal.read_queue_admission(plan.operation_id)
+        if prior is None or admission_prior is None or queue_configuration is None:
+            return None
+        queue = self._read_queue(plan.operation_id)
+        admission = cast(MainQueueAdmissionObservation, admission_prior[0])
+        admission = self._canonical_dto(admission, MainQueueAdmissionObservation)
+        self._validate_queue_configuration(plan, prep, queue_configuration)
+        if (
+            queue.queue_configuration_digest != queue_configuration.queue_configuration_digest
+            or admission.queue_configuration_digest
+            != queue_configuration.queue_configuration_digest
+            or queue.admission_observation_digest != canonical_digest(admission)
+            or queue.pull_request_number != admission.pull_request_number
+            or queue.expected_group_parents != [admission.base_commit, admission.head_commit]
+            or queue.expected_base_commit != plan.composition.base_commit
+            or queue.expected_base_tree != plan.composition.base_tree
+        ):
+            raise MainGraduationPreparationError("durable queued state is not exact C4 evidence")
+        return self._result(
+            plan.operation_id,
+            "queued",
+            "queue_enqueue",
+            {},
+            {},
+            pr=_PR(
+                admission.pull_request_number,
+                admission.pull_request_url,
+                admission.head_commit,
+                admission.head_tree,
+                admission.base_commit,
+                admission.base_tree,
+            ),
+            admission=admission,
+            queue=queue,
+        )
+
     def _read_protection(self, operation_id: str) -> MainProtectionManifest:
         prior = self.journal.read_protection_manifest(operation_id)
         if prior is None:
             raise MainGraduationPreparationError("durable protection manifest is missing")
-        protection = cast(MainProtectionManifest, prior[0])
+        protection = self._canonical_dto(prior[0], MainProtectionManifest)
+        self._verify_provider_dto("protection", protection)
         if (
             protection.release_issuer_app_id == 15368
             or not protection.queue_required
@@ -491,32 +765,28 @@ class MainGraduationPreparationCoordinator:
         prep: MainPreparationAuthorization,
         lease: MainLeaseEvidenceRecord,
         request: StageRequest,
-        parent: MainMutationIntent | None,
+        parent: tuple[MainMutationIntent, C4StageExecutionResult] | None,
         stage: str,
-    ) -> tuple[MainMutationIntent, MainMutationReceipt]:
+    ) -> tuple[MainMutationIntent, C4StageExecutionResult]:
         parent_receipt: MainMutationReceipt | None = None
         parent_resolution: Sha256Digest | None = None
         if parent is not None:
-            parent_receipt = self._receipt_for_intent(parent.intent_digest)
-            if parent_receipt is None:
-                raise MainGraduationPreparationError("parent mutation receipt is missing")
-            if parent_receipt.outcome not in {"applied", "already_applied"}:
-                resolution = self.journal.read_mutation_fence_resolution_by_intent(
-                    parent.intent_digest
+            _parent_intent, parent_execution = parent
+            if parent_execution.effective_outcome not in {"applied", "already_applied"}:
+                raise MainGraduationPreparationError(
+                    "parent mutation requires authoritative recovery"
                 )
-                if resolution is None or resolution[0].outcome != "observed":
-                    raise MainGraduationPreparationError(
-                        "parent mutation requires authoritative recovery"
-                    )
-                parent_resolution = resolution[0].resolution_digest
-                parent_receipt = None
+            if parent_execution.parent_resolution_digest is not None:
+                parent_resolution = parent_execution.parent_resolution_digest
+            else:
+                parent_receipt = parent_execution.receipt
         values: dict[str, Any] = {
             "repository_digest": request.repository_digest,
             "target_ref": request.target_ref,
             "operation_id": request.operation_id,
             "stage": stage,
-            "parent_stage": parent.stage if parent is not None else None,
-            "parent_intent_digest": parent.intent_digest if parent is not None else None,
+            "parent_stage": parent[0].stage if parent is not None else None,
+            "parent_intent_digest": parent[0].intent_digest if parent is not None else None,
             "parent_receipt": parent_receipt,
             "parent_resolution_digest": parent_resolution,
             "lease_identity": prep.lease_identity,
@@ -552,20 +822,24 @@ class MainGraduationPreparationCoordinator:
         )
         durable = self.journal.read_mutation_intent(intent.intent_digest)
         if durable is None:
-            receipt = executor.execute(intent, request)
+            effective = executor.execute_effective(intent, request)
         else:
             receipt = self._receipt_for_intent(intent.intent_digest)
             if receipt is None or receipt.outcome not in {"applied", "already_applied", "rejected"}:
                 observation = self._observation_request(intent, request)
-                receipt = executor.recover(intent, observation, original_request=request)
+                effective = executor.recover_effective(
+                    intent, observation, original_request=request
+                )
             else:
-                receipt = executor.execute(intent, request)
-        if receipt.outcome in {"ambiguous", "reconciliation_required"}:
+                effective = executor.effective_result(intent, receipt)
+        if effective.effective_outcome in {"ambiguous", "reconciliation_required"}:
             observation = self._observation_request(intent, request)
-            receipt = executor.recover(intent, observation, original_request=request)
-        if capture.result is not None:
+            effective = executor.recover_effective(
+                intent, observation, original_request=request
+            )
+        if capture.result is not None and effective.authoritative_resolution is None:
             self._last_stage_results[stage] = capture.result
-        return intent, receipt
+        return intent, effective
 
     def _receipt_for_intent(self, intent_digest: str) -> MainMutationReceipt | None:
         reader = getattr(self.journal, "_read_receipt_for_intent", None)
@@ -584,6 +858,8 @@ class MainGraduationPreparationCoordinator:
             object_ids[request.stage] = request.admission_run_id
         elif request.stage == "queue_enqueue":
             object_ids[request.stage] = request.pull_request_url
+            post_queue = self._read_authoritative_queue(request)
+            values["queue_generation_digest"] = post_queue.queue_generation_digest
         values["object_id"] = object_ids.get(request.stage, "unknown")
         if request.stage == "pull_request_open":
             pr = self._resolve_pr(request, None)
@@ -615,6 +891,42 @@ class MainGraduationPreparationCoordinator:
             "queue_enqueue": QueueObservationRequest,
         }[request.stage].build(**values)
 
+    def _read_authoritative_queue(self, request: StageRequest) -> MainQueueObservation:
+        observe = getattr(self.read_provider, "observe_queue", None)
+        if not callable(observe):
+            raise MainGraduationPreparationError("authoritative queue observation is missing")
+        try:
+            parameters = inspect.signature(observe).parameters
+        except (TypeError, ValueError):
+            parameters = {}
+        if parameters and any(
+            parameter.kind
+            in {inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD}
+            and parameter.default is inspect.Parameter.empty
+            for parameter in parameters.values()
+        ):
+            # A split GitHub observer exposes the stage DTO API.  It cannot
+            # produce the durable queue contract, so use the protected-main
+            # reader when one is supplied.
+            raise MainGraduationPreparationError(
+                "protected-main post-queue observation capability is required"
+            )
+        kwargs: dict[str, object] = {}
+        for name, value in {
+            "operation_id": request.operation_id,
+            "queue_configuration_digest": getattr(
+                request, "queue_configuration_digest", None
+            ),
+            "admission_observation_digest": getattr(
+                request, "admission_observation_digest", None
+            ),
+        }.items():
+            if name in parameters and value is not None:
+                kwargs[name] = value
+        value = self._canonical_dto(observe(**kwargs), MainQueueObservation)
+        self._verify_provider_dto("queue", value)
+        return value
+
     def _resolve_pr(
         self,
         request: StageRequest,
@@ -632,7 +944,7 @@ class MainGraduationPreparationCoordinator:
                 getattr(captured, "state", "open")
             ).casefold() not in {"open", "opened"}:
                 raise MainGraduationPreparationError("pull request is draft or not open")
-            return _PR(
+            return self._pr_from_fields(
                 int(captured.pull_request_number),
                 str(captured.pull_request_url),
                 str(captured.candidate_commit),
@@ -644,12 +956,26 @@ class MainGraduationPreparationCoordinator:
         if durable_admission is not None:
             evidence = cast(MainQueueAdmissionObservation, durable_admission[0])
             return self._observe_pr(request, evidence.pull_request_number)
-        observe = getattr(self.provider, "observe_pull_request_by_candidate", None)
-        if not callable(observe):
-            raise MainGraduationPreparationError("typed PR recovery protocol is missing")
-        observed = observe(request)
+        lookup = getattr(self.provider, "lookup_pull_request", None)
+        if not callable(lookup):
+            lookup = getattr(self.observation_capability, "lookup_pull_request", None)
+        if not callable(lookup):
+            raise MainGraduationPreparationError("typed paginated PR lookup protocol is missing")
+        lookup_request = PullRequestLookupRequest.build(
+            operation_id=request.operation_id,
+            repository_digest=request.repository_digest,
+            lease_epoch_digest=request.lease_epoch_digest,
+            candidate_ref=request.candidate_ref,
+            candidate_commit=request.candidate_commit,
+            candidate_tree=request.candidate_tree,
+            base_commit=request.base_commit,
+            base_tree=request.base_tree,
+        )
+        observed = lookup(lookup_request)
         if not isinstance(observed, PullRequestObservationResult):
             raise MainGraduationPreparationError("PR recovery result is not typed")
+        observed = self._canonical_dto(observed, PullRequestObservationResult)
+        self._verify_provider_dto("pull_request", observed)
         return self._pr_from_observation(observed)
 
     def _observe_pr(self, request: StageRequest, number: int) -> _PR:
@@ -659,6 +985,8 @@ class MainGraduationPreparationCoordinator:
         observed = observe(self._pr_observation_request(request, number))
         if not isinstance(observed, PullRequestObservationResult):
             raise MainGraduationPreparationError("PR observation result is not typed")
+        observed = self._canonical_dto(observed, PullRequestObservationResult)
+        self._verify_provider_dto("pull_request", observed)
         return self._pr_from_observation(observed)
 
     def _pr_observation_request(
@@ -683,7 +1011,7 @@ class MainGraduationPreparationCoordinator:
         repository_url = getattr(self.read_provider, "repository_url", None)
         if not isinstance(repository_url, str) or not repository_url.startswith("https://"):
             raise MainGraduationPreparationError("provider PR URL authority is missing")
-        return _PR(
+        return self._pr_from_fields(
             observed.pull_request_number,
             repository_url.rstrip("/") + "/pull/" + str(observed.pull_request_number),
             observed.head_commit,
@@ -692,9 +1020,33 @@ class MainGraduationPreparationCoordinator:
             observed.base_tree,
         )
 
+    def _pr_from_fields(
+        self,
+        number: int,
+        url: str,
+        head_commit: str,
+        head_tree: str,
+        base_commit: str,
+        base_tree: str,
+    ) -> _PR:
+        if number <= 0:
+            raise MainGraduationPreparationError("pull request number is invalid")
+        canonical_url = self._canonical_pr_url(number)
+        if url.rstrip("/") != canonical_url:
+            raise MainGraduationPreparationError(
+                "pull request URL is not canonical same-repository URL"
+            )
+        return _PR(number, canonical_url, head_commit, head_tree, base_commit, base_tree)
+
+    def _canonical_pr_url(self, number: int) -> str:
+        repository_url = getattr(self.read_provider, "repository_url", None)
+        if not isinstance(repository_url, str) or not repository_url.startswith("https://"):
+            raise MainGraduationPreparationError("provider PR URL authority is missing")
+        return repository_url.rstrip("/") + "/pull/" + str(number)
+
     def _verify_pr(self, plan: MainGraduationPlan, pr: _PR) -> None:
         if (
-            not pr.url.startswith("https://")
+            pr.url != self._canonical_pr_url(pr.number)
             or pr.head_commit != plan.composition.candidate_commit
             or pr.head_tree != plan.composition.candidate_tree
             or pr.base_commit != plan.composition.base_commit
@@ -708,7 +1060,7 @@ class MainGraduationPreparationCoordinator:
         self,
         plan: MainGraduationPlan,
         prep: MainPreparationAuthorization,
-        queue: MainQueueObservation,
+        queue: MainQueueConfigurationObservation,
         protection: MainProtectionManifest,
         pr: _PR,
         request: AdmissionIssueRequest,
@@ -729,7 +1081,7 @@ class MainGraduationPreparationCoordinator:
             "admission_sha": pr.head_commit,
             "admission_run_id": request.admission_run_id,
             "admission_nonce": request.admission_nonce,
-            "queue_generation_digest": queue.queue_generation_digest,
+            "queue_configuration_digest": queue.queue_configuration_digest,
             "protection_manifest_digest": protection.manifest_digest,
             "issuer_identity": request.issuer_identity,
             "release_issuer_app_id": request.issuer_app_id,
@@ -738,6 +1090,7 @@ class MainGraduationPreparationCoordinator:
         }
         observed = self._observe_admission(request)
         check = self._observe_admission_check(pr.head_commit)
+        self._verify_provider_dto("check", check)
         if (
             check.sha != request.pull_request_head
             or check.run_id != request.admission_run_id
@@ -774,6 +1127,7 @@ class MainGraduationPreparationCoordinator:
         )
         if not isinstance(validated, MainQueueAdmissionObservation):
             raise MainGraduationPreparationError("attester did not return typed admission evidence")
+        validated = self._canonical_dto(validated, MainQueueAdmissionObservation)
         self.journal.record_queue_admission(validated)
         return validated
 
@@ -788,6 +1142,8 @@ class MainGraduationPreparationCoordinator:
         observed = observe(observation_request)
         if not isinstance(observed, AdmissionObservationResult) or observed.outcome != "observed":
             raise MainGraduationPreparationError("admission was not authoritatively observed")
+        observed = self._canonical_dto(observed, AdmissionObservationResult)
+        self._verify_provider_dto("admission", observed)
         observed_values = observed.model_dump(mode="json")
         observed_values.pop("outcome", None)
         observed_values.pop("evidence_digest", None)
@@ -803,24 +1159,20 @@ class MainGraduationPreparationCoordinator:
         observe = getattr(self.read_provider, "observe_pr_head_admission_check", None)
         if not callable(observe):
             raise MainGraduationPreparationError("provider admission-check observation is missing")
-        check = observe(head, freshness_cutoff=self.clock.now())
-        if not isinstance(check, MainCheckObservation):
-            raise MainGraduationPreparationError("admission-check observation is not typed")
+        check = self._canonical_dto(
+            observe(head, freshness_cutoff=self.clock.now()), MainCheckObservation
+        )
         return check
 
     def _observe_queued(
         self,
         request: QueueEnqueueRequest,
         plan: MainGraduationPlan,
-        durable_queue: MainQueueObservation,
+        queue_configuration: MainQueueConfigurationObservation,
+        admission: MainQueueAdmissionObservation,
         pr: _PR,
     ) -> MainQueueObservation:
-        observe = getattr(self.read_provider, "observe_queue", None)
-        if not callable(observe):
-            raise MainGraduationPreparationError("authoritative queue observation is missing")
-        observed = observe()
-        if not isinstance(observed, MainQueueObservation):
-            raise MainGraduationPreparationError("queue observation is not typed")
+        observed = self._read_authoritative_queue(request)
         if (
             observed.repository_digest != plan.repository_digest
             or observed.target_ref != plan.target_ref
@@ -828,15 +1180,34 @@ class MainGraduationPreparationCoordinator:
             or observed.expected_base_commit != pr.base_commit
             or observed.expected_base_tree != pr.base_tree
             or observed.expected_group_parents != [pr.base_commit, pr.head_commit]
-            or observed.queue_generation_digest != request.queue_generation_digest
-            or observed.protection_manifest_digest != durable_queue.protection_manifest_digest
-            or observed.protection_epoch != durable_queue.protection_epoch
+            or observed.queue_configuration_digest
+            != queue_configuration.queue_configuration_digest
+            or observed.queue_generation_digest
+            == queue_configuration.queue_configuration_digest
+            or observed.admission_observation_digest != canonical_digest(admission)
+            or observed.protection_manifest_digest
+            != queue_configuration.protection_manifest_digest
+            or observed.protection_epoch != queue_configuration.protection_epoch
+            or observed.provider_identity != self.provider_identity
+            or observed.provider_api_version != self.provider_api_version
             or observed.max_entries_per_group != 1
             or observed.bypass_allowed
             or observed.direct_merge_allowed
             or observed.merge_method != "squash"
         ):
             raise MainGraduationPreparationError("queued PR is not exact singleton queue admission")
+        prior = self.journal.read_queue_observation(plan.operation_id)
+        if prior is not None:
+            existing = self._canonical_dto(prior[0], MainQueueObservation)
+            expected = observed.model_dump(mode="json")
+            actual = existing.model_dump(mode="json")
+            expected.pop("observed_at", None)
+            actual.pop("observed_at", None)
+            if expected != actual:
+                raise MainGraduationPreparationError(
+                    "durable post-enqueue queue differs from fresh observation"
+                )
+            return existing
         return observed
 
     def _protected_pr(self, pr: _PR, plan: MainGraduationPlan) -> Any:

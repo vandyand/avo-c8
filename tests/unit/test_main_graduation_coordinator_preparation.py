@@ -26,11 +26,13 @@ from avo_correlate.application.main_graduation_coordinator import (
 )
 from avo_correlate.contracts.main_graduation import (
     MainCheckObservation,
+    MainGraduationIntent,
     MainGraduationPlan,
     MainPreparationAuthorization,
     MainProtectionManifest,
     MainProviderPostStateObservation,
     MainProviderReceipt,
+    MainQueueConfigurationObservation,
     MainQueueObservation,
     MainReconciliation,
     MainReleaseIssuerBinding,
@@ -101,6 +103,27 @@ class Authority:
         assert result.request_digest == request.request_digest
         assert result.external_identity == request.external_identity
 
+    def verify_main_observation(self, value: Any) -> None:
+        assert value.repository_digest == REPOSITORY
+
+    def verify_protection_observation(self, value: Any) -> None:
+        assert value.repository_digest == REPOSITORY
+
+    def verify_queue_configuration_observation(self, value: Any) -> None:
+        assert value.repository_digest == REPOSITORY
+
+    def verify_pull_request_observation(self, value: Any) -> None:
+        assert value.repository_digest == REPOSITORY
+
+    def verify_admission_observation(self, value: Any) -> None:
+        assert value.repository_digest == REPOSITORY
+
+    def verify_check_observation(self, value: Any) -> None:
+        assert value.sha
+
+    def verify_queue_observation(self, value: Any) -> None:
+        assert value.repository_digest == REPOSITORY
+
 
 class Attester:
     def attest_admission(self, observation: Any, *_: Any, **__: Any) -> Any:
@@ -120,7 +143,9 @@ class Provider:
         self.queue_reads = 0
         self.pr_number = 41
         self.pr_url = self.repository_url + "/pull/41"
-        self.queue: MainQueueObservation
+        self.queue: MainQueueConfigurationObservation
+        self.post_queue: MainQueueObservation | None = None
+        self.journal: MainGraduationJournal | None = None
         self.protection: MainProtectionManifest
         self.admission_run_id = ""
         self.admission_nonce = ""
@@ -142,8 +167,12 @@ class Provider:
 
     def observe_queue(self) -> MainQueueObservation:
         self.queue_reads += 1
-        if self.queue_reads < 6:
-            return self.queue
+        if self.journal is None:
+            raise AssertionError("journal was not configured")
+        admission = self.journal.read_queue_admission(MAIN_OPERATION)
+        if admission is None:
+            raise AssertionError("admission was not configured")
+        admission_value = admission[0]
         parents = [self.base, self.candidate]
         topology = canonical_digest(
             {
@@ -152,17 +181,37 @@ class Provider:
                 "merge_method": "squash",
                 "provider_identity": self.provider_identity,
                 "provider_api_version": self.provider_api_version,
-                "queue_manifest_digest": self.queue.queue_manifest_digest,
+                "queue_manifest_digest": CONFIG,
             }
         )
-        return MainQueueObservation.model_validate(
-            self.queue.model_dump(mode="json")
-            | {
-                "pull_request_number": self.pr_number,
-                "expected_group_parents": parents,
-                "group_topology_digest": topology,
-            }
+        return MainQueueObservation(
+            operation_id=MAIN_OPERATION,
+            repository_digest=REPOSITORY,
+            queue_generation_digest=canonical_digest({"generation": "singleton"}),
+            queue_manifest_digest=CONFIG,
+            queue_configuration_digest=self.queue.queue_configuration_digest,
+            admission_observation_digest=canonical_digest(admission_value),
+            expected_base_commit=self.base,
+            expected_base_tree=self.tree,
+            protection_manifest_digest=self.queue.protection_manifest_digest,
+            protection_epoch=self.queue.protection_epoch,
+            provider_identity=self.provider_identity,
+            provider_api_version=self.provider_api_version,
+            expected_group_parents=parents,
+            group_topology_digest=topology,
+            merge_method="squash",
+            isolated_release_issuer=self.queue.isolated_release_issuer,
+            release_issuer_app_id=self.queue.release_issuer_app_id,
+            issuer_isolation_digest=self.queue.issuer_isolation_digest,
+            observed_at=NOW,
+            pull_request_number=self.pr_number,
         )
+
+    def observe_queue_configuration(self, **_: Any) -> MainQueueConfigurationObservation:
+        return self.queue
+
+    def lookup_pull_request(self, request: Any) -> PullRequestObservationResult:
+        return self.observe_pull_request_by_candidate(request)
 
     def observe_pr_head_admission_check(
         self, _: str, *, freshness_cutoff: datetime
@@ -351,11 +400,7 @@ def _fixture(
         def fresh_main_base(self) -> MainBaseSnapshot:
             return MainBaseSnapshot(REPOSITORY, base, base_tree)
 
-    class FixtureJournal(MainGraduationJournal):
-        def _require_preparation_chain(self, preparation: MainPreparationAuthorization) -> None:
-            del preparation
-
-    journal = FixtureJournal(
+    journal = MainGraduationJournal(
         root,
         release_issuer_binding=issuer,
         composition_root=checkout,
@@ -390,6 +435,9 @@ def _fixture(
         }
     )
     journal.record_plan(plan)
+    stored_plan = journal.read_plan(MAIN_OPERATION)
+    assert stored_plan is not None
+    plan = stored_plan[0]
     lease_values = {
         "operation_id": MAIN_OPERATION,
         "repository_digest": REPOSITORY,
@@ -416,12 +464,48 @@ def _fixture(
         }
     )
     journal.record_lease_evidence_record(lease)
+    lease_record = journal.read_lease_evidence_record(MAIN_OPERATION)
+    assert lease_record is not None
+    intent_values = {
+        "operation_id": MAIN_OPERATION,
+        "repository_digest": REPOSITORY,
+        "target_ref": "refs/heads/main",
+        "plan_digest": canonical_digest(plan),
+        "package_digest": source.package_digest,
+        "composition_digest": composition.composition.composition_digest,
+        "base_commit": base,
+        "base_tree": base_tree,
+        "candidate_commit": result,
+        "candidate_tree": result_tree,
+        "candidate_ref": composition.composition.candidate_ref,
+        "lease_identity": lease.owner,
+        "lease_digest": lease.lease_digest,
+        "lease_epoch_digest": lease.lease_epoch_digest,
+        "lease_evidence_record": lease,
+        "lease_evidence_artifact": lease_record[1],
+        "policy_epoch": POLICY,
+        "recorded_at": NOW,
+    }
+    intent_probe = MainGraduationIntent.model_construct(
+        **intent_values, intent_digest=CONFIG
+    )
+    intent = MainGraduationIntent.model_validate(
+        intent_values
+        | {
+            "intent_digest": canonical_digest(
+                intent_probe.model_dump(exclude={"intent_digest"}, mode="json")
+            )
+        }
+    )
+    journal.record_intent(intent)
+    stored_intent = journal.read_intent(MAIN_OPERATION)
+    assert stored_intent is not None
     auth_values = {
         "operation_id": MAIN_OPERATION,
         "repository_digest": REPOSITORY,
         "target_ref": "refs/heads/main",
         "plan_digest": canonical_digest(plan),
-        "intent_digest": CONFIG,
+        "intent_digest": canonical_digest(stored_intent[0]),
         "package_digest": source.package_digest,
         "composition_digest": composition.composition.composition_digest,
         "base_commit": base,
@@ -459,41 +543,27 @@ def _fixture(
         observed_at=NOW,
     )
     journal.record_protection_manifest(protection)
-    parents = [base]
-    topology = canonical_digest(
-        {
-            "expected_group_parents": parents,
-            "pull_request_number": 0,
-            "merge_method": "squash",
-            "provider_identity": Provider.provider_identity,
-            "provider_api_version": Provider.provider_api_version,
-            "queue_manifest_digest": CONFIG,
-        }
-    )
-    queue = MainQueueObservation(
+    queue_config = MainQueueConfigurationObservation(
         operation_id=MAIN_OPERATION,
         repository_digest=REPOSITORY,
-        queue_generation_digest=CONFIG,
-        queue_manifest_digest=CONFIG,
         expected_base_commit=base,
         expected_base_tree=base_tree,
         protection_manifest_digest=CONFIG,
         protection_epoch=CONFIG,
         provider_identity=Provider.provider_identity,
         provider_api_version=Provider.provider_api_version,
-        expected_group_parents=parents,
-        group_topology_digest=topology,
         merge_method="squash",
         isolated_release_issuer=issuer.issuer_id,
         release_issuer_app_id=issuer.app_id,
         issuer_isolation_digest=issuer.isolation_digest,
         observed_at=NOW,
     )
-    journal.record_queue_observation(queue)
+    journal.record_queue_configuration(queue_config)
     provider = provider_type(base, base_tree, result, result_tree)
     provider.candidate = plan.composition.candidate_commit
     provider.candidate_tree = plan.composition.candidate_tree
-    provider.queue, provider.protection = queue, protection
+    provider.queue, provider.protection = queue_config, protection
+    provider.journal = journal
     return journal, provider
 
 

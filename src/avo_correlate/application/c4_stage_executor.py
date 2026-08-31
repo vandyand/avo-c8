@@ -230,6 +230,12 @@ def _check_observation_object_binding(
 
     expected_projection = _immutable_stage_projection(original)
     observed_projection = _immutable_stage_projection(observation)
+    # Queue generation is intentionally absent from the enqueue mutation
+    # request and is first known from the post-enqueue observation.  The
+    # queue-configuration digest remains the immutable pre-enqueue binding.
+    if original.stage == "queue_enqueue":
+        expected_projection.pop("queue_generation_digest", None)
+        observed_projection.pop("queue_generation_digest", None)
     if original.stage == "pull_request_open":
         # PullRequestObservationRequest uses head_* for the create request's
         # candidate_* fields.  These are the same immutable provider object.
