@@ -26,6 +26,7 @@ from avo_correlate.contracts.main_graduation import (
     MainRollbackIntent,
     MainRollbackPreparationAuthorization,
     MainRollbackResultReceipt,
+    rollback_cleanup_authority_digest,
 )
 from avo_correlate.contracts.main_graduation_phase_a import MainLeaseEvidenceRecord
 from avo_correlate.domain.canonical import canonical_digest
@@ -287,6 +288,15 @@ def _cleanup_intent(
         "pull_request_url": "https://github.example/pr/17",
         "provider_identity": "github",
         "provider_api_version": "v1",
+        "cleanup_principal_identity": "cleanup",
+        "cleanup_principal_app_id": 5,
+        "cleanup_principal_isolation_digest": D,
+        "observer_identity": "read-only-observer",
+        "observer_app_id": 4,
+        "observer_isolation_digest": D,
+        "observer_provider_identity": "github",
+        "observer_provider_api_version": "v1",
+        "cleanup_authority_digest": rollback_cleanup_authority_digest(R),
         "recorded_at": NOW + timedelta(minutes=4),
     }
     return _signed(MainRollbackCleanupIntent, values, "intent_digest")
@@ -307,6 +317,17 @@ def _cleanup_receipt(cleanup: MainRollbackCleanupIntent) -> MainRollbackCleanupR
         "dispatch_started": True,
         "response_digest": D,
         "observed_at": NOW + timedelta(minutes=5),
+        "provider_identity": cleanup.provider_identity,
+        "provider_api_version": cleanup.provider_api_version,
+        "cleanup_principal_identity": cleanup.cleanup_principal_identity,
+        "cleanup_principal_app_id": cleanup.cleanup_principal_app_id,
+        "cleanup_principal_isolation_digest": cleanup.cleanup_principal_isolation_digest,
+        "observer_identity": cleanup.observer_identity,
+        "observer_app_id": cleanup.observer_app_id,
+        "observer_isolation_digest": cleanup.observer_isolation_digest,
+        "observer_provider_identity": cleanup.observer_provider_identity,
+        "observer_provider_api_version": cleanup.observer_provider_api_version,
+        "cleanup_authority_digest": cleanup.cleanup_authority_digest,
     }
     return _signed(MainRollbackCleanupReceipt, values, "receipt_digest")
 
@@ -329,6 +350,14 @@ def _cleanup_observation(
         "provider_api_version": "v1",
         "observer_identity": "read-only-observer",
         "observer_api_version": "v1",
+        "cleanup_principal_identity": cleanup.cleanup_principal_identity,
+        "cleanup_principal_app_id": cleanup.cleanup_principal_app_id,
+        "cleanup_principal_isolation_digest": cleanup.cleanup_principal_isolation_digest,
+        "observer_app_id": cleanup.observer_app_id,
+        "observer_isolation_digest": cleanup.observer_isolation_digest,
+        "observer_provider_identity": cleanup.observer_provider_identity,
+        "observer_provider_api_version": cleanup.observer_provider_api_version,
+        "cleanup_authority_digest": cleanup.cleanup_authority_digest,
         "candidate_ref_absent": True,
         "pull_request_state": "closed",
         "pull_request_merged": True,

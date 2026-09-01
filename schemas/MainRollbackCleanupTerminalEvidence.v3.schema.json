@@ -1,0 +1,200 @@
+{
+  "additionalProperties": false,
+  "description": "Terminal proof that rollback candidate resources are absent.",
+  "properties": {
+    "candidate_commit": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Candidate Commit",
+      "type": "string"
+    },
+    "candidate_ref": {
+      "minLength": 1,
+      "title": "Candidate Ref",
+      "type": "string"
+    },
+    "candidate_ref_absent": {
+      "const": true,
+      "title": "Candidate Ref Absent",
+      "type": "boolean"
+    },
+    "cleanup_authority_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Cleanup Authority Digest",
+      "type": "string"
+    },
+    "cleanup_intent_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Cleanup Intent Digest",
+      "type": "string"
+    },
+    "cleanup_observation_digest": {
+      "anyOf": [
+        {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Cleanup Observation Digest"
+    },
+    "cleanup_principal_app_id": {
+      "exclusiveMinimum": 0,
+      "title": "Cleanup Principal App Id",
+      "type": "integer"
+    },
+    "cleanup_principal_identity": {
+      "minLength": 1,
+      "title": "Cleanup Principal Identity",
+      "type": "string"
+    },
+    "cleanup_principal_isolation_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Cleanup Principal Isolation Digest",
+      "type": "string"
+    },
+    "cleanup_receipt_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Cleanup Receipt Digest",
+      "type": "string"
+    },
+    "deploy_performed": {
+      "const": false,
+      "default": false,
+      "title": "Deploy Performed",
+      "type": "boolean"
+    },
+    "evidence_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Evidence Digest",
+      "type": "string"
+    },
+    "observed_at": {
+      "format": "date-time",
+      "title": "Observed At",
+      "type": "string"
+    },
+    "observer_app_id": {
+      "exclusiveMinimum": 0,
+      "title": "Observer App Id",
+      "type": "integer"
+    },
+    "observer_identity": {
+      "minLength": 1,
+      "title": "Observer Identity",
+      "type": "string"
+    },
+    "observer_isolation_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Observer Isolation Digest",
+      "type": "string"
+    },
+    "observer_provider_api_version": {
+      "minLength": 1,
+      "title": "Observer Provider Api Version",
+      "type": "string"
+    },
+    "observer_provider_identity": {
+      "minLength": 1,
+      "title": "Observer Provider Identity",
+      "type": "string"
+    },
+    "operation_id": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Operation Id",
+      "type": "string"
+    },
+    "outcome": {
+      "enum": [
+        "absent",
+        "already_absent"
+      ],
+      "title": "Outcome",
+      "type": "string"
+    },
+    "provider_api_version": {
+      "minLength": 1,
+      "title": "Provider Api Version",
+      "type": "string"
+    },
+    "provider_identity": {
+      "minLength": 1,
+      "title": "Provider Identity",
+      "type": "string"
+    },
+    "pull_request_merged": {
+      "const": true,
+      "title": "Pull Request Merged",
+      "type": "boolean"
+    },
+    "pull_request_number": {
+      "exclusiveMinimum": 0,
+      "title": "Pull Request Number",
+      "type": "integer"
+    },
+    "pull_request_state": {
+      "const": "closed",
+      "title": "Pull Request State",
+      "type": "string"
+    },
+    "pull_request_url": {
+      "minLength": 1,
+      "title": "Pull Request Url",
+      "type": "string"
+    },
+    "repository_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Repository Digest",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 3,
+      "default": 3,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "target_ref": {
+      "const": "refs/heads/main",
+      "default": "refs/heads/main",
+      "title": "Target Ref",
+      "type": "string"
+    },
+    "terminal": {
+      "const": true,
+      "default": true,
+      "title": "Terminal",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "repository_digest",
+    "operation_id",
+    "cleanup_intent_digest",
+    "cleanup_receipt_digest",
+    "candidate_ref",
+    "candidate_commit",
+    "pull_request_number",
+    "pull_request_url",
+    "outcome",
+    "candidate_ref_absent",
+    "pull_request_state",
+    "pull_request_merged",
+    "provider_identity",
+    "provider_api_version",
+    "cleanup_principal_identity",
+    "cleanup_principal_app_id",
+    "cleanup_principal_isolation_digest",
+    "observer_identity",
+    "observer_app_id",
+    "observer_isolation_digest",
+    "observer_provider_identity",
+    "observer_provider_api_version",
+    "cleanup_authority_digest",
+    "observed_at",
+    "evidence_digest"
+  ],
+  "title": "MainRollbackCleanupTerminalEvidence",
+  "type": "object"
+}

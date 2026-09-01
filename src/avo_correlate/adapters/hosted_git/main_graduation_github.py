@@ -57,11 +57,14 @@ from avo_correlate.application.c4_capabilities import (
 from avo_correlate.contracts.main_graduation import (
     MainQueueConfigurationObservation,
     MainRollbackAttemptAuthority,
+    MainRollbackAuthorization,
     MainRollbackCleanupIntent,
     MainRollbackCleanupObservation,
     MainRollbackCleanupReceipt,
+    MainRollbackIntent,
     MainRollbackPostStateObservation,
     MainRollbackResultReceipt,
+    rollback_cleanup_authority_digest,
 )
 from avo_correlate.contracts.main_graduation_phase_a import main_stage_nonce
 from avo_correlate.domain.canonical import canonical_digest
@@ -560,7 +563,7 @@ class GitHubMainGraduationAdapter:
             raise GitHubMainGraduationAmbiguous("GitHub observation transport failed") from exc
         except Exception as exc:
             raise GitHubMainGraduationAmbiguous("GitHub observation transport failed") from exc
-        if not isinstance(status, int):
+        if isinstance(status, bool) or not isinstance(status, int):
             raise GitHubMainGraduationAmbiguous("GitHub observation status was malformed")
         if 400 <= status < 500:
             raise _Precondition(f"GitHub rejected observation ({status})", status=status)
@@ -2154,18 +2157,140 @@ class GitHubMainGraduationAdapter:
     # Explicit alias used by recovery implementations.
     observe_rollback_final_main = observe_rollback_post_state
 
+    def _verify_exact_rollback_main(
+        self, *, result_commit: str, result_tree: str, current_main_commit: str
+    ) -> None:
+        """Authenticate the protected ref and exact one-parent result commit."""
+        ref_raw = _obj(
+            self._read("observer", "GET", self.repository_path + "/git/ref/heads/main"),
+            "main ref",
+        )
+        obj = _nested(ref_raw, "object", "main ref")
+        if (
+            ref_raw.get("ref") != "refs/heads/main"
+            or obj.get("type") != "commit"
+            or obj.get("sha") != result_commit
+        ):
+            raise _Precondition("authoritative main ref differs from rollback result")
+        self._read_commit(
+            "observer",
+            result_commit,
+            expected_tree=result_tree,
+            expected_parents=[current_main_commit],
+        )
+
+    def verify_rollback_result(
+        self,
+        result: MainRollbackResultReceipt,
+        intent: MainRollbackIntent,
+        authorization: MainRollbackAuthorization,
+    ) -> None:
+        """Verify rollback result authority from fresh protected-main reads."""
+        result = MainRollbackResultReceipt.model_validate(result.model_dump())
+        intent = MainRollbackIntent.model_validate(intent.model_dump())
+        authorization = MainRollbackAuthorization.model_validate(authorization.model_dump())
+        if (
+            result.provider_identity != self.provider_identity
+            or result.provider_api_version != self.provider_api_version
+            or result.operation_id != intent.operation_id
+            or result.intent_digest != intent.intent_digest
+            or result.authorization_digest != authorization.authorization_digest
+            or result.source_operation_id != intent.source_operation_id
+            or result.composition_id != intent.composition_id
+            or result.composition_artifact_digest != intent.composition_artifact_digest
+            or result.completion_package_digest != intent.completion_package_digest
+            or result.inverse_delta_digest != intent.inverse_delta_digest
+            or result.inverse_delta_artifact_digest != intent.inverse_delta_artifact_digest
+            or result.current_main_commit != intent.current_main_commit
+            or result.inverse_tree != intent.inverse_tree
+            or result.outcome not in {"applied", "already_applied"}
+            or result.result_commit is None
+            or result.result_tree is None
+            or result.result_parents != [intent.current_main_commit]
+            or result.result_tree != intent.inverse_tree
+        ):
+            raise GitHubMainGraduationRejected("rollback result authority differs")
+        self._verify_exact_rollback_main(
+            result_commit=result.result_commit,
+            result_tree=result.result_tree,
+            current_main_commit=intent.current_main_commit,
+        )
+
+    def verify_rollback_post_state(
+        self,
+        observation: MainRollbackPostStateObservation,
+        result: MainRollbackResultReceipt,
+        attempt: MainRollbackAttemptAuthority,
+    ) -> None:
+        """Verify post-state evidence by repeating the authenticated read."""
+        observation = MainRollbackPostStateObservation.model_validate(observation.model_dump())
+        fresh = self.observe_rollback_post_state(result, attempt)
+        submitted = observation.model_dump(
+            exclude={"observation_digest", "observed_at"}, mode="json"
+        )
+        authoritative = fresh.model_dump(
+            exclude={"observation_digest", "observed_at"}, mode="json"
+        )
+        if submitted != authoritative:
+            raise GitHubMainGraduationRejected("rollback post-state observation is stale")
+
     def _cleanup_intent(self, intent: MainRollbackCleanupIntent) -> MainRollbackCleanupIntent:
         checked = MainRollbackCleanupIntent.model_validate(intent.model_dump())
         expected_url = f"{self.repository_url}/pull/{checked.pull_request_number}"
+        cleanup_raw = self._principals.get("cleanup")
+        observer_raw = self._principals.get("observer")
+        if cleanup_raw is None or observer_raw is None:
+            raise ValueError("rollback cleanup capability is unavailable")
+        cleanup = cleanup_raw
+        observer = observer_raw
         if (
             checked.repository_digest != self.repository_digest
             or checked.provider_identity != self.provider_identity
             or checked.provider_api_version != self.provider_api_version
+            or checked.cleanup_principal_identity != cleanup.identity
+            or checked.cleanup_principal_app_id != cleanup.app_id
+            or checked.cleanup_principal_isolation_digest != cleanup.isolation_digest
+            or checked.observer_identity != observer.identity
+            or checked.observer_app_id != observer.app_id
+            or checked.observer_isolation_digest != observer.isolation_digest
+            or checked.observer_provider_identity != self.provider_identity
+            or checked.observer_provider_api_version != self.provider_api_version
+            or checked.cleanup_authority_digest
+            != rollback_cleanup_authority_digest(
+                checked.repository_digest, checked.target_ref
+            )
             or checked.pull_request_url != expected_url
             or _ROLLBACK_CANDIDATE.fullmatch(checked.candidate_ref) is None
         ):
             raise ValueError("rollback cleanup intent is outside this exact capability")
         return checked
+
+    @staticmethod
+    def _cleanup_record_binding(record: Any, intent: MainRollbackCleanupIntent) -> bool:
+        return all(
+            getattr(record, key, None) == getattr(intent, key, None)
+            for key in (
+                "repository_digest",
+                "target_ref",
+                "candidate_ref",
+                "candidate_commit",
+                "pull_request_number",
+                "pull_request_url",
+                "cleanup_principal_identity",
+                "cleanup_principal_app_id",
+                "cleanup_principal_isolation_digest",
+                "observer_identity",
+                "observer_app_id",
+                "observer_isolation_digest",
+                "observer_provider_identity",
+                "observer_provider_api_version",
+                "cleanup_authority_digest",
+            )
+        ) and (
+            getattr(record, "provider_identity", None) == intent.provider_identity
+            and getattr(record, "provider_api_version", None)
+            == intent.provider_api_version
+        )
 
     def _cleanup_ref(self, intent: MainRollbackCleanupIntent) -> bool:
         path = self.repository_path + "/git/ref/heads/" + quote(
@@ -2294,6 +2419,17 @@ class GitHubMainGraduationAdapter:
                 "dispatch_started": dispatch,
                 "response_digest": canonical_digest(response),
                 "observed_at": self._rollback_now(),
+                "provider_identity": intent.provider_identity,
+                "provider_api_version": intent.provider_api_version,
+                "cleanup_principal_identity": intent.cleanup_principal_identity,
+                "cleanup_principal_app_id": intent.cleanup_principal_app_id,
+                "cleanup_principal_isolation_digest": intent.cleanup_principal_isolation_digest,
+                "observer_identity": intent.observer_identity,
+                "observer_app_id": intent.observer_app_id,
+                "observer_isolation_digest": intent.observer_isolation_digest,
+                "observer_provider_identity": intent.observer_provider_identity,
+                "observer_provider_api_version": intent.observer_provider_api_version,
+                "cleanup_authority_digest": intent.cleanup_authority_digest,
             },
             "receipt_digest",
         )
@@ -2405,15 +2541,114 @@ class GitHubMainGraduationAdapter:
                 "outcome": outcome,
                 "provider_identity": intent.provider_identity,
                 "provider_api_version": intent.provider_api_version,
-                "observer_identity": cast(
-                    GitHubPrincipalBinding, self._principals["observer"]
-                ).identity,
-                "observer_api_version": self.provider_api_version,
+                "observer_identity": intent.observer_identity,
+                "observer_api_version": intent.observer_provider_api_version,
+                "cleanup_principal_identity": intent.cleanup_principal_identity,
+                "cleanup_principal_app_id": intent.cleanup_principal_app_id,
+                "cleanup_principal_isolation_digest": intent.cleanup_principal_isolation_digest,
+                "observer_app_id": intent.observer_app_id,
+                "observer_isolation_digest": intent.observer_isolation_digest,
+                "observer_provider_identity": intent.observer_provider_identity,
+                "observer_provider_api_version": intent.observer_provider_api_version,
+                "cleanup_authority_digest": intent.cleanup_authority_digest,
                 **state,
                 "observed_at": self._rollback_now(),
             },
             "observation_digest",
         )
+
+    def verify_rollback_cleanup_intent(
+        self,
+        intent: MainRollbackCleanupIntent,
+        rollback_intent: Any,
+        result: MainRollbackResultReceipt,
+        authorization: Any,
+    ) -> None:
+        """Verify cleanup authority and the pre-mutation merged PR state."""
+        checked = self._cleanup_intent(intent)
+        if (
+            result.receipt_digest != checked.result_receipt_digest
+            or authorization.authorization_digest != checked.authorization_digest
+            or rollback_intent.candidate_ref != checked.candidate_ref
+            or rollback_intent.candidate_commit != checked.candidate_commit
+        ):
+            raise GitHubMainGraduationRejected("rollback cleanup intent ancestry differs")
+        state = self._cleanup_pre_state(checked)
+        if state["pull_request_state"] != "closed" or state["pull_request_merged"] is not True:
+            raise GitHubMainGraduationRejected("rollback cleanup PR is not merged and closed")
+
+    def verify_rollback_cleanup_receipt(
+        self,
+        receipt: MainRollbackCleanupReceipt,
+        intent: MainRollbackCleanupIntent,
+        result: MainRollbackResultReceipt,
+    ) -> None:
+        """Verify receipt binding and fresh read-only cleanup state."""
+        checked = self._cleanup_intent(intent)
+        if (
+            result.receipt_digest != checked.result_receipt_digest
+            or not self._cleanup_record_binding(receipt, checked)
+            or receipt.intent_digest != checked.intent_digest
+        ):
+            raise GitHubMainGraduationRejected("rollback cleanup receipt authority differs")
+        if receipt.outcome in {"applied", "already_absent"}:
+            state = self._cleanup_state(checked)
+            if (
+                not state["candidate_ref_absent"]
+                or state["pull_request_state"] != "closed"
+                or state["pull_request_merged"] is not True
+            ):
+                raise GitHubMainGraduationRejected("cleanup receipt lacks exact fresh absence")
+
+    def verify_rollback_cleanup_observation(
+        self,
+        observation: MainRollbackCleanupObservation,
+        intent: MainRollbackCleanupIntent,
+        receipt: MainRollbackCleanupReceipt,
+    ) -> None:
+        """Verify observation binding against fresh authenticated reads only."""
+        checked = self._cleanup_intent(intent)
+        if (
+            receipt.receipt_digest != observation.receipt_digest
+            or not self._cleanup_record_binding(observation, checked)
+        ):
+            raise GitHubMainGraduationRejected("rollback cleanup observation authority differs")
+        state = self._cleanup_state(checked)
+        expected = (
+            "absent"
+            if state["candidate_ref_absent"]
+            and state["pull_request_state"] == "closed"
+            and state["pull_request_merged"] is True
+            else "present"
+        )
+        if observation.outcome != expected or any(
+            getattr(observation, key) != value for key, value in state.items()
+        ):
+            raise GitHubMainGraduationRejected("rollback cleanup observation is stale")
+
+    def verify_rollback_cleanup_terminal(
+        self,
+        evidence: Any,
+        intent: MainRollbackCleanupIntent,
+        receipt: MainRollbackCleanupReceipt,
+    ) -> None:
+        """Verify terminal cleanup evidence with a fresh read-only exact state."""
+        checked = self._cleanup_intent(intent)
+        if (
+            receipt.receipt_digest != evidence.cleanup_receipt_digest
+            or not self._cleanup_record_binding(evidence, checked)
+            or evidence.cleanup_intent_digest != checked.intent_digest
+            or evidence.pull_request_state != "closed"
+            or evidence.pull_request_merged is not True
+        ):
+            raise GitHubMainGraduationRejected("rollback cleanup terminal authority differs")
+        state = self._cleanup_state(checked)
+        if (
+            not state["candidate_ref_absent"]
+            or state["pull_request_state"] != "closed"
+            or state["pull_request_merged"] is not True
+        ):
+            raise GitHubMainGraduationRejected("rollback terminal cleanup is not exact absence")
 
     reconcile_cleanup = reconcile_rollback_cleanup
     cleanup_rollback_resources = cleanup_rollback

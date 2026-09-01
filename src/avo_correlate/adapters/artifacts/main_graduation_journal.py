@@ -209,6 +209,26 @@ class _ReferenceEnvelope(Protocol):
 _COMPOSITION_VERIFIER_ID = "avo_correlate.adapters.git.main_composition.MainCompositionAdapter"
 _COMPOSITION_VERIFIER_VERSION = "1"
 _BASE_OBSERVER_ID = "avo_correlate.adapters.git.main_composition.MainBaseReader"
+_CLEANUP_BINDING_FIELDS = (
+    "provider_identity",
+    "provider_api_version",
+    "cleanup_principal_identity",
+    "cleanup_principal_app_id",
+    "cleanup_principal_isolation_digest",
+    "observer_identity",
+    "observer_app_id",
+    "observer_isolation_digest",
+    "observer_provider_identity",
+    "observer_provider_api_version",
+    "cleanup_authority_digest",
+)
+
+
+def _cleanup_binding_matches(record: Any, intent: MainRollbackCleanupIntent) -> bool:
+    return all(
+        getattr(record, field, None) == getattr(intent, field)
+        for field in _CLEANUP_BINDING_FIELDS
+    )
 
 
 class _RunNonceEnvelope(StrictModel):
@@ -4293,6 +4313,8 @@ class MainGraduationJournal:
             not in {"applied", "already_absent", "ambiguous", "reconciliation_required"}
             or evidence.candidate_ref_absent is not True
             or evidence.pull_request_state != "closed"
+            or evidence.pull_request_merged is not True
+            or not _cleanup_binding_matches(evidence, intent)
         ):
             raise MainGraduationJournalError("rollback cleanup terminal binding differs")
         if receipt.outcome in {"ambiguous", "reconciliation_required"}:
@@ -4319,8 +4341,7 @@ class MainGraduationJournal:
                 or observation.pull_request_url != intent.pull_request_url
                 or observation.pull_request_state != "closed"
                 or observation.pull_request_merged is not True
-                or evidence.provider_identity != observation.observer_identity
-                or evidence.provider_api_version != observation.observer_api_version
+                or not _cleanup_binding_matches(observation, intent)
             ):
                 raise MainGraduationJournalError(
                     "ambiguous cleanup terminal observation binding differs"
@@ -4329,11 +4350,6 @@ class MainGraduationJournal:
             raise MainGraduationJournalError(
                 "direct cleanup terminal evidence cannot bind an observation"
             )
-        elif (
-            evidence.provider_identity != intent.provider_identity
-            or evidence.provider_api_version != intent.provider_api_version
-        ):
-            raise MainGraduationJournalError("direct cleanup terminal provider binding differs")
         self._verify_rollback_cleanup_terminal_authority(evidence, intent, receipt)
 
     def _require_rollback_result(self, result: MainRollbackResultReceipt) -> None:
@@ -4434,6 +4450,7 @@ class MainGraduationJournal:
             or receipt.repository_digest != intent.repository_digest
             or receipt.target_ref != intent.target_ref
             or receipt.observed_at < intent.recorded_at
+            or not _cleanup_binding_matches(receipt, intent)
         ):
             raise MainGraduationJournalError("rollback cleanup receipt binding differs")
         result_prior = self._read("rollback-result", receipt.operation_id)
@@ -4473,16 +4490,7 @@ class MainGraduationJournal:
                 receipt.outcome in {"applied", "already_absent"}
                 and observation.outcome not in {"absent", "already_absent"}
             )
-            or (
-                receipt.outcome in {"applied", "already_absent"}
-                and (
-                    observation.provider_identity != intent.provider_identity
-                    or observation.provider_api_version != intent.provider_api_version
-                )
-            )
-            or observation.provider_identity != intent.provider_identity
-            or observation.provider_api_version != intent.provider_api_version
-            or observation.observer_identity == observation.provider_identity
+            or not _cleanup_binding_matches(observation, intent)
         ):
             raise MainGraduationJournalError("rollback cleanup observation binding differs")
         self._verify_rollback_cleanup_observation_authority(observation, intent, receipt)

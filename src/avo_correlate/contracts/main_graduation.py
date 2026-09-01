@@ -82,6 +82,23 @@ def _aware(value: datetime) -> datetime:
     return require_aware_datetime(value)
 
 
+def rollback_cleanup_authority_digest(
+    repository_digest: str, target_ref: str = "refs/heads/main"
+) -> str:
+    """Digest the immutable hosted cleanup authority/configuration boundary."""
+    return canonical_digest(
+        {
+            "repository_digest": repository_digest,
+            "target_ref": target_ref,
+            "candidate_ref_namespace": "refs/heads/avo/main-rollback/",
+            "allowed_mutation": {
+                "method": "DELETE",
+                "path_template": "/git/refs/heads/{candidate_ref_suffix}",
+            },
+        }
+    )
+
+
 class MainBound(StrictModel):
     """Common fixed target binding; candidate input cannot choose the target."""
 
@@ -1902,7 +1919,7 @@ class MainRollbackResultReceipt(MainBound):
 class MainRollbackCleanupIntent(MainBound):
     """Append-only intent to remove the rollback candidate/PR after completion."""
 
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     operation_id: Sha256Digest
     source_operation_id: Sha256Digest
     completion_package_digest: Sha256Digest
@@ -1914,6 +1931,15 @@ class MainRollbackCleanupIntent(MainBound):
     pull_request_url: NonEmptyString
     provider_identity: NonEmptyString
     provider_api_version: NonEmptyString
+    cleanup_principal_identity: NonEmptyString
+    cleanup_principal_app_id: StrictInt = Field(gt=0)
+    cleanup_principal_isolation_digest: Sha256Digest
+    observer_identity: NonEmptyString
+    observer_app_id: StrictInt = Field(gt=0)
+    observer_isolation_digest: Sha256Digest
+    observer_provider_identity: NonEmptyString
+    observer_provider_api_version: NonEmptyString
+    cleanup_authority_digest: Sha256Digest
     recorded_at: datetime
     state: Literal["intent_recorded"] = "intent_recorded"
     intent_digest: Sha256Digest
@@ -1929,6 +1955,20 @@ class MainRollbackCleanupIntent(MainBound):
             raise ValueError("rollback cleanup candidate ref is outside controller namespace")
         if not self.pull_request_url.startswith("https://"):
             raise ValueError("rollback cleanup pull request URL must use HTTPS")
+        if (
+            self.cleanup_principal_identity,
+            self.cleanup_principal_app_id,
+            self.cleanup_principal_isolation_digest,
+        ) == (
+            self.observer_identity,
+            self.observer_app_id,
+            self.observer_isolation_digest,
+        ):
+            raise ValueError("cleanup mutator and observer principal tuples must differ")
+        if self.cleanup_authority_digest != rollback_cleanup_authority_digest(
+            self.repository_digest, self.target_ref
+        ):
+            raise ValueError("rollback cleanup authority digest mismatch")
         if self.intent_digest != canonical_digest(
             self.model_dump(exclude={"intent_digest"}, mode="json")
         ):
@@ -1939,9 +1979,9 @@ class MainRollbackCleanupIntent(MainBound):
 class MainRollbackCleanupReceipt(MainBound):
     """Create-once provider receipt for rollback candidate cleanup."""
 
-    # v2 makes the no-dispatch replay branch truthful.  v1 incorrectly forced
-    # every already-absent result to claim that a mutation had been sent.
-    schema_version: Literal[2] = 2
+    # v3 adds explicit provider/principal/configuration binding.  v2 was the
+    # first truthful no-dispatch replay wire; v1 forced a false dispatch claim.
+    schema_version: Literal[3] = 3
     operation_id: Sha256Digest
     intent_digest: Sha256Digest
     authorization_digest: Sha256Digest
@@ -1956,6 +1996,17 @@ class MainRollbackCleanupReceipt(MainBound):
     response_digest: Sha256Digest
     observed_at: datetime
     receipt_digest: Sha256Digest
+    provider_identity: NonEmptyString
+    provider_api_version: NonEmptyString
+    cleanup_principal_identity: NonEmptyString
+    cleanup_principal_app_id: StrictInt = Field(gt=0)
+    cleanup_principal_isolation_digest: Sha256Digest
+    observer_identity: NonEmptyString
+    observer_app_id: StrictInt = Field(gt=0)
+    observer_isolation_digest: Sha256Digest
+    observer_provider_identity: NonEmptyString
+    observer_provider_api_version: NonEmptyString
+    cleanup_authority_digest: Sha256Digest
     deploy_performed: Literal[False] = False
 
     _aware_observed_at = field_validator("observed_at")(_aware)
@@ -1970,6 +2021,20 @@ class MainRollbackCleanupReceipt(MainBound):
             raise ValueError("cleanup mutation outcome requires a dispatched request")
         if self.outcome in {"already_absent", "invalid"} and self.dispatch_started:
             raise ValueError("invalid cleanup cannot claim dispatch")
+        if (
+            self.cleanup_principal_identity,
+            self.cleanup_principal_app_id,
+            self.cleanup_principal_isolation_digest,
+        ) == (
+            self.observer_identity,
+            self.observer_app_id,
+            self.observer_isolation_digest,
+        ):
+            raise ValueError("cleanup mutator and observer principal tuples must differ")
+        if self.cleanup_authority_digest != rollback_cleanup_authority_digest(
+            self.repository_digest, self.target_ref
+        ):
+            raise ValueError("rollback cleanup receipt authority digest mismatch")
         if self.receipt_digest != canonical_digest(
             self.model_dump(exclude={"receipt_digest"}, mode="json")
         ):
@@ -1980,7 +2045,7 @@ class MainRollbackCleanupReceipt(MainBound):
 class MainRollbackCleanupObservation(MainBound):
     """Read-only provider observation resolving cleanup idempotency/ambiguity."""
 
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     operation_id: Sha256Digest
     intent_digest: Sha256Digest
     receipt_digest: Sha256Digest
@@ -1993,6 +2058,14 @@ class MainRollbackCleanupObservation(MainBound):
     provider_api_version: NonEmptyString
     observer_identity: NonEmptyString
     observer_api_version: NonEmptyString
+    cleanup_principal_identity: NonEmptyString
+    cleanup_principal_app_id: StrictInt = Field(gt=0)
+    cleanup_principal_isolation_digest: Sha256Digest
+    observer_app_id: StrictInt = Field(gt=0)
+    observer_isolation_digest: Sha256Digest
+    observer_provider_identity: NonEmptyString
+    observer_provider_api_version: NonEmptyString
+    cleanup_authority_digest: Sha256Digest
     candidate_ref_absent: StrictBool
     pull_request_state: Literal["absent", "open", "closed"]
     pull_request_merged: StrictBool | None
@@ -2004,16 +2077,30 @@ class MainRollbackCleanupObservation(MainBound):
 
     @model_validator(mode="after")
     def validate_cleanup_observation(self) -> MainRollbackCleanupObservation:
-        if self.observer_identity == self.provider_identity:
-            raise ValueError("cleanup observer principal must differ from mutator principal")
+        if (
+            self.cleanup_principal_identity,
+            self.cleanup_principal_app_id,
+            self.cleanup_principal_isolation_digest,
+        ) == (
+            self.observer_identity,
+            self.observer_app_id,
+            self.observer_isolation_digest,
+        ):
+            raise ValueError("cleanup mutator and observer principal tuples must differ")
+        if self.cleanup_authority_digest != rollback_cleanup_authority_digest(
+            self.repository_digest, self.target_ref
+        ):
+            raise ValueError("rollback cleanup observation authority digest mismatch")
+        if self.observer_api_version != self.observer_provider_api_version:
+            raise ValueError("rollback cleanup observer provider binding differs")
+        if self.pull_request_state == "absent":
+            raise ValueError("rollback cleanup pull request must remain authenticated")
         if self.outcome in {"absent", "already_absent"} and (
             not self.candidate_ref_absent
-            or self.pull_request_state not in {"absent", "closed"}
-            or (self.pull_request_state == "closed" and self.pull_request_merged is not True)
+            or self.pull_request_state != "closed"
+            or self.pull_request_merged is not True
         ):
             raise ValueError("absent cleanup observation requires exact ref/merged PR absence")
-        if self.pull_request_state == "absent" and self.pull_request_merged is not None:
-            raise ValueError("absent pull request cannot have merged state")
         if self.observation_digest != canonical_digest(
             self.model_dump(exclude={"observation_digest"}, mode="json")
         ):
@@ -2138,7 +2225,7 @@ class MainRollbackPostStateObservation(MainBound):
 class MainRollbackCleanupTerminalEvidence(MainBound):
     """Terminal proof that rollback candidate resources are absent."""
 
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     operation_id: Sha256Digest
     cleanup_intent_digest: Sha256Digest
     cleanup_receipt_digest: Sha256Digest
@@ -2148,10 +2235,20 @@ class MainRollbackCleanupTerminalEvidence(MainBound):
     pull_request_url: NonEmptyString
     outcome: Literal["absent", "already_absent"]
     candidate_ref_absent: Literal[True]
-    pull_request_state: Literal["absent", "closed"]
+    pull_request_state: Literal["closed"]
+    pull_request_merged: Literal[True]
     cleanup_observation_digest: Sha256Digest | None = None
     provider_identity: NonEmptyString
     provider_api_version: NonEmptyString
+    cleanup_principal_identity: NonEmptyString
+    cleanup_principal_app_id: StrictInt = Field(gt=0)
+    cleanup_principal_isolation_digest: Sha256Digest
+    observer_identity: NonEmptyString
+    observer_app_id: StrictInt = Field(gt=0)
+    observer_isolation_digest: Sha256Digest
+    observer_provider_identity: NonEmptyString
+    observer_provider_api_version: NonEmptyString
+    cleanup_authority_digest: Sha256Digest
     observed_at: datetime
     terminal: Literal[True] = True
     evidence_digest: Sha256Digest = Field(
@@ -2165,6 +2262,20 @@ class MainRollbackCleanupTerminalEvidence(MainBound):
     def validate_cleanup_terminal(self) -> MainRollbackCleanupTerminalEvidence:
         if not self.pull_request_url.startswith("https://"):
             raise ValueError("rollback cleanup URL must use HTTPS")
+        if (
+            self.cleanup_principal_identity,
+            self.cleanup_principal_app_id,
+            self.cleanup_principal_isolation_digest,
+        ) == (
+            self.observer_identity,
+            self.observer_app_id,
+            self.observer_isolation_digest,
+        ):
+            raise ValueError("cleanup mutator and observer principal tuples must differ")
+        if self.cleanup_authority_digest != rollback_cleanup_authority_digest(
+            self.repository_digest, self.target_ref
+        ):
+            raise ValueError("rollback cleanup terminal authority digest mismatch")
         if self.evidence_digest != canonical_digest(
             self.model_dump(exclude={"evidence_digest"}, mode="json")
         ):
@@ -2181,8 +2292,8 @@ class MainRollbackCompletionPackage(MainBound):
     """Content-addressed terminal closure for one rollback attempt."""
 
     # Cleanup receipt/observation gained new terminal-state and observer
-    # bindings; retain v3 as an immutable historical wire.
-    schema_version: Literal[4] = 4
+    # bindings; retain v3 and v4 as immutable historical wires.
+    schema_version: Literal[5] = 5
     operation_id: Sha256Digest
     composition_id: Sha256Digest
     composition_artifact_digest: Sha256Digest
@@ -2343,14 +2454,39 @@ class MainRollbackCompletionPackage(MainBound):
             or self.cleanup_receipt.authorization_digest
             != self.cleanup_intent.authorization_digest
             or self.cleanup_receipt.outcome
-            not in {"applied", "already_absent", "ambiguous", "reconciliation_required"}
+                not in {"applied", "already_absent", "ambiguous", "reconciliation_required"}
             or self.cleanup_terminal.candidate_ref_absent is not True
-            or self.cleanup_terminal.pull_request_state not in {"absent", "closed"}
+            or self.cleanup_terminal.pull_request_state != "closed"
+            or self.cleanup_terminal.pull_request_merged is not True
             or self.cleanup_terminal.cleanup_intent_digest != self.cleanup_intent.intent_digest
             or self.cleanup_terminal.cleanup_receipt_digest != self.cleanup_receipt.receipt_digest
             or self.cleanup_terminal.outcome not in {"absent", "already_absent"}
         ):
             raise ValueError("rollback completion terminal evidence is incomplete")
+        cleanup_binding_fields = (
+            "provider_identity",
+            "provider_api_version",
+            "cleanup_principal_identity",
+            "cleanup_principal_app_id",
+            "cleanup_principal_isolation_digest",
+            "observer_identity",
+            "observer_app_id",
+            "observer_isolation_digest",
+            "observer_provider_identity",
+            "observer_provider_api_version",
+            "cleanup_authority_digest",
+        )
+        cleanup_records: list[StrictModel] = [self.cleanup_receipt, self.cleanup_terminal]
+        if self.cleanup_observation is not None:
+            cleanup_records.append(self.cleanup_observation)
+        if any(
+            any(
+                getattr(record, field) != getattr(self.cleanup_intent, field)
+                for field in cleanup_binding_fields
+            )
+            for record in cleanup_records
+        ):
+            raise ValueError("rollback completion cleanup principal binding differs")
         if self.cleanup_receipt.outcome in {"ambiguous", "reconciliation_required"}:
             if self.cleanup_terminal.cleanup_observation_digest is None:
                 raise ValueError("ambiguous cleanup requires terminal observation evidence")
@@ -2393,6 +2529,44 @@ class MainRollbackCompletionPackage(MainBound):
             required_roles.add("main-rollback-mutation-fence-resolution")
         if set(roles) != required_roles:
             raise ValueError("rollback completion artifact closure is incomplete")
+        child_values: dict[str, StrictModel] = {
+            "main-rollback-attempt-authority": self.attempt_authority,
+            "main-rollback-source-completion": self.source_completion,
+            "main-rollback-preparation-authorization": self.rollback_preparation_authorization,
+            "main-rollback-lease-evidence-record": self.lease_evidence_record,
+            "main-rollback-queue-admission": self.admission_observation,
+            "main-rollback-release-hold": self.hold_observation,
+            "main-rollback-release-authorization": self.release_authorization,
+            "main-rollback-release-claim": self.release_claim,
+            "main-rollback-claimed-release-transition": self.claimed_transition_receipt,
+            "main-rollback-mutation-intent": self.release_transition_intent,
+            "main-rollback-mutation-receipt": self.release_transition_mutation_receipt,
+            "main-rollback-composition": self.composition,
+            "main-rollback-authorization": self.rollback_authorization,
+            "main-rollback-intent": self.rollback_intent,
+            "main-rollback-result": self.rollback_result,
+            "main-rollback-post-state-observation": self.post_state,
+            "main-rollback-cleanup-intent": self.cleanup_intent,
+            "main-rollback-cleanup-receipt": self.cleanup_receipt,
+            "main-rollback-cleanup-terminal": self.cleanup_terminal,
+        }
+        if self.cleanup_observation is not None:
+            child_values["main-rollback-cleanup-observation"] = self.cleanup_observation
+        if self.release_transition_fence_resolution is not None:
+            child_values["main-rollback-mutation-fence-resolution"] = (
+                self.release_transition_fence_resolution
+            )
+        references = {item.role: item for item in self.artifacts}
+        for role, child in child_values.items():
+            reference = references[role]
+            payload = canonical_bytes(child)
+            if (
+                reference.role != role
+                or reference.digest != canonical_digest(child)
+                or reference.size_bytes != len(payload)
+                or reference.media_type != f"application/vnd.avo.{role}+json"
+            ):
+                raise ValueError(f"rollback completion artifact binding differs: {role}")
         if self.completion_digest != canonical_digest(
             self.model_dump(exclude={"completion_digest"}, mode="json")
         ):
@@ -2671,6 +2845,7 @@ __all__ = [
     "main_record_digest",
     "main_rollback_composition_id",
     "main_rollback_operation_id",
+    "rollback_cleanup_authority_digest",
 ]
 
 # Phase-A records remain in a separate module to keep the established evidence

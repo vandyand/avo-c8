@@ -106,6 +106,7 @@ from avo_correlate.contracts.main_graduation import (
     main_stage_identity_digest,
     main_stage_nonce,
     main_target_scope_digest,
+    rollback_cleanup_authority_digest,
 )
 from avo_correlate.contracts.policy import PolicyDecision
 from avo_correlate.contracts.prepublication import (
@@ -284,5 +285,6 @@ __all__ = [
     "main_stage_identity_digest",
     "main_stage_nonce",
     "main_target_scope_digest",
+    "rollback_cleanup_authority_digest",
     "verify_campaign_package_artifact",
 ]

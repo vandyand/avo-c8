@@ -3,17 +3,25 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import pytest
 
+from avo_correlate.adapters.artifacts.main_graduation_journal import (
+    MainGraduationJournal,
+    MainRollbackAuthorityVerifier,
+)
 from avo_correlate.adapters.hosted_git.github import github_repository_digest
 from avo_correlate.adapters.hosted_git.main_graduation_github import (
     GitHubMainGraduationAdapter,
     GitHubMainGraduationRejected,
     GitHubPrincipalBinding,
 )
-from avo_correlate.contracts.main_graduation import MainRollbackCleanupIntent
+from avo_correlate.contracts.main_graduation import (
+    MainRollbackCleanupIntent,
+    rollback_cleanup_authority_digest,
+)
 from avo_correlate.domain.canonical import canonical_digest
 
 D = "sha256:" + "a" * 64
@@ -39,6 +47,15 @@ def _intent() -> MainRollbackCleanupIntent:
         "pull_request_url": "https://github.com/owner/repo/pull/17",
         "provider_identity": "github-protected-main",
         "provider_api_version": "2022-11-28",
+        "cleanup_principal_identity": "cleanup",
+        "cleanup_principal_app_id": 5,
+        "cleanup_principal_isolation_digest": D,
+        "observer_identity": "observer",
+        "observer_app_id": 4,
+        "observer_isolation_digest": D,
+        "observer_provider_identity": "github-protected-main",
+        "observer_provider_api_version": "2022-11-28",
+        "cleanup_authority_digest": rollback_cleanup_authority_digest(REPOSITORY),
         "recorded_at": NOW,
     }
     probe = MainRollbackCleanupIntent.model_construct(**values, intent_digest=D)
@@ -169,6 +186,28 @@ def test_cleanup_replay_is_truthful_and_non_dispatching() -> None:
 
     assert receipt.outcome == "already_absent"
     assert receipt.dispatch_started is False
+    assert cleanup.calls == []
+
+
+def test_concrete_cleanup_verifier_is_read_only_and_binds_authority() -> None:
+    observer = _Observer(ref_present=False, pr_state="closed", merged=True)
+    cleanup = _Cleanup(observer)
+    adapter = _adapter(observer, cleanup)
+    verifier: MainRollbackAuthorityVerifier = adapter
+    journal = MainGraduationJournal(Path("."), rollback_authority_verifier=verifier)
+    assert journal._rollback_authority_verifier is verifier  # type: ignore[attr-defined]
+    intent = _intent()
+    receipt = adapter.cleanup_rollback(intent)
+    result = type("Result", (), {"receipt_digest": intent.result_receipt_digest})()
+
+    verifier.verify_rollback_cleanup_receipt(receipt, intent, result)  # type: ignore[arg-type]
+    assert cleanup.calls == []
+
+    forged = receipt.model_copy(
+        update={"cleanup_authority_digest": "sha256:" + "f" * 64}
+    )
+    with pytest.raises(GitHubMainGraduationRejected, match="authority"):
+        adapter.verify_rollback_cleanup_receipt(forged, intent, result)
     assert cleanup.calls == []
 
 

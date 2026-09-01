@@ -166,12 +166,7 @@ def test_ambiguous_cleanup_closes_only_with_absence_observation() -> None:
     receipt = _signed(type(_cleanup_receipt(cleanup)), ambiguous, "receipt_digest")
     observation = _cleanup_observation(cleanup, receipt)
     observation_values = observation.model_dump(mode="json")
-    observation_values.update(
-        {
-            "observer_identity": "read-only-cleanup-observer",
-            "observation_digest": D,
-        }
-    )
+    observation_values.update({"observation_digest": D})
     observation = _signed(type(observation), observation_values, "observation_digest")
     terminal_values = {
         "operation_id": RB,
@@ -187,8 +182,18 @@ def test_ambiguous_cleanup_closes_only_with_absence_observation() -> None:
         "candidate_ref_absent": True,
         "pull_request_state": "closed",
         "cleanup_observation_digest": observation.observation_digest,
-        "provider_identity": observation.observer_identity,
-        "provider_api_version": observation.observer_api_version,
+        "provider_identity": cleanup.provider_identity,
+        "provider_api_version": cleanup.provider_api_version,
+        "cleanup_principal_identity": cleanup.cleanup_principal_identity,
+        "cleanup_principal_app_id": cleanup.cleanup_principal_app_id,
+        "cleanup_principal_isolation_digest": cleanup.cleanup_principal_isolation_digest,
+        "observer_identity": cleanup.observer_identity,
+        "observer_app_id": cleanup.observer_app_id,
+        "observer_isolation_digest": cleanup.observer_isolation_digest,
+        "observer_provider_identity": cleanup.observer_provider_identity,
+        "observer_provider_api_version": cleanup.observer_provider_api_version,
+        "cleanup_authority_digest": cleanup.cleanup_authority_digest,
+        "pull_request_merged": True,
         "observed_at": NOW + timedelta(minutes=7),
     }
     terminal = _signed(MainRollbackCleanupTerminalEvidence, terminal_values, "evidence_digest")
@@ -257,16 +262,26 @@ def test_terminal_contracts_reject_abandoned_v1_wires_and_round_trip_v2() -> Non
             "pull_request_url": cleanup.pull_request_url,
             "outcome": "already_absent",
             "candidate_ref_absent": True,
-            "pull_request_state": "absent",
+            "pull_request_state": "closed",
+            "pull_request_merged": True,
             "cleanup_observation_digest": None,
             "provider_identity": cleanup.provider_identity,
             "provider_api_version": cleanup.provider_api_version,
+            "cleanup_principal_identity": cleanup.cleanup_principal_identity,
+            "cleanup_principal_app_id": cleanup.cleanup_principal_app_id,
+            "cleanup_principal_isolation_digest": cleanup.cleanup_principal_isolation_digest,
+            "observer_identity": cleanup.observer_identity,
+            "observer_app_id": cleanup.observer_app_id,
+            "observer_isolation_digest": cleanup.observer_isolation_digest,
+            "observer_provider_identity": cleanup.observer_provider_identity,
+            "observer_provider_api_version": cleanup.observer_provider_api_version,
+            "cleanup_authority_digest": cleanup.cleanup_authority_digest,
             "observed_at": NOW + timedelta(minutes=3),
         },
         "evidence_digest",
     )
     terminal_wire = terminal.model_dump(mode="json")
-    assert terminal_wire["schema_version"] == 2
+    assert terminal_wire["schema_version"] == 3
     with pytest.raises(ValidationError, match="schema_version"):
         MainRollbackCleanupTerminalEvidence.model_validate(
             {**terminal_wire, "schema_version": 1}
@@ -275,7 +290,7 @@ def test_terminal_contracts_reject_abandoned_v1_wires_and_round_trip_v2() -> Non
         MainRollbackCleanupTerminalEvidence.model_validate_json(canonical_bytes(terminal))
     ) == canonical_bytes(terminal)
 
-    assert MainRollbackCompletionPackage.model_fields["schema_version"].default == 4
+    assert MainRollbackCompletionPackage.model_fields["schema_version"].default == 5
     with pytest.raises(ValidationError, match="schema_version"):
         MainRollbackCompletionPackage.model_validate({"schema_version": 1})
 
@@ -332,12 +347,7 @@ def test_ambiguous_cleanup_terminal_filesystem_restart_and_observer_identity(
     receipt_values.update({"outcome": "ambiguous", "receipt_digest": D})
     receipt = _signed(type(_cleanup_receipt(cleanup)), receipt_values, "receipt_digest")
     observation_values = _cleanup_observation(cleanup, receipt).model_dump(mode="json")
-    observation_values.update(
-        {
-            "observer_identity": "independent-cleanup-observer",
-            "observation_digest": D,
-        }
-    )
+    observation_values.update({"observation_digest": D})
     observation = _signed(
         type(_cleanup_observation(cleanup, receipt)),
         observation_values,
@@ -359,8 +369,18 @@ def test_ambiguous_cleanup_terminal_filesystem_restart_and_observer_identity(
             "candidate_ref_absent": True,
             "pull_request_state": "closed",
             "cleanup_observation_digest": observation.observation_digest,
-            "provider_identity": observation.observer_identity,
-            "provider_api_version": observation.observer_api_version,
+            "provider_identity": cleanup.provider_identity,
+            "provider_api_version": cleanup.provider_api_version,
+            "cleanup_principal_identity": cleanup.cleanup_principal_identity,
+            "cleanup_principal_app_id": cleanup.cleanup_principal_app_id,
+            "cleanup_principal_isolation_digest": cleanup.cleanup_principal_isolation_digest,
+            "observer_identity": cleanup.observer_identity,
+            "observer_app_id": cleanup.observer_app_id,
+            "observer_isolation_digest": cleanup.observer_isolation_digest,
+            "observer_provider_identity": cleanup.observer_provider_identity,
+            "observer_provider_api_version": cleanup.observer_provider_api_version,
+            "cleanup_authority_digest": cleanup.cleanup_authority_digest,
+            "pull_request_merged": True,
             "observed_at": NOW + timedelta(minutes=7),
         },
         "evidence_digest",

@@ -1,0 +1,172 @@
+{
+  "additionalProperties": false,
+  "description": "Append-only intent to remove the rollback candidate/PR after completion.",
+  "properties": {
+    "authorization_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Authorization Digest",
+      "type": "string"
+    },
+    "candidate_commit": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Candidate Commit",
+      "type": "string"
+    },
+    "candidate_ref": {
+      "minLength": 1,
+      "title": "Candidate Ref",
+      "type": "string"
+    },
+    "cleanup_authority_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Cleanup Authority Digest",
+      "type": "string"
+    },
+    "cleanup_principal_app_id": {
+      "exclusiveMinimum": 0,
+      "title": "Cleanup Principal App Id",
+      "type": "integer"
+    },
+    "cleanup_principal_identity": {
+      "minLength": 1,
+      "title": "Cleanup Principal Identity",
+      "type": "string"
+    },
+    "cleanup_principal_isolation_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Cleanup Principal Isolation Digest",
+      "type": "string"
+    },
+    "completion_package_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Completion Package Digest",
+      "type": "string"
+    },
+    "deploy_performed": {
+      "const": false,
+      "default": false,
+      "title": "Deploy Performed",
+      "type": "boolean"
+    },
+    "intent_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Intent Digest",
+      "type": "string"
+    },
+    "observer_app_id": {
+      "exclusiveMinimum": 0,
+      "title": "Observer App Id",
+      "type": "integer"
+    },
+    "observer_identity": {
+      "minLength": 1,
+      "title": "Observer Identity",
+      "type": "string"
+    },
+    "observer_isolation_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Observer Isolation Digest",
+      "type": "string"
+    },
+    "observer_provider_api_version": {
+      "minLength": 1,
+      "title": "Observer Provider Api Version",
+      "type": "string"
+    },
+    "observer_provider_identity": {
+      "minLength": 1,
+      "title": "Observer Provider Identity",
+      "type": "string"
+    },
+    "operation_id": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Operation Id",
+      "type": "string"
+    },
+    "provider_api_version": {
+      "minLength": 1,
+      "title": "Provider Api Version",
+      "type": "string"
+    },
+    "provider_identity": {
+      "minLength": 1,
+      "title": "Provider Identity",
+      "type": "string"
+    },
+    "pull_request_number": {
+      "exclusiveMinimum": 0,
+      "title": "Pull Request Number",
+      "type": "integer"
+    },
+    "pull_request_url": {
+      "minLength": 1,
+      "title": "Pull Request Url",
+      "type": "string"
+    },
+    "recorded_at": {
+      "format": "date-time",
+      "title": "Recorded At",
+      "type": "string"
+    },
+    "repository_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Repository Digest",
+      "type": "string"
+    },
+    "result_receipt_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Result Receipt Digest",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 2,
+      "default": 2,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "source_operation_id": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Source Operation Id",
+      "type": "string"
+    },
+    "state": {
+      "const": "intent_recorded",
+      "default": "intent_recorded",
+      "title": "State",
+      "type": "string"
+    },
+    "target_ref": {
+      "const": "refs/heads/main",
+      "default": "refs/heads/main",
+      "title": "Target Ref",
+      "type": "string"
+    }
+  },
+  "required": [
+    "repository_digest",
+    "operation_id",
+    "source_operation_id",
+    "completion_package_digest",
+    "result_receipt_digest",
+    "authorization_digest",
+    "candidate_ref",
+    "candidate_commit",
+    "pull_request_number",
+    "pull_request_url",
+    "provider_identity",
+    "provider_api_version",
+    "cleanup_principal_identity",
+    "cleanup_principal_app_id",
+    "cleanup_principal_isolation_digest",
+    "observer_identity",
+    "observer_app_id",
+    "observer_isolation_digest",
+    "observer_provider_identity",
+    "observer_provider_api_version",
+    "cleanup_authority_digest",
+    "recorded_at",
+    "intent_digest"
+  ],
+  "title": "MainRollbackCleanupIntent",
+  "type": "object"
+}
