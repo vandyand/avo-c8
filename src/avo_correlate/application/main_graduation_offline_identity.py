@@ -52,6 +52,7 @@ _MAX_ARCHIVE_ENTRIES = 100_000
 _MAX_ARCHIVE_FILE_BYTES = 64 * 1024 * 1024
 _ZERO_DIGEST = "sha256:" + "0" * 64
 _MAX_RUNTIME_FILES = 100_000
+_MAX_RUNTIME_DISTRIBUTIONS = 256
 _MAX_RUNTIME_FILE_BYTES = 64 * 1024 * 1024
 _MAX_RUNTIME_TOTAL_BYTES = 256 * 1024 * 1024
 _MAX_RUNTIME_RECORD_BYTES = 16 * 1024 * 1024
@@ -471,11 +472,21 @@ def _uv_runtime_identity(
         if not pytest_path.is_relative_to(Path(str(pytest_distribution["root"]))):
             raise ValueError("pytest module is outside its distribution")
         plugin_records = payload["plugin_distributions"]
-        if any(type(item) is not dict for item in plugin_records):
+        if len(plugin_records) > _MAX_RUNTIME_DISTRIBUTIONS or any(
+            type(item) is not dict for item in plugin_records
+        ):
             raise ValueError("uv runtime plugin distribution identity is invalid")
         plugin_distributions = [
             _runtime_distribution_identity(item, runtime_root) for item in plugin_records
         ]
+        distributions = [pytest_distribution, *plugin_distributions]
+        if (
+            sum(cast(int, item["file_count"]) for item in distributions)
+            > _MAX_RUNTIME_FILES
+            or sum(cast(int, item["total_bytes"]) for item in distributions)
+            > _MAX_RUNTIME_TOTAL_BYTES
+        ):
+            raise ValueError("uv runtime distribution set exceeds bounds")
         plugin_keys = {(item["name"], item["version"]) for item in plugin_distributions}
         entry_point_keys = {(item[2], item[3]) for item in payload["plugins"]}
         if plugin_keys != entry_point_keys:
@@ -665,6 +676,7 @@ def _runtime_distribution_identity(raw: object, runtime_root: Path) -> dict[str,
         "record": record,
         "files": files,
         "file_count": len(files),
+        "total_bytes": total_bytes,
     }
 __all__ = [
     "FROZEN_OFFLINE_EXECUTION_ARGV",
