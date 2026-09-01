@@ -50,6 +50,12 @@ def test_origin_is_pinned_before_opener_and_credentials_never_appear(
             transport("GET", url, None, {"Authorization": "Bearer secret-token"})
     assert not called
     assert "secret-token" not in repr(transport)
+    with pytest.raises(ValueError):
+        GitHubJsonTransport(origin="https://api.github.com?evil=1")
+    for method in ("get", "OPTIONS", "CUSTOM", "GET\x7f"):
+        with pytest.raises(ValueError):
+            transport(method, "https://api.github.com/repos/x", None, {})
+    assert not called
 
 
 def test_request_and_response_bounds_are_enforced(monkeypatch: pytest.MonkeyPatch) -> None:

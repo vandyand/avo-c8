@@ -43,6 +43,7 @@ class GitHubJsonTransport:
             or parsed.username is not None
             or parsed.password is not None
             or parsed.path not in ("", "/")
+            or parsed.query
             or parsed.fragment
         ):
             raise ValueError("GitHub transport origin must be an exact HTTPS origin")
@@ -119,7 +120,7 @@ class GitHubJsonTransport:
         self, method: str, url: str, body: JsonBody | None, headers: Mapping[str, str]
     ) -> tuple[int, JsonValue]:
         self._validate_url(url)
-        if not isinstance(method, str) or not method or any(ord(char) < 33 for char in method):
+        if method not in {"GET", "POST", "PATCH", "PUT", "DELETE"}:
             raise ValueError("invalid HTTP method")
         try:
             request_data = (
