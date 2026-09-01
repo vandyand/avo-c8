@@ -1,5 +1,6 @@
 """Real-filesystem durability tests for the C6 ledger journal."""
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, TypeVar
@@ -11,7 +12,7 @@ from avo_correlate.adapters.artifacts.main_graduation_ledger_journal import (
     MainGraduationLedgerJournal,
     MainGraduationLedgerJournalError,
 )
-from avo_correlate.contracts.base import StrictModel
+from avo_correlate.contracts.base import ArtifactRef, StrictModel
 from avo_correlate.contracts.main_graduation_ledger import (
     BOUNDARY_ARTIFACT_MEDIA_TYPE,
     BOUNDARY_ARTIFACT_ROLE,
@@ -209,6 +210,20 @@ def _outcome(
     return _with_digest(MainLedgerTerminalOutcome, values, "outcome_digest")
 
 
+def _race(first_call: Any, second_call: Any) -> tuple[Any, Any]:
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(first_call)
+        second = executor.submit(second_call)
+        return first.result(), second.result()
+
+
+def _attempt(call: Any) -> Any:
+    try:
+        return call()
+    except MainGraduationLedgerJournalError as exc:
+        return exc
+
+
 def test_authority_is_mandatory_and_submission_is_gap_free(tmp_path: Path) -> None:
     activation = _activation()
     with pytest.raises(MainGraduationLedgerJournalError, match="verifier"):
@@ -307,6 +322,77 @@ def test_stage_sidecars_are_create_once_across_independent_journals(tmp_path: Pa
         second.record_transition(transition.model_copy(update={"outcome": None}))
     restarted = MainGraduationLedgerJournal(tmp_path, _Verifier())
     assert restarted.read_transition(11)[0] == transition
+
+
+def test_stage_sidecar_conflicts_race_without_last_writer_wins(tmp_path: Path) -> None:
+    first, activation, store = _journal(tmp_path)
+    second_store = FilesystemArtifactStore(
+        tmp_path / "artifacts", clock=lambda: NOW - timedelta(minutes=1)
+    )
+    second = MainGraduationLedgerJournal(tmp_path, _Verifier(), artifact_store=second_store)
+    submission = _submission(activation, store, 11)
+    first.record_submission(submission)
+
+    classification_a = _classification(activation, submission, store, path="src/a.py")
+    classification_b = _classification(activation, submission, store, path="src/b.py")
+    results = _race(
+        lambda: _attempt(lambda: first.record_classification(classification_a)),
+        lambda: _attempt(lambda: second.record_classification(classification_b)),
+    )
+    assert sum(isinstance(item, ArtifactRef) for item in results) == 1
+    assert sum(isinstance(item, MainGraduationLedgerJournalError) for item in results) == 1
+    durable_classification = first.read_classification(11)
+    assert durable_classification is not None
+
+    outcome_a = _outcome(activation, submission, durable_classification[0], store, reason="a")
+    outcome_b = _outcome(activation, submission, durable_classification[0], store, reason="b")
+    results = _race(
+        lambda: _attempt(lambda: first.record_outcome(outcome_a)),
+        lambda: _attempt(lambda: second.record_outcome(outcome_b)),
+    )
+    assert sum(isinstance(item, ArtifactRef) for item in results) == 1
+    assert sum(isinstance(item, MainGraduationLedgerJournalError) for item in results) == 1
+    durable_outcome = first.read_outcome(11)
+    assert durable_outcome is not None
+
+    prior = main_ledger_genesis_state(
+        activation.activation_digest, activation.scheduler_sequence_watermark
+    )
+    result_state = _with_digest(
+        MainLedgerAccumulatorState,
+        {
+            **prior.model_dump(exclude={"state_digest"}),
+            "last_scheduler_sequence": 11,
+            "failures": 1,
+            "streak": 0,
+        },
+        "state_digest",
+    )
+    transition = _with_digest(
+        MainLedgerAccumulatorTransition,
+        {
+            "activation_digest": activation.activation_digest,
+            "classification": durable_classification[0],
+            "prior_state": prior,
+            "prior_state_digest": prior.state_digest,
+            "outcome": durable_outcome[0],
+            "outcome_digest": durable_outcome[0].outcome_digest,
+            "reset_applied": True,
+            "resulting_state": result_state,
+            "resulting_state_digest": result_state.state_digest,
+        },
+        "transition_digest",
+    )
+    malformed = transition.model_copy(update={"outcome": None, "outcome_digest": None})
+    results = _race(
+        lambda: _attempt(lambda: first.record_transition(transition)),
+        lambda: _attempt(lambda: second.record_transition(malformed)),
+    )
+    assert sum(isinstance(item, ArtifactRef) for item in results) == 1
+    assert sum(isinstance(item, MainGraduationLedgerJournalError) for item in results) == 1
+    restarted = MainGraduationLedgerJournal(tmp_path, _Verifier())
+    durable_transition = restarted.read_transition(11)
+    assert durable_transition is not None and durable_transition[0] == transition
 
 
 def test_cas_orphan_is_not_discoverable_and_restart_finds_commit(tmp_path: Path) -> None:
