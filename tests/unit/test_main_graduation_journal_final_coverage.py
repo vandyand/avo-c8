@@ -8,6 +8,7 @@ missing prior record into an authorization.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -186,6 +187,60 @@ def test_traversal_cache_isolated_between_concurrent_top_level_reads(
     assert results[0] is not None
     assert results[1] == results[0]
     assert validations == 2
+
+
+def test_traversal_cache_isolated_from_child_async_task(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    journal = MainGraduationJournal(tmp_path)
+    started = EligibilityLedgerStarted(
+        activation_digest=D,
+        repository_digest=R,
+        controller_config_digest=D2,
+        scheduler_sequence_watermark=0,
+        streak=0,
+    )
+    reference = journal.record_ledger_started(started)
+    original = EligibilityLedgerStarted.model_validate
+    ready = asyncio.Event()
+    child_done = asyncio.Event()
+    tampered = asyncio.Event()
+    child_task: asyncio.Task[bool] | None = None
+    validations = 0
+
+    async def child_read() -> bool:
+        await ready.wait()
+        assert journal.read_ledger_started(D) == (started, reference)
+        child_done.set()
+        await tampered.wait()
+        try:
+            journal.read_ledger_started(D)
+        except MainGraduationJournalError:
+            return True
+        return False
+
+    def counted(cls: Any, value: Any, *args: Any, **kwargs: Any) -> Any:
+        nonlocal child_task, validations
+        validations += 1
+        if child_task is None:
+            child_task = asyncio.create_task(child_read())
+        return original(value, *args, **kwargs)
+
+    monkeypatch.setattr(
+        EligibilityLedgerStarted, "model_validate", classmethod(counted)
+    )
+
+    async def scenario() -> None:
+        assert journal.read_ledger_started(D) == (started, reference)
+        assert child_task is not None
+        ready.set()
+        await child_done.wait()
+        assert validations == 2
+        journal.delete_artifact(reference.digest)
+        tampered.set()
+        assert await child_task
+
+    asyncio.run(scenario())
 
 
 def test_top_level_recursive_read_revalidates_tampered_predecessor(

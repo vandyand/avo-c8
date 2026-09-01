@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import errno
 import hashlib
 import json
@@ -13,6 +14,7 @@ from contextlib import suppress
 from contextvars import ContextVar
 from datetime import datetime
 from pathlib import Path
+from threading import get_ident
 from typing import Any, Literal, Protocol, cast
 
 from pydantic import field_validator, model_validator
@@ -88,8 +90,9 @@ class MainGraduationRecordConflictError(MainGraduationJournalError):
     """A create-once key was already bound to different canonical bytes."""
 
 
+_ReadOwner = tuple[int, int | None]
 _ReadTraversal = tuple[
-    int, dict[tuple[str, str], tuple[StrictModel, ArtifactRef]]
+    _ReadOwner, dict[tuple[str, str], tuple[StrictModel, ArtifactRef]]
 ]
 
 
@@ -543,10 +546,19 @@ class MainGraduationJournal:
             self._read_state.reset(token)
 
     def _next_read_state(self) -> _ReadTraversal:
+        owner = self._read_owner()
         state = self._read_state.get()
-        if state is None:
-            return 1, {}
-        return state[0] + 1, state[1]
+        if state is None or state[0] != owner:
+            return owner, {}
+        return owner, state[1]
+
+    @staticmethod
+    def _read_owner() -> _ReadOwner:
+        try:
+            task = asyncio.current_task()
+        except RuntimeError:
+            task = None
+        return get_ident(), None if task is None else id(task)
 
     def _validated_cache(
         self,
