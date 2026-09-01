@@ -15,9 +15,7 @@ from avo_correlate.contracts.main_graduation_offline_drill import (
     OFFLINE_EVIDENCE_ROLE_MEDIA,
     MainGraduationOfflineDrillCaseResult,
     MainGraduationOfflineDrillCaseSpec,
-    MainGraduationOfflineDrillCrashFacts,
     MainGraduationOfflineDrillPlan,
-    MainGraduationOfflineDrillReplayFacts,
     MainGraduationOfflineDrillResult,
     MainGraduationOfflineDrillVectorSpec,
     MainGraduationOfflineEvidenceKind,
@@ -26,6 +24,7 @@ from avo_correlate.contracts.main_graduation_offline_drill import (
     MainGraduationOfflineExecutionNodeSpec,
     MainGraduationOfflineExecutionReport,
     MainGraduationOfflineNodeObservation,
+    MainGraduationOfflineWorkspaceIdentity,
     offline_drill_case_id,
     offline_drill_operation_id,
 )
@@ -33,53 +32,14 @@ from avo_correlate.domain.canonical import canonical_digest
 
 D = "sha256:" + "a" * 64
 REPORT_D = "sha256:" + "e" * 64
+JUNIT_D = "sha256:" + "f" * 64
 BASE = "b" * 40
 TREE = "c" * 40
-PARENT = "d" * 40
 NOW = datetime(2026, 1, 1, tzinfo=UTC)
 
 
 def _digest(domain: str, value: object) -> str:
     return canonical_digest({"domain": domain, "value": value})
-
-
-def _artifact(kind: str, index: int) -> ArtifactRef:
-    return ArtifactRef(
-        digest="sha256:" + format(index, "064x"),
-        size_bytes=index,
-        media_type="application/vnd.avo.main-graduation-offline-drill+json",
-        role=f"c7-{kind}-evidence",
-        created_at=NOW,
-    )
-
-
-def _native_refs(index: int) -> tuple[MainGraduationOfflineEvidenceRef, ...]:
-    refs = []
-    for offset, kind in enumerate(
-        (
-            MainGraduationOfflineEvidenceKind.EXECUTION_AUTHORITY,
-            MainGraduationOfflineEvidenceKind.EXECUTION_REPORT,
-        )
-    ):
-        role, media_type = OFFLINE_EVIDENCE_ROLE_MEDIA[kind]
-        refs.append(
-            MainGraduationOfflineEvidenceRef(
-                kind=kind,
-                artifact=ArtifactRef(
-                    digest=D if offset == 0 else REPORT_D,
-                    size_bytes=index + offset,
-                    media_type=media_type,
-                    role=role,
-                    created_at=NOW,
-                ),
-            )
-        )
-    return tuple(refs)
-
-
-def _first_vector() -> tuple[str, str]:
-    case_id = FROZEN_OFFLINE_DRILL_CASE_IDS[0]
-    return case_id, FROZEN_OFFLINE_DRILL_VECTOR_IDS[case_id][0]
 
 
 def _expected(case_id: str, vector_id: str) -> tuple[str, str]:
@@ -93,15 +53,47 @@ def _expected(case_id: str, vector_id: str) -> tuple[str, str]:
     return "reconciliation_required", "failed_closed"
 
 
+def _first_vector() -> tuple[str, str]:
+    case_id = FROZEN_OFFLINE_DRILL_CASE_IDS[0]
+    return case_id, FROZEN_OFFLINE_DRILL_VECTOR_IDS[case_id][0]
+
+
+def _workspace() -> MainGraduationOfflineWorkspaceIdentity:
+    return MainGraduationOfflineWorkspaceIdentity(
+        source_commit=BASE,
+        source_tree=TREE,
+        source_tree_digest=D,
+        lockfile_digest=D,
+        interpreter_digest=D,
+        pytest_digest=D,
+        plugin_set_digest=D,
+        toolchain_digest=D,
+        environment_identity_digest=D,
+        uv_digest=D,
+    )
+
+
+def _junit_artifact() -> ArtifactRef:
+    role, media_type = OFFLINE_EVIDENCE_ROLE_MEDIA[MainGraduationOfflineEvidenceKind.JUNIT_XML]
+    return ArtifactRef(
+        digest=JUNIT_D,
+        size_bytes=47,
+        media_type=media_type,
+        role=role,
+        created_at=NOW,
+    )
+
+
 def _cases() -> tuple[MainGraduationOfflineDrillCaseSpec, ...]:
     result = []
     for case_id in FROZEN_OFFLINE_DRILL_CASE_IDS:
         vectors = []
         for vector_id in FROZEN_OFFLINE_DRILL_VECTOR_IDS[case_id]:
+            outcome, state = _expected(case_id, vector_id)
             values = {
                 "vector_id": vector_id,
-                "expected_outcome": _expected(case_id, vector_id)[0],
-                "expected_state": _expected(case_id, vector_id)[1],
+                "oracle_expected_outcome": outcome,
+                "oracle_expected_state": state,
                 "fault_digest": D,
             }
             vector_stub = MainGraduationOfflineDrillVectorSpec.model_construct(
@@ -150,55 +142,53 @@ def _plan() -> MainGraduationOfflineDrillPlan:
         "activation_digest": D,
         "controller_authority_digest": D,
         "controller_authority_ref": "refs/avo/c7-controller",
-        "main_before_commit": BASE,
-        "main_before_tree": TREE,
-        "main_before_parents": (PARENT,),
         "cases": tuple(cases),
         "execution_authority_digest": D,
         "execution_authority_ref": "refs/avo/test-execution-authority",
     }
     stub = MainGraduationOfflineDrillPlan.model_construct(**values, plan_digest=D)
     values["plan_digest"] = _digest(
-        "avo-004.7-c7/offline-drill-plan/v1", stub.model_dump(exclude={"plan_digest"}, mode="json")
+        "avo-004.7-c7/offline-drill-plan/v1",
+        stub.model_dump(exclude={"plan_digest"}, mode="json"),
     )
     return MainGraduationOfflineDrillPlan.model_validate(values)
 
 
-def _case_result(plan: MainGraduationOfflineDrillPlan, case_id: str, vector_id: str, index: int):
+def _native_refs() -> tuple[MainGraduationOfflineEvidenceRef, ...]:
+    refs = []
+    for kind, digest in (
+        (MainGraduationOfflineEvidenceKind.EXECUTION_AUTHORITY, D),
+        (MainGraduationOfflineEvidenceKind.EXECUTION_REPORT, REPORT_D),
+    ):
+        role, media_type = OFFLINE_EVIDENCE_ROLE_MEDIA[kind]
+        artifact = ArtifactRef(
+            digest=digest,
+            size_bytes=1,
+            media_type=media_type,
+            role=role,
+            created_at=NOW,
+        )
+        refs.append(MainGraduationOfflineEvidenceRef(kind=kind, artifact=artifact))
+    return tuple(refs)
+
+
+def _case_result(plan: MainGraduationOfflineDrillPlan, case_id: str, vector_id: str):
+    outcome, state = _expected(case_id, vector_id)
     values = {
         "root_operation_id": plan.operation_id,
         "plan_digest": plan.plan_digest,
         "case_id": case_id,
         "vector_id": vector_id,
         "operation_id": offline_drill_operation_id(plan.operation_id, case_id, vector_id),
-        "expected_outcome": _expected(case_id, vector_id)[0],
-        "observed_outcome": _expected(case_id, vector_id)[0],
-        "expected_state": _expected(case_id, vector_id)[1],
-        "observed_state": _expected(case_id, vector_id)[1],
-        "main_before_commit": BASE,
-        "main_before_tree": TREE,
-        "main_before_parents": (PARENT,),
-        "main_after_commit": BASE,
-        "main_after_tree": TREE,
-        "main_after_parents": (PARENT,),
-        "provider_mutation_count": 0,
-        "reconciliation_mutation_count": 0,
-        "release_mutation_count": 0,
-        "crash_facts": MainGraduationOfflineDrillCrashFacts(
-            crash_injected=False, crash_boundary="none", restart_count=0
-        ),
-        "replay_facts": MainGraduationOfflineDrillReplayFacts(
-            replayed=case_id == "replay-idempotence",
-            byte_identical=case_id == "replay-idempotence",
-            read_only=case_id == "replay-idempotence",
-            mutation_delta=0,
-        ),
-        "injected_fault_digest": D,
-        "reason_code": "expected-rejection",
-        "execution_authority_digest": plan.execution_authority_digest,
+        "oracle_expected_outcome": outcome,
+        "oracle_expected_state": state,
+        "verification_status": "pass",
+        "fault_digest": D,
+        "reason_code": "oracle-test-verified",
+        "execution_authority_digest": D,
         "execution_report_digest": REPORT_D,
-        "native_evidence_refs": _native_refs(index),
-        "deploy_performed": False,
+        "junit_xml_digest": JUNIT_D,
+        "native_evidence_refs": _native_refs(),
     }
     stub = MainGraduationOfflineDrillCaseResult.model_construct(**values, result_digest=D)
     values["result_digest"] = _digest(
@@ -210,29 +200,21 @@ def _case_result(plan: MainGraduationOfflineDrillPlan, case_id: str, vector_id: 
 
 def _result(plan: MainGraduationOfflineDrillPlan) -> MainGraduationOfflineDrillResult:
     cases = tuple(
-        _case_result(plan, case_id, vector_id, index * 8 + 1)
-        for index, (case_id, vector_id) in enumerate(
-            pair
-            for case_id in FROZEN_OFFLINE_DRILL_CASE_IDS
-            for pair in [
-                (case_id, vector_id)
-                for vector_id in FROZEN_OFFLINE_DRILL_VECTOR_IDS[case_id]
-            ]
-        )
+        _case_result(plan, case_id, vector_id)
+        for case_id in FROZEN_OFFLINE_DRILL_CASE_IDS
+        for vector_id in FROZEN_OFFLINE_DRILL_VECTOR_IDS[case_id]
     )
+    workspace = _workspace()
     values = {
         "operation_id": plan.operation_id,
         "plan_digest": plan.plan_digest,
         "repository_digest": plan.repository_digest,
-        "main_before_commit": BASE,
-        "main_before_tree": TREE,
-        "main_before_parents": (PARENT,),
-        "main_after_commit": BASE,
-        "main_after_tree": TREE,
-        "main_after_parents": (PARENT,),
+        "workspace_before_identity": workspace,
+        "workspace_after_identity": workspace,
         "cases": cases,
-        "execution_authority_digest": plan.execution_authority_digest,
+        "execution_authority_digest": D,
         "execution_report_digest": REPORT_D,
+        "junit_xml_digest": JUNIT_D,
     }
     stub = MainGraduationOfflineDrillResult.model_construct(**values, result_digest=D)
     values["result_digest"] = _digest(
@@ -245,7 +227,16 @@ def _result(plan: MainGraduationOfflineDrillPlan) -> MainGraduationOfflineDrillR
 def test_valid_complete_frozen_matrix_and_schema_is_strict() -> None:
     plan = _plan()
     result = _result(plan)
-    assert len(result.cases) == sum(len(ids) for ids in FROZEN_OFFLINE_DRILL_VECTOR_IDS.values())
+    expected_keys = [
+        (case_id, vector_id)
+        for case_id in FROZEN_OFFLINE_DRILL_CASE_IDS
+        for vector_id in FROZEN_OFFLINE_DRILL_VECTOR_IDS[case_id]
+    ]
+    assert len(expected_keys) == 47
+    assert [(item.case_id, item.vector_id) for item in result.cases] == expected_keys
+    assert result.workspace_before_identity == _workspace()
+    assert result.workspace_before_identity == result.workspace_after_identity
+    assert all(item.verification_status == "pass" for item in result.cases)
     with pytest.raises(ValidationError):
         MainGraduationOfflineDrillPlan.model_validate({**plan.model_dump(mode="json"), "extra": 1})
 
@@ -257,14 +248,17 @@ def test_digest_is_deterministic_across_input_mapping_order() -> None:
     assert MainGraduationOfflineDrillPlan.model_validate(reordered).plan_digest == first.plan_digest
 
 
-@pytest.mark.parametrize("mutation", [
-    lambda p: {**p, "cases": p["cases"][:-1]},
-    lambda p: {**p, "cases": [*p["cases"][:-1], p["cases"][0]]},
-    lambda p: {
-        **p,
-        "cases": [{**p["cases"][0], "case_id": "unknown-case"}, *p["cases"][1:]],
-    },
-])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda p: {**p, "cases": p["cases"][:-1]},
+        lambda p: {**p, "cases": [*p["cases"][:-1], p["cases"][0]]},
+        lambda p: {
+            **p,
+            "cases": [{**p["cases"][0], "case_id": "unknown-case"}, *p["cases"][1:]],
+        },
+    ],
+)
 def test_missing_duplicate_unknown_case_rejected(mutation) -> None:
     plan = _plan().model_dump(mode="json")
     changed = mutation(plan)
@@ -299,51 +293,77 @@ def test_alternate_local_case_digest_is_rejected() -> None:
 
 
 @pytest.mark.parametrize(
-    "field", ["root_operation_id", "plan_digest", "expected_outcome", "observed_state"]
+    "field",
+    ["root_operation_id", "plan_digest", "oracle_expected_outcome", "oracle_expected_state"],
 )
-def test_root_plan_and_expected_observed_drift_rejected(field: str) -> None:
+def test_root_plan_and_oracle_drift_rejected(field: str) -> None:
     plan = _plan()
     case_id, vector_id = _first_vector()
-    case = _case_result(plan, case_id, vector_id, 1)
+    case = _case_result(plan, case_id, vector_id)
     changed = case.model_dump(mode="json")
-    changed[field] = "sha256:" + "f" * 64 if field != "observed_state" else "completed"
+    changed[field] = (
+        "sha256:" + "f" * 64
+        if field in {"root_operation_id", "plan_digest"}
+        else "passed"
+    )
     with pytest.raises(ValidationError):
         MainGraduationOfflineDrillCaseResult.model_validate(changed)
 
 
-@pytest.mark.parametrize("field,value", [
-    ("main_after_commit", "e" * 40),
-    ("main_after_tree", "e" * 40),
-    ("main_after_parents", []),
-    ("deploy_performed", True),
-    ("provider_mutation_count", 1),
-    ("release_mutation_count", 1),
-    ("reconciliation_mutation_count", 1),
-])
-def test_main_deploy_and_unexplained_mutation_drift_rejected(field: str, value: object) -> None:
+def test_oracle_labels_are_not_domain_observations() -> None:
     plan = _plan()
     case_id, vector_id = _first_vector()
-    case = _case_result(plan, case_id, vector_id, 1)
+    case = _case_result(plan, case_id, vector_id)
+    assert case.verification_status == "pass"
+    assert case.oracle_expected_outcome == "reconciliation_required"
+    assert "observed_outcome" not in case.model_dump(mode="json")
     changed = case.model_dump(mode="json")
+    changed["verification_status"] = "reconciliation_required"
+    with pytest.raises(ValidationError):
+        MainGraduationOfflineDrillCaseResult.model_validate(changed)
+    changed = case.model_dump(mode="json")
+    changed["observed_outcome"] = "reconciliation_required"
+    with pytest.raises(ValidationError):
+        MainGraduationOfflineDrillCaseResult.model_validate(changed)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("main_before_commit", BASE),
+        ("main_after_commit", BASE),
+        ("main_before_tree", TREE),
+        ("main_after_tree", TREE),
+        ("provider_mutation_count", 0),
+        ("release_mutation_count", 0),
+        ("reconciliation_mutation_count", 0),
+        ("crash_facts", {"crash_injected": False, "crash_boundary": "none", "restart_count": 0}),
+        (
+            "replay_facts",
+            {"replayed": False, "byte_identical": False, "read_only": False, "mutation_delta": 0},
+        ),
+        ("deploy_performed", True),
+    ],
+)
+def test_legacy_main_mutation_crash_replay_facts_are_rejected(field: str, value: object) -> None:
+    plan = _plan()
+    case_id, vector_id = _first_vector()
+    changed = _case_result(plan, case_id, vector_id).model_dump(mode="json")
     changed[field] = value
     with pytest.raises(ValidationError):
         MainGraduationOfflineDrillCaseResult.model_validate(changed)
 
 
-def test_replay_mutation_delta_evidence_digest_role_and_self_auth_rejected() -> None:
+def test_case_evidence_bindings_and_digest_role_rejected() -> None:
     plan = _plan()
     case_id, vector_id = _first_vector()
-    case = _case_result(plan, case_id, vector_id, 1)
-    changed = case.model_dump(mode="json")
-    changed["replay_facts"]["mutation_delta"] = 1
-    with pytest.raises(ValidationError):
-        MainGraduationOfflineDrillCaseResult.model_validate(changed)
-    changed = case.model_dump(mode="json")
-    changed["native_evidence_refs"][0]["artifact"]["role"] = "wrong-role"
-    with pytest.raises(ValidationError):
-        MainGraduationOfflineDrillCaseResult.model_validate(changed)
+    case = _case_result(plan, case_id, vector_id)
     changed = case.model_dump(mode="json")
     changed["native_evidence_refs"][0]["artifact"]["digest"] = REPORT_D
+    with pytest.raises(ValidationError):
+        MainGraduationOfflineDrillCaseResult.model_validate(changed)
+    changed = case.model_dump(mode="json")
+    changed["native_evidence_refs"] = [changed["native_evidence_refs"][0]] * 2
     with pytest.raises(ValidationError):
         MainGraduationOfflineDrillCaseResult.model_validate(changed)
     changed = case.model_dump(mode="json")
@@ -359,28 +379,8 @@ def _authority() -> MainGraduationOfflineExecutionAuthority:
             parameter_id=vector_id,
             case_id=case_id,
             vector_id=vector_id,
-            expected_outcome=(
-                "replayed"
-                if case_id == "replay-idempotence"
-                else "passed"
-                if (case_id, vector_id)
-                in {
-                    ("crash-boundary-matrix", "after-hold-success"),
-                    ("admission-group-identity", "admission-success"),
-                }
-                else "reconciliation_required"
-            ),
-            expected_state=(
-                "replayed_read_only"
-                if case_id == "replay-idempotence"
-                else "completed"
-                if (case_id, vector_id)
-                in {
-                    ("crash-boundary-matrix", "after-hold-success"),
-                    ("admission-group-identity", "admission-success"),
-                }
-                else "failed_closed"
-            ),
+            oracle_expected_outcome=_expected(case_id, vector_id)[0],
+            oracle_expected_state=_expected(case_id, vector_id)[1],
         )
         for case_id in FROZEN_OFFLINE_DRILL_CASE_IDS
         for vector_id in FROZEN_OFFLINE_DRILL_VECTOR_IDS[case_id]
@@ -403,6 +403,8 @@ def _authority() -> MainGraduationOfflineExecutionAuthority:
         pytest_digest=D,
         plugin_set_digest=D,
         toolchain_digest=D,
+        environment_identity_digest=D,
+        uv_digest=D,
         argv=("pytest", "-q", "tests/unit/test_main_graduation_offline_drill_contracts.py"),
         normalized_report_schema_digest=D,
         authorized_at=NOW,
@@ -425,7 +427,6 @@ def _execution_report(
     ]
     observations = []
     for index, node in enumerate(authority.nodes, 1):
-        node_id, case_id, vector_id = node.node_id, node.case_id, node.vector_id
         artifact = ArtifactRef(
             digest="sha256:" + format(index + 100, "064x"),
             size_bytes=index,
@@ -435,22 +436,11 @@ def _execution_report(
         )
         observations.append(
             MainGraduationOfflineNodeObservation(
-                node_id=node_id,
-                parameter_id=vector_id,
-                case_id=case_id,
-                vector_id=vector_id,
-                outcome=(
-                    "replayed"
-                    if case_id == "replay-idempotence"
-                    else "passed"
-                    if (case_id, vector_id)
-                    in {
-                        ("crash-boundary-matrix", "after-hold-success"),
-                        ("admission-group-identity", "admission-success"),
-                    }
-                    else "reconciliation_required"
-                ),
-                reason_code="expected-rejection",
+                node_id=node.node_id,
+                parameter_id=node.parameter_id,
+                case_id=node.case_id,
+                vector_id=node.vector_id,
+                reason_code="oracle-test-verified",
                 evidence_refs=(
                     MainGraduationOfflineEvidenceRef(
                         kind=MainGraduationOfflineEvidenceKind.CONTROLLER_VERIFIER,
@@ -459,6 +449,18 @@ def _execution_report(
                 ),
             )
         )
+    workspace = MainGraduationOfflineWorkspaceIdentity(
+        source_commit=authority.source_commit,
+        source_tree=authority.source_tree,
+        source_tree_digest=authority.source_tree_digest,
+        lockfile_digest=authority.lockfile_digest,
+        interpreter_digest=authority.interpreter_digest,
+        pytest_digest=authority.pytest_digest,
+        plugin_set_digest=authority.plugin_set_digest,
+        toolchain_digest=authority.toolchain_digest,
+        environment_identity_digest=authority.environment_identity_digest,
+        uv_digest=authority.uv_digest,
+    )
     values = dict(
         operation_id=authority.operation_id,
         authority_digest=authority.authority_digest,
@@ -475,10 +477,15 @@ def _execution_report(
         pytest_digest=authority.pytest_digest,
         plugin_set_digest=authority.plugin_set_digest,
         toolchain_digest=authority.toolchain_digest,
+        environment_identity_digest=authority.environment_identity_digest,
+        uv_digest=authority.uv_digest,
         argv=authority.argv,
         collection_count=len(observations),
         collected_node_ids=FROZEN_OFFLINE_EXECUTION_NODE_IDS,
         observations=tuple(observations),
+        workspace_before_identity=workspace,
+        workspace_after_identity=workspace,
+        junit_xml_artifact=_junit_artifact(),
         executed_at=datetime(2026, 1, 1, 12, tzinfo=UTC),
         authority_expires_at=authority.expires_at,
     )
@@ -494,7 +501,16 @@ def test_exact_authority_and_normalized_execution_report_bind_all_nodes() -> Non
     authority = _authority()
     report = _execution_report(authority)
     assert report.authority_digest == authority.authority_digest
-    assert report.collection_count == len(FROZEN_OFFLINE_EXECUTION_NODE_IDS)
+    assert report.collection_count == 47
+    assert tuple(report.collected_node_ids) == FROZEN_OFFLINE_EXECUTION_NODE_IDS
+    assert all(item.verification_status == "pass" for item in report.observations)
+    assert all(
+        "oracle_expected_outcome" not in item.model_dump(mode="json")
+        for item in report.observations
+    )
+    assert report.workspace_before_identity == _workspace()
+    assert report.workspace_before_identity == report.workspace_after_identity
+    assert report.junit_xml_artifact.digest == JUNIT_D
 
 
 @pytest.mark.parametrize("field", ["source_commit", "toolchain_digest", "argv", "authority_digest"])
@@ -509,9 +525,31 @@ def test_execution_manifest_report_drift_rejected(field: str) -> None:
         MainGraduationOfflineExecutionReport.model_validate(changed)
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        lambda r: {
+            **r,
+            "workspace_after_identity": {
+                **r["workspace_after_identity"],
+                "source_tree": "e" * 40,
+            },
+        },
+        lambda r: {**r, "environment_identity_digest": "sha256:" + "f" * 64},
+        lambda r: {**r, "uv_digest": "sha256:" + "f" * 64},
+        lambda r: {**r, "junit_xml_artifact": {**r["junit_xml_artifact"], "role": "generic"}},
+        lambda r: {**r, "junit_xml_artifact": {**r["junit_xml_artifact"], "size_bytes": 0}},
+    ],
+)
+def test_workspace_identity_and_junit_artifact_drift_rejected(mutation) -> None:
+    report = _execution_report(_authority())
+    changed = mutation(report.model_dump(mode="json"))
+    with pytest.raises(ValidationError):
+        MainGraduationOfflineExecutionReport.model_validate(changed)
+
+
 def test_execution_node_omission_skip_and_generic_evidence_rejected() -> None:
-    authority = _authority()
-    report = _execution_report(authority)
+    report = _execution_report(_authority())
     changed = report.model_dump(mode="json")
     changed["observations"] = changed["observations"][:-1]
     with pytest.raises(ValidationError):
@@ -531,3 +569,20 @@ def test_execution_node_omission_skip_and_generic_evidence_rejected() -> None:
                 created_at=NOW,
             ),
         )
+
+
+def test_aggregate_requires_full_matrix_workspace_and_shared_digests() -> None:
+    plan = _plan()
+    result = _result(plan)
+    changed = result.model_dump(mode="json")
+    changed["cases"] = changed["cases"][:-1]
+    with pytest.raises(ValidationError):
+        MainGraduationOfflineDrillResult.model_validate(changed)
+    changed = result.model_dump(mode="json")
+    changed["workspace_after_identity"]["uv_digest"] = "sha256:" + "f" * 64
+    with pytest.raises(ValidationError):
+        MainGraduationOfflineDrillResult.model_validate(changed)
+    changed = result.model_dump(mode="json")
+    changed["cases"][0]["junit_xml_digest"] = D
+    with pytest.raises(ValidationError):
+        MainGraduationOfflineDrillResult.model_validate(changed)
