@@ -28,7 +28,8 @@ outcomes.
 
 ## Evidence and review
 
-The final integrated focused/parity acceptance set passed 47 tests. Scoped production
+The final integrated focused/parity acceptance set passed 47 tests, and the broader
+18-file main-graduation regression set passed 281 tests on the reviewed core. Scoped production
 Pyright reported 0 errors, Ruff was clean, and `git diff --check` was clean. Terra's final
 independent verdict on the reviewed core at `a6f7897` was APPROVE with no P0/P1 findings;
 `0a4fb9f` and `e6db424` do not alter authority or runtime behavior. Prior blockers were
