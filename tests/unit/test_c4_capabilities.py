@@ -24,6 +24,7 @@ from avo_correlate.application.c4_capabilities import (
     ReleaseIssuerCapability,
     ReleaseIssueRequest,
     TrustedClock,
+    candidate_ref_for_operation,
 )
 from avo_correlate.contracts.main_graduation import (
     MainMutationStage,
@@ -76,6 +77,42 @@ def test_candidate_ref_and_preparation_authorization_are_bound() -> None:
         **{**values, "candidate_ref": f"refs/heads/avo/candidate/{'a' * 64}"}
     )
     assert request.preparation_authorization_digest == DIGEST
+
+
+def test_rollback_candidate_namespace_is_exactly_operation_bound() -> None:
+    operation = "sha256:" + "a" * 64
+    rollback = candidate_ref_for_operation(operation, "rollback")
+    assert rollback == "refs/heads/avo/main-rollback/" + "a" * 64
+    request = CandidatePublicationRequest.build(
+        operation_id=operation,
+        operation_kind="rollback",
+        repository_digest=DIGEST,
+        lease_epoch_digest=DIGEST,
+        candidate_ref=rollback,
+        candidate_commit=OBJECT,
+        preparation_authorization_digest=DIGEST,
+    )
+    assert request.operation_kind == "rollback"
+
+    invalid = [
+        "refs/heads/avo/main-rollback/" + "a" * 32,
+        "refs/heads/avo/main-rollback/" + "A" * 64,
+        rollback + "/child",
+        "refs/heads/avo/main-rollback/../" + "a" * 64,
+        "refs/heads/avo/candidate/" + "a" * 64,
+        "refs/heads/avo/main-rollback/" + "b" * 64,
+    ]
+    for candidate_ref in invalid:
+        with pytest.raises(ValidationError):
+            CandidatePublicationRequest.build(
+                operation_id=operation,
+                operation_kind="rollback",
+                repository_digest=DIGEST,
+                lease_epoch_digest=DIGEST,
+                candidate_ref=candidate_ref,
+                candidate_commit=OBJECT,
+                preparation_authorization_digest=DIGEST,
+            )
 
 
 def test_request_digest_is_required_and_self_binding() -> None:

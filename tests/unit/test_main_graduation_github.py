@@ -19,6 +19,7 @@ from avo_correlate.adapters.hosted_git.protected_main import ProtectedMainProvid
 from avo_correlate.application.c4_capabilities import (
     AdmissionIssueRequest,
     CandidatePublicationRequest,
+    PullRequestCreateRequest,
     PullRequestLookupRequest,
     PullRequestReconcileRequest,
     QueueEnqueueRequest,
@@ -129,6 +130,18 @@ def candidate_request() -> CandidatePublicationRequest:
         repository_digest=github_repository_digest("owner", "repo"),
         lease_epoch_digest=DIGEST,
         candidate_ref="refs/heads/avo/candidate/" + operation.removeprefix("sha256:"),
+        candidate_commit=OBJECT,
+        preparation_authorization_digest=DIGEST,
+    )
+
+
+def rollback_candidate_request() -> CandidatePublicationRequest:
+    return CandidatePublicationRequest.build(
+        operation_id=DIGEST,
+        operation_kind="rollback",
+        repository_digest=github_repository_digest("owner", "repo"),
+        lease_epoch_digest=DIGEST,
+        candidate_ref="refs/heads/avo/main-rollback/" + "a" * 64,
         candidate_commit=OBJECT,
         preparation_authorization_digest=DIGEST,
     )
@@ -324,6 +337,94 @@ def test_candidate_publication_uses_exact_ref_endpoint_and_body() -> None:
         "ref": "refs/heads/avo/candidate/" + "a" * 64,
         "sha": OBJECT,
     }
+
+
+def test_rollback_candidate_publication_uses_rollback_namespace() -> None:
+    request = rollback_candidate_request()
+    transport = FakeTransport(
+        (201, {"ref": request.candidate_ref, "object": {"type": "commit", "sha": OBJECT}}),
+        get_response=(404, {}),
+    )
+    value, _ = adapter(source=transport)
+    result = value.publish_candidate(request)
+    assert result.outcome == "applied"
+    assert transport.calls[1][2] == {"ref": request.candidate_ref, "sha": OBJECT}
+
+
+def test_rollback_pr_creation_and_admission_bind_rollback_head_ref() -> None:
+    ref = "refs/heads/avo/main-rollback/" + "a" * 64
+    base, tree = "b" * 40, "c" * 40
+    request = PullRequestCreateRequest.build(
+        operation_id=DIGEST,
+        operation_kind="rollback",
+        repository_digest=github_repository_digest("owner", "repo"),
+        lease_epoch_digest=DIGEST,
+        candidate_ref=ref,
+        candidate_commit=OBJECT,
+        candidate_tree="d" * 40,
+        base_commit=base,
+        base_tree=tree,
+        preparation_authorization_digest=DIGEST,
+    )
+    pr = {
+        "number": 1,
+        "html_url": "https://github.com/owner/repo/pull/1",
+        "state": "open",
+        "draft": False,
+        "merged": False,
+        "node_id": "PR_node",
+        "base": {"ref": "main", "sha": base, "repo": {"full_name": "owner/repo"}},
+        "head": {"ref": ref, "sha": OBJECT, "repo": {"full_name": "owner/repo"}},
+    }
+    create_calls: list[tuple[str, str, Any]] = []
+
+    def create_transport(
+        method: str, url: str, body: Any, headers: Mapping[str, Any]
+    ) -> tuple[int, Any]:
+        create_calls.append((method, url, body))
+        del body, headers
+        if method == "GET" and "/pulls?state=all" in url:
+            return 200, []
+        if method == "POST" and url.endswith("/pulls"):
+            return 201, pr
+        if method == "GET" and url.endswith("/pulls/1"):
+            return 200, pr
+        if method == "GET" and url.endswith("/git/commits/" + OBJECT):
+            return 200, {"sha": OBJECT, "tree": {"sha": request.candidate_tree}, "parents": []}
+        if method == "GET" and url.endswith("/git/commits/" + base):
+            return 200, {"sha": base, "tree": {"sha": tree}, "parents": []}
+        raise AssertionError((method, url))
+
+    value, _ = adapter(preparation=create_transport)
+    created = value.create_pull_request(request)
+    assert created.outcome == "applied"
+    post = next(call for call in create_calls if call[0] == "POST")
+    assert post[2]["head"] == ref.removeprefix("refs/heads/")
+
+    admission = AdmissionIssueRequest.build(
+        operation_id=DIGEST,
+        operation_kind="rollback",
+        repository_digest=github_repository_digest("owner", "repo"),
+        lease_epoch_digest=DIGEST,
+        queue_configuration_digest=DIGEST,
+        preparation_authorization_digest=DIGEST,
+        pull_request_number=1,
+        pull_request_head=OBJECT,
+        pull_request_tree=request.candidate_tree,
+        base_commit=base,
+        base_tree=tree,
+        admission_run_id="run",
+        admission_nonce="nonce",
+        issuer_identity="isolated-issuer",
+        issuer_app_id=99,
+        issuer_isolation_digest=DIGEST,
+    )
+    seen: list[str] = []
+    value._authoritative_pr = lambda *args, **kwargs: (seen.append(kwargs["candidate_ref"]) or {})
+    value._authoritative_queue = lambda *args, **kwargs: {}
+    value._issue_check = lambda *args, **kwargs: admission
+    value.issue_admission(admission)
+    assert seen == [ref]
 
 
 def test_candidate_4xx_is_authoritative_rejection_without_dispatch() -> None:

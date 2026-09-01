@@ -122,3 +122,45 @@ def test_canonical_repository_binding_rejects_foreign_pr_url_and_names() -> None
     base_repo["full_name"] = "other/repo"
     with pytest.raises(ProtectedMainProviderError):
         provider(foreign_name).observe_pull_request(7)
+
+
+def test_rollback_pr_lookup_and_observation_bind_exact_rollback_namespace() -> None:
+    fake = FakeTransport()
+    operation_id = "sha256:" + "1" * 64
+    rollback_ref = "refs/heads/avo/main-rollback/" + "1" * 64
+    fake.pr["head"] = {
+        "ref": rollback_ref,
+        "sha": "d" * 40,
+        "repo": {"full_name": "avo/repo"},
+    }
+
+    def transport(
+        method: str, url: str, body: JsonBody | None, headers: Mapping[str, str]
+    ) -> tuple[int, JsonValue]:
+        if method == "GET" and "/pulls?state=all" in url:
+            return 200, [fake.pr]
+        return fake(
+            method,
+            url,
+            body,
+            {**headers, "Authorization": "Bearer token"},
+        )
+
+    main = provider(transport)
+    observed = main.observe_pull_request(
+        7,
+        expected_base_commit=SHA,
+        expected_head_ref=rollback_ref,
+        expected_head_commit="d" * 40,
+        operation_kind="rollback",
+    )
+    assert observed.head_ref == rollback_ref
+    found = main.lookup_pull_request(
+        operation_id,
+        expected_head_commit="d" * 40,
+        expected_base_commit=SHA,
+        operation_kind="rollback",
+    )
+    assert found.number == 7
+    with pytest.raises(ProtectedMainProviderError):
+        main.observe_pull_request(7, operation_kind="graduation")
