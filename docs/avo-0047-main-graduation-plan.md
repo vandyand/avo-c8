@@ -7,7 +7,10 @@ Status: implementation plan; C4 complete on 2026-09-01 at HEAD
 pending organization-hosting/merge-queue (max-one-entry plus admission/hold) capability
 and explicit isolated release-hold issuer authority.
 C6 is complete for offline acceptance at final code HEAD `e6db424cc671d7a5d63b9b8a7246a316c4867f91`;
-C7 deterministic offline gate is the next ready gate. See the [C6 result](avo-0047-c6-result.md).
+C7 deterministic offline gate is complete for offline acceptance at final code HEAD
+`9c70c36074810606692f8c2030b25ce83c10a1e4`; see the [C7 result](avo-0047-c7-result.md).
+The 47 exact cases passed, replay used `executor_calls=0` and `clock_calls=0`, and
+`deploy_performed=false`. C8 remains blocked.
 
 This plan is subordinate to the [authoritative roadmap](roadmap.md) and
 [ADR 0011](adr/0011-protected-main-graduation.md). It describes implementation-ready
@@ -32,8 +35,8 @@ C4 is complete at the recorded HEAD; see the [final C4 result](avo-0047-c4-resul
 historical [Phase A result](avo-0047-c4-phase-a-result.md) remains immutable. C5 is complete for
 offline acceptance at HEAD
 `e38d0b826f94f3f559fb2e3ef0b26d1d17128c53` with Terra APPROVE and combined 24 passed. The next
-ready gate is C7 deterministic offline gate. C4–C6 are offline evidence and do not establish
-hosted/live readiness or complete AVO-004.7.
+ready gate is now complete; see the [C7 result](avo-0047-c7-result.md). C4–C7 are offline
+evidence and do not establish hosted/live readiness or complete AVO-004.7.
 
 Phase A freezes the coordinator and recovery contracts before any provider implementation.
 It is documentation, schema, journal, and test-contract work only: it creates no candidate,
@@ -103,7 +106,7 @@ accepted and its write scope is reviewed.
 | AVO-004.7-C4 | Coordinator and recovery | AVO-004.7-C2, AVO-004.7-C3 | Phase A freezes contracts, append-only journal records, durable lease/fence/claim indexes, deterministic external identities, injected verifier capabilities, and narrow mutation capability protocols; later phases add the coordinator/recovery adapter and focused tests. No provider writes in Phase A. | Phase A proves each mutation intent and target-scoped unresolved-mutation reservation are committed atomically before provider dispatch; create-once receipts and atomic one-use release claim; durable main-lease expiry and fencing; deterministic admission/hold identities; capability separation with no coordinator merge authority; and read-only reconciliation after ambiguous dispatch. Successful/rejected authoritative observations resolve a reservation, while ambiguity keeps it open. The completed C4 implementation must enforce preparation-auth → publish/PR → isolated PR-head admission observation + successful non-release check → enqueue → distinct group pending-hold observation → one-use release-auth → last-moment issuer revalidation → isolated hold-success chronology; no provider queue/merge request follows release-auth; duplicate callers lease-fence; crash/timeout around admission/enqueue/auth/hold success reconciles read-only; regeneration creates a new attempt/composition and never transfers auth; successful replay is read-only. |
 | AVO-004.7-C5 | Main rollback authority | AVO-004.7-C1, AVO-004.7-C3, AVO-004.7-C4 | New `MainRollbackAuthority`, inverse-delta contracts, and tests. No reset, force update, or direct ref update. | Offline acceptance complete at HEAD `e38d0b826f94f3f559fb2e3ef0b26d1d17128c53`: Terra APPROVE, combined 24 passed. Covers aggregate orchestration, terminal cleanup/closure, crash/replay, and adversarial recovery. No hosted/provider/main/deploy mutation. [Result](avo-0047-c5-result.md) |
 | AVO-004.7-C6 | Campaign runner and eligibility ledger | AVO-004.7-C4, AVO-004.7-C5 | New runner, frozen activation record, eligibility ledger, threshold accumulator, and evidence package writer. | Complete for offline acceptance at `e6db424`; [result](avo-0047-c6-result.md). Enforces gap-free scheduler sequence after watermark, exactly one next-sequence admission with no speculative tail, ordinary nonempty eligibility from submission, terminal upstream failure/reset, and exact unresolved-tail closure. Hosted activation remains gated by C8 prerequisites and a fresh hosted rollback drill. |
-| AVO-004.7-C7 | Deterministic offline gate | AVO-004.7-C1 through AVO-004.7-C6 | Offline harness, fault matrix, and result artifact only. No hosted mutation. | Next ready gate. Crash/adversarial matrix covers duplicate lease, stale base, package drift, composition mismatch, check/queue/protection failures, provider ambiguity, wrong topology, rollback conflicts, cleanup ambiguity, and replay. Main remains unchanged and no deployment occurs. |
+| AVO-004.7-C7 | Deterministic offline gate | AVO-004.7-C1 through AVO-004.7-C6 | Offline harness, fault matrix, and result artifact only. No hosted mutation. | Complete at code HEAD `9c70c36074810606692f8c2030b25ce83c10a1e4`: 47 exact cases passed, replay returned the exact same result with `executor_calls=0` and `clock_calls=0`, and `deploy_performed=false`. Two truthful failed-closed dry attempts exposed datetime-canonicalization and semantic-versus-artifact verifier bugs; both were remediated and reviewed. [Result](avo-0047-c7-result.md) |
 | AVO-004.7-C8 | Hosted organization/queue/release gate | AVO-004.7-C7 | Hosted workflow/configuration and operator-controlled state root only after explicit organization-hosting and isolated-release-issuer authority. | Final protocol is organization-owned required merge queue with max entries per group=1, exact sole authorized PR membership, `pull_request` and `merge_group` checks, durable one-use `MainQueueAdmissionObservation` plus PR-head non-release admission, then distinct group pending `avo-main-release` hold, mandatory isolated release issuer, exact merge-group evidence, fresh main rollback drill before ledger activation, and 12 consecutive eligible successes with 0 failures/boundary violations. Until both hosting and release-hold authority exist this leaf is blocked and may not mutate current `main`. |
 
 ## Contract and evidence boundary
@@ -154,9 +157,11 @@ ledger before counting any attempt toward the threshold.
 
 ### Gate P3 — offline rollback gate
 
-Accept C7 only when the deterministic adversarial matrix passes, including a distinct
-main-specific inverse-delta rollback authority. The completed AVO-004.6 integration
-rollback package is a prerequisite input, never a substitute.
+C7 is accepted at code HEAD `9c70c36074810606692f8c2030b25ce83c10a1e4`: all 47 exact
+deterministic fault-matrix cases passed, including the main-specific inverse-delta rollback
+authority, and replay returned the exact same result without executor or clock calls. The
+completed AVO-004.6 integration rollback package was prerequisite input, never a substitute.
+See the [C7 result](avo-0047-c7-result.md). This gate produced no hosted mutation.
 
 ### Gate P4 — hosting and release-hold activation
 

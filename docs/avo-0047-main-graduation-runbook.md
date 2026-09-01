@@ -6,16 +6,19 @@ rollback authority complete for offline acceptance on HEAD `e38d0b826f94f3f559fb
 with Terra APPROVE and combined 24 passed; live `main`
 mutation is blocked until both
 organization-hosting/merge-queue capability and isolated release-hold authority are
-explicitly authorized.
+explicitly authorized. C7 deterministic offline gate is complete at code HEAD
+`9c70c36074810606692f8c2030b25ce83c10a1e4`.
 
 This runbook operationalizes [ADR 0011](adr/0011-protected-main-graduation.md) and the
 [implementation plan](avo-0047-main-graduation-plan.md). It is limited to the declared
 single-host, trusted-team boundary. It does not authorize deployment, production effects,
 repository transfer, branch-protection mutation, or direct ref writes.
 
-C4–C6 completion is offline coordinator/recovery/ledger evidence only. C7 deterministic offline
-gate is the next ready gate; no provider or `main` mutation is authorized by this status. C8 remains
-blocked pending organization-hosting/merge-queue capability and isolated release-hold authority.
+C4–C7 completion is offline coordinator/recovery/ledger/gate evidence only. C7 passed all 47
+exact fault-matrix cases; replay returned the exact same result with `executor_calls=0` and
+`clock_calls=0`, and `deploy_performed=false`. See the [durable C7 result](avo-0047-c7-result.md).
+No provider or `main` mutation is authorized by this status. C8 remains blocked pending
+organization-hosting/merge-queue capability and isolated release-hold authority.
 
 The GitHub REST ref-delete endpoint provides no expected-SHA CAS precondition. Before hosted
 use, protect the `avo/main-rollback/*` namespace with exclusive ACL/ruleset authority. Cleanup

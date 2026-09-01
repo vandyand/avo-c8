@@ -1,7 +1,7 @@
 # ADR 0011: Protected-main graduation boundary
 
-Status: accepted for the AVO-004.7 architecture; C4, C5, and C6 complete for offline acceptance,
-implementation and hosted gate in progress.
+Status: accepted for the AVO-004.7 architecture; C4, C5, C6, and C7 complete for offline
+acceptance, implementation and hosted gate in progress.
 Live `main` mutation is blocked by current GitHub hosting capability and missing isolated
 release-hold authority.
 
@@ -10,8 +10,10 @@ C4 coordinator and recovery gate: complete on 2026-09-01 at code HEAD
 C5 is complete for offline acceptance at HEAD `e38d0b826f94f3f559fb2e3ef0b26d1d17128c53`
 with Terra APPROVE and combined 24 passed; see the [C5 result](../avo-0047-c5-result.md).
 This records offline authority and recovery evidence only, does not authorize hosted/live
-mutation, and does not complete AVO-004.7. C7 deterministic offline gate is the next ready gate.
-C6's offline result is recorded in [the durable result](../avo-0047-c6-result.md).
+mutation, and does not complete AVO-004.7. C7's 47-case deterministic offline gate is complete
+at code HEAD `9c70c36074810606692f8c2030b25ce83c10a1e4`; replay used `executor_calls=0` and
+`clock_calls=0`, with `deploy_performed=false`. See the [durable C7 result](../avo-0047-c7-result.md).
+C6's offline result remains recorded in [the durable result](../avo-0047-c6-result.md).
 
 ## Context
 
