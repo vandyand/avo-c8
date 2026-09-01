@@ -45,53 +45,43 @@
       "title": "ArtifactRef",
       "type": "object"
     },
-    "MainLedgerControllerAuthority": {
+    "MainLedgerSubmissionEnvelope": {
       "additionalProperties": false,
-      "description": "Self-contained controller root, not an authentication primitive.\n\nPersistence and service callers must supply an injected verifier that\nauthenticates this authority and its issuer before using this DTO.",
+      "description": "Immutable scheduler receipt written before candidate content inspection.",
       "properties": {
-        "authority_digest": {
+        "activation_digest": {
           "pattern": "^sha256:[0-9a-f]{64}$",
-          "title": "Authority Digest",
+          "title": "Activation Digest",
           "type": "string"
         },
-        "authorized_at": {
+        "content_artifact": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "content_inspected": {
+          "const": false,
+          "default": false,
+          "title": "Content Inspected",
+          "type": "boolean"
+        },
+        "deploy_performed": {
+          "const": false,
+          "default": false,
+          "title": "Deploy Performed",
+          "type": "boolean"
+        },
+        "envelope_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Envelope Digest",
+          "type": "string"
+        },
+        "operation_id": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Operation Id",
+          "type": "string"
+        },
+        "recorded_at": {
           "format": "date-time",
-          "title": "Authorized At",
-          "type": "string"
-        },
-        "controller_config_digest": {
-          "pattern": "^sha256:[0-9a-f]{64}$",
-          "title": "Controller Config Digest",
-          "type": "string"
-        },
-        "expires_at": {
-          "format": "date-time",
-          "title": "Expires At",
-          "type": "string"
-        },
-        "issuer_authority_digest": {
-          "pattern": "^sha256:[0-9a-f]{64}$",
-          "title": "Issuer Authority Digest",
-          "type": "string"
-        },
-        "issuer_identity": {
-          "minLength": 1,
-          "title": "Issuer Identity",
-          "type": "string"
-        },
-        "policy_digest": {
-          "pattern": "^sha256:[0-9a-f]{64}$",
-          "title": "Policy Digest",
-          "type": "string"
-        },
-        "policy_epoch": {
-          "pattern": "^sha256:[0-9a-f]{64}$",
-          "title": "Policy Epoch",
-          "type": "string"
-        },
-        "protocol_digest": {
-          "pattern": "^sha256:[0-9a-f]{64}$",
-          "title": "Protocol Digest",
+          "title": "Recorded At",
           "type": "string"
         },
         "repository_digest": {
@@ -99,11 +89,31 @@
           "title": "Repository Digest",
           "type": "string"
         },
+        "scheduler_sequence": {
+          "exclusiveMinimum": 0,
+          "title": "Scheduler Sequence",
+          "type": "integer"
+        },
         "schema_version": {
           "const": 2,
           "default": 2,
           "title": "Schema Version",
           "type": "integer"
+        },
+        "source_identity": {
+          "minLength": 1,
+          "title": "Source Identity",
+          "type": "string"
+        },
+        "submission_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Submission Digest",
+          "type": "string"
+        },
+        "submission_identity": {
+          "minLength": 1,
+          "title": "Submission Identity",
+          "type": "string"
         },
         "target_ref": {
           "const": "refs/heads/main",
@@ -113,29 +123,24 @@
         }
       },
       "required": [
+        "activation_digest",
         "repository_digest",
-        "protocol_digest",
-        "controller_config_digest",
-        "policy_digest",
-        "policy_epoch",
-        "issuer_identity",
-        "issuer_authority_digest",
-        "authorized_at",
-        "expires_at",
-        "authority_digest"
+        "scheduler_sequence",
+        "source_identity",
+        "submission_identity",
+        "submission_digest",
+        "content_artifact",
+        "operation_id",
+        "recorded_at",
+        "envelope_digest"
       ],
-      "title": "MainLedgerControllerAuthority",
+      "title": "MainLedgerSubmissionEnvelope",
       "type": "object"
     }
   },
   "additionalProperties": false,
-  "description": "Controller-owned, out-of-band proof that an activation must terminate.",
+  "description": "One scheduler sequence which is intentionally left unresolved.\n\nAn entry can carry the envelope itself (the compact prefix/tail form), or\nbind an envelope which is present in ``EvidencePackage.submissions`` by\nits immutable identities.  The latter form keeps each durable envelope in\nthe package exactly once while still making the unresolved tail explicit.\nAn entry with no envelope or identities is the missing-envelope\n(starvation) form.",
   "properties": {
-    "activation_digest": {
-      "pattern": "^sha256:[0-9a-f]{64}$",
-      "title": "Activation Digest",
-      "type": "string"
-    },
     "content_artifact": {
       "anyOf": [
         {
@@ -147,18 +152,21 @@
       ],
       "default": null
     },
-    "controller_authority": {
-      "$ref": "#/$defs/MainLedgerControllerAuthority"
-    },
-    "current_state_digest": {
+    "entry_digest": {
       "pattern": "^sha256:[0-9a-f]{64}$",
-      "title": "Current State Digest",
+      "title": "Entry Digest",
       "type": "string"
     },
-    "detected_at": {
-      "format": "date-time",
-      "title": "Detected At",
-      "type": "string"
+    "envelope": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/MainLedgerSubmissionEnvelope"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "envelope_digest": {
       "anyOf": [
@@ -173,14 +181,6 @@
       "default": null,
       "title": "Envelope Digest"
     },
-    "evidence_artifact": {
-      "$ref": "#/$defs/ArtifactRef"
-    },
-    "expected_scheduler_sequence": {
-      "exclusiveMinimum": 0,
-      "title": "Expected Scheduler Sequence",
-      "type": "integer"
-    },
     "operation_id": {
       "anyOf": [
         {
@@ -193,6 +193,11 @@
       ],
       "default": null,
       "title": "Operation Id"
+    },
+    "scheduler_sequence": {
+      "exclusiveMinimum": 0,
+      "title": "Scheduler Sequence",
+      "type": "integer"
     },
     "schema_version": {
       "const": 2,
@@ -212,34 +217,12 @@
       ],
       "default": null,
       "title": "Submission Digest"
-    },
-    "violation_digest": {
-      "pattern": "^sha256:[0-9a-f]{64}$",
-      "title": "Violation Digest",
-      "type": "string"
-    },
-    "violation_kind": {
-      "enum": [
-        "starvation",
-        "withholding",
-        "silent_exclusion",
-        "scheduler_gap",
-        "operator_intervention"
-      ],
-      "title": "Violation Kind",
-      "type": "string"
     }
   },
   "required": [
-    "activation_digest",
-    "controller_authority",
-    "expected_scheduler_sequence",
-    "current_state_digest",
-    "violation_kind",
-    "evidence_artifact",
-    "detected_at",
-    "violation_digest"
+    "scheduler_sequence",
+    "entry_digest"
   ],
-  "title": "MainLedgerBoundaryViolationEvidence",
+  "title": "MainLedgerUnresolvedTailEntry",
   "type": "object"
 }

@@ -405,6 +405,17 @@
           "title": "Activation Digest",
           "type": "string"
         },
+        "content_artifact": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "controller_authority": {
           "$ref": "#/$defs/MainLedgerControllerAuthority"
         },
@@ -418,6 +429,19 @@
           "title": "Detected At",
           "type": "string"
         },
+        "envelope_digest": {
+          "anyOf": [
+            {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Envelope Digest"
+        },
         "evidence_artifact": {
           "$ref": "#/$defs/ArtifactRef"
         },
@@ -426,11 +450,37 @@
           "title": "Expected Scheduler Sequence",
           "type": "integer"
         },
+        "operation_id": {
+          "anyOf": [
+            {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Operation Id"
+        },
         "schema_version": {
           "const": 2,
           "default": 2,
           "title": "Schema Version",
           "type": "integer"
+        },
+        "submission_digest": {
+          "anyOf": [
+            {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Submission Digest"
         },
         "violation_digest": {
           "pattern": "^sha256:[0-9a-f]{64}$",
@@ -1174,6 +1224,95 @@
       ],
       "title": "MainLedgerTerminalOutcome",
       "type": "object"
+    },
+    "MainLedgerUnresolvedTailEntry": {
+      "additionalProperties": false,
+      "description": "One scheduler sequence which is intentionally left unresolved.\n\nAn entry can carry the envelope itself (the compact prefix/tail form), or\nbind an envelope which is present in ``EvidencePackage.submissions`` by\nits immutable identities.  The latter form keeps each durable envelope in\nthe package exactly once while still making the unresolved tail explicit.\nAn entry with no envelope or identities is the missing-envelope\n(starvation) form.",
+      "properties": {
+        "content_artifact": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "entry_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Entry Digest",
+          "type": "string"
+        },
+        "envelope": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/MainLedgerSubmissionEnvelope"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "envelope_digest": {
+          "anyOf": [
+            {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Envelope Digest"
+        },
+        "operation_id": {
+          "anyOf": [
+            {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Operation Id"
+        },
+        "scheduler_sequence": {
+          "exclusiveMinimum": 0,
+          "title": "Scheduler Sequence",
+          "type": "integer"
+        },
+        "schema_version": {
+          "const": 2,
+          "default": 2,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "submission_digest": {
+          "anyOf": [
+            {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Submission Digest"
+        }
+      },
+      "required": [
+        "scheduler_sequence",
+        "entry_digest"
+      ],
+      "title": "MainLedgerUnresolvedTailEntry",
+      "type": "object"
     }
   },
   "additionalProperties": false,
@@ -1258,6 +1397,13 @@
         "$ref": "#/$defs/MainLedgerAccumulatorTransition"
       },
       "title": "Transitions",
+      "type": "array"
+    },
+    "unresolved_tail": {
+      "items": {
+        "$ref": "#/$defs/MainLedgerUnresolvedTailEntry"
+      },
+      "title": "Unresolved Tail",
       "type": "array"
     }
   },

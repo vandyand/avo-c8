@@ -18,6 +18,7 @@ from avo_correlate.contracts.main_graduation_ledger import (
     MainLedgerHostedRollbackProof,
     MainLedgerSubmissionEnvelope,
     MainLedgerTerminalOutcome,
+    MainLedgerUnresolvedTailEntry,
     main_ledger_genesis_state,
 )
 from avo_correlate.domain.canonical import canonical_digest
@@ -634,3 +635,161 @@ def test_boundary_reset_can_terminalize_before_first_submission() -> None:
                 ),
             }
         )
+
+
+def _boundary_package_with_tail(
+    activation: MainLedgerActivation,
+    *,
+    submissions: list[MainLedgerSubmissionEnvelope],
+    tail: list[MainLedgerUnresolvedTailEntry],
+    expected_sequence: int = 11,
+    evidence_identity: dict[str, Any] | None = None,
+) -> MainLedgerEvidencePackage:
+    genesis = main_ledger_genesis_state(
+        activation.activation_digest, activation.scheduler_sequence_watermark
+    )
+    evidence_values: dict[str, Any] = {
+        "activation_digest": activation.activation_digest,
+        "controller_authority": activation.controller_authority,
+        "expected_scheduler_sequence": expected_sequence,
+        "current_state_digest": genesis.state_digest,
+        "violation_kind": "withholding" if submissions else "starvation",
+        "evidence_artifact": _artifact(
+            "ledger-boundary-violation-evidence",
+            "application/vnd.avo.ledger-boundary-violation+json",
+        ),
+        "detected_at": NOW,
+        **(evidence_identity or {}),
+    }
+    evidence = _with_digest(
+        MainLedgerBoundaryViolationEvidence, evidence_values, "violation_digest"
+    )
+    result = _with_digest(
+        MainLedgerAccumulatorState,
+        {
+            "activation_digest": activation.activation_digest,
+            "last_scheduler_sequence": activation.scheduler_sequence_watermark,
+            "streak": 0,
+            "successes": 0,
+            "failures": 0,
+            "boundary_violations": 1,
+            "threshold_complete": False,
+        },
+        "state_digest",
+    )
+    reset = _with_digest(
+        MainLedgerBoundaryResetTransition,
+        {
+            "activation_digest": activation.activation_digest,
+            "prior_state": genesis,
+            "prior_state_digest": genesis.state_digest,
+            "violation": evidence,
+            "resulting_state": result,
+            "resulting_state_digest": result.state_digest,
+        },
+        "transition_digest",
+    )
+    values: dict[str, Any] = {
+        "status": "boundary_reset",
+        "activation": activation,
+        "submissions": submissions,
+        "classifications": [],
+        "outcomes": [],
+        "transitions": [],
+        "unresolved_tail": tail,
+        "final_state": result,
+        "boundary_evidence": evidence,
+        "terminal_boundary_reset": reset,
+    }
+    probe = MainLedgerEvidencePackage.model_construct(**values, package_digest=DIGEST)
+    return MainLedgerEvidencePackage.model_validate(
+        {
+            **values,
+            "package_digest": canonical_digest(
+                probe.model_dump(exclude={"package_digest"}, mode="json")
+            ),
+        }
+    )
+
+
+def test_boundary_tail_binds_missing_and_durable_submission_forms() -> None:
+    activation = _activation()
+    missing = _with_digest(
+        MainLedgerUnresolvedTailEntry,
+        {"scheduler_sequence": 11},
+        "entry_digest",
+    )
+    package = _boundary_package_with_tail(activation, submissions=[], tail=[missing])
+    assert package.unresolved_tail[0].scheduler_sequence == 11
+
+    submission = _submission(activation, 11)
+    durable = _with_digest(
+        MainLedgerUnresolvedTailEntry,
+        {
+            "scheduler_sequence": 11,
+            "submission_digest": submission.submission_digest,
+            "operation_id": submission.operation_id,
+            "envelope_digest": submission.envelope_digest,
+            "content_artifact": submission.content_artifact,
+        },
+        "entry_digest",
+    )
+    package = _boundary_package_with_tail(
+        activation,
+        submissions=[submission],
+        tail=[durable],
+        evidence_identity={
+            "submission_digest": submission.submission_digest,
+            "operation_id": submission.operation_id,
+            "envelope_digest": submission.envelope_digest,
+            "content_artifact": submission.content_artifact,
+        },
+    )
+    assert package.unresolved_tail[0].submission_digest == submission.submission_digest
+
+
+@pytest.mark.parametrize("case", ["gap", "overlap", "mismatch", "omission"])
+def test_boundary_tail_rejects_gap_overlap_mismatch_and_silent_omission(case: str) -> None:
+    activation = _activation()
+    submission = _submission(activation, 11)
+    entry = _with_digest(
+        MainLedgerUnresolvedTailEntry,
+        {
+            "scheduler_sequence": 11,
+            "submission_digest": submission.submission_digest,
+            "operation_id": submission.operation_id,
+            "envelope_digest": submission.envelope_digest,
+            "content_artifact": submission.content_artifact,
+        },
+        "entry_digest",
+    )
+    if case == "gap":
+        later = _with_digest(
+            MainLedgerUnresolvedTailEntry, {"scheduler_sequence": 13}, "entry_digest"
+        )
+        with pytest.raises(ValidationError, match="contiguous"):
+            _boundary_package_with_tail(activation, submissions=[], tail=[entry, later])
+    elif case == "overlap":
+        duplicate = _with_digest(
+            MainLedgerUnresolvedTailEntry,
+            {"scheduler_sequence": 11, "envelope": submission},
+            "entry_digest",
+        )
+        with pytest.raises(ValidationError, match="duplicated"):
+            _boundary_package_with_tail(activation, submissions=[submission], tail=[duplicate])
+    elif case == "mismatch":
+        with pytest.raises(ValidationError, match="boundary"):
+            _boundary_package_with_tail(
+                activation,
+                submissions=[submission],
+                tail=[entry],
+                evidence_identity={
+                    "submission_digest": DIGEST[:-1] + "2",
+                    "operation_id": submission.operation_id,
+                    "envelope_digest": submission.envelope_digest,
+                    "content_artifact": submission.content_artifact,
+                },
+            )
+    else:
+        with pytest.raises(ValidationError, match="omitted"):
+            _boundary_package_with_tail(activation, submissions=[submission], tail=[])

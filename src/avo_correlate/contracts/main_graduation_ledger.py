@@ -494,6 +494,68 @@ class MainLedgerAccumulatorState(StrictModel):
         return self
 
 
+class MainLedgerUnresolvedTailEntry(StrictModel):
+    """One scheduler sequence which is intentionally left unresolved.
+
+    An entry can carry the envelope itself (the compact prefix/tail form), or
+    bind an envelope which is present in ``EvidencePackage.submissions`` by
+    its immutable identities.  The latter form keeps each durable envelope in
+    the package exactly once while still making the unresolved tail explicit.
+    An entry with no envelope or identities is the missing-envelope
+    (starvation) form.
+    """
+
+    schema_version: Literal[2] = 2
+    scheduler_sequence: StrictInt = Field(gt=0)
+    envelope: MainLedgerSubmissionEnvelope | None = None
+    submission_digest: Sha256Digest | None = None
+    operation_id: Sha256Digest | None = None
+    envelope_digest: Sha256Digest | None = None
+    content_artifact: ArtifactRef | None = None
+    entry_digest: Sha256Digest
+
+    @model_validator(mode="after")
+    def validate_tail_entry(self) -> MainLedgerUnresolvedTailEntry:
+        supplied = (
+            self.submission_digest,
+            self.operation_id,
+            self.envelope_digest,
+            self.content_artifact,
+        )
+        if self.envelope is None:
+            if any(item is not None for item in supplied) and not all(
+                item is not None for item in supplied
+            ):
+                raise ValueError("unresolved envelope identity is incomplete")
+            if all(item is not None for item in supplied):
+                assert self.content_artifact is not None
+                if self.content_artifact.digest != self.submission_digest:
+                    raise ValueError("unresolved content artifact differs from submission")
+        else:
+            expected = (
+                self.envelope.submission_digest,
+                self.envelope.operation_id,
+                self.envelope.envelope_digest,
+                self.envelope.content_artifact,
+            )
+            if any(item is not None for item in supplied) and supplied != expected:
+                raise ValueError("unresolved envelope identity differs from envelope")
+        if self.entry_digest != canonical_digest(
+            self.model_dump(exclude={"entry_digest"}, mode="json")
+        ):
+            raise ValueError("unresolved tail entry digest mismatch")
+        return self
+
+    @property
+    def has_envelope_identity(self) -> bool:
+        return self.envelope is not None or self.submission_digest is not None
+
+
+# The shorter name is useful to callers and preserves the terminology used
+# by the ledger runbook.  Both names refer to the same canonical schema.
+MainLedgerUnresolvedSubmission = MainLedgerUnresolvedTailEntry
+
+
 class MainLedgerBoundaryViolationEvidence(StrictModel):
     """Controller-owned, out-of-band proof that an activation must terminate."""
 
@@ -509,6 +571,13 @@ class MainLedgerBoundaryViolationEvidence(StrictModel):
         "scheduler_gap",
         "operator_intervention",
     ]
+    # These are deliberately identity-only references.  The journal's
+    # verifier remains authoritative; these fields merely make the boundary
+    # evidence unambiguous when a durable envelope is being withheld.
+    submission_digest: Sha256Digest | None = None
+    operation_id: Sha256Digest | None = None
+    envelope_digest: Sha256Digest | None = None
+    content_artifact: ArtifactRef | None = None
     evidence_artifact: ArtifactRef
     detected_at: datetime
     violation_digest: Sha256Digest
@@ -522,6 +591,21 @@ class MainLedgerBoundaryViolationEvidence(StrictModel):
             raise ValueError("boundary evidence is outside controller authority window")
         if self.expected_scheduler_sequence <= 0:
             raise ValueError("boundary evidence expected sequence must be positive")
+        identities = (
+            self.submission_digest,
+            self.operation_id,
+            self.envelope_digest,
+            self.content_artifact,
+        )
+        if any(item is not None for item in identities) and not all(
+            item is not None for item in identities
+        ):
+            raise ValueError("boundary envelope identity is incomplete")
+        if (
+            self.content_artifact is not None
+            and self.content_artifact.digest != self.submission_digest
+        ):
+            raise ValueError("boundary content artifact differs from submission")
         evidence = self.evidence_artifact
         if (
             evidence.role != BOUNDARY_ARTIFACT_ROLE
@@ -709,6 +793,12 @@ class MainLedgerEvidencePackage(StrictModel):
     transitions: list[MainLedgerAccumulatorTransition] = Field(
         default_factory=list[MainLedgerAccumulatorTransition]
     )
+    # Durable envelopes after the processed prefix are represented here as a
+    # typed unresolved tail.  ``submissions`` remains the durable envelope
+    # inventory, so identity-only entries do not duplicate those envelopes.
+    unresolved_tail: list[MainLedgerUnresolvedTailEntry] = Field(
+        default_factory=list[MainLedgerUnresolvedTailEntry]
+    )
     final_state: MainLedgerAccumulatorState
     boundary_evidence: MainLedgerBoundaryViolationEvidence | None = None
     terminal_boundary_reset: MainLedgerBoundaryResetTransition | None = None
@@ -718,17 +808,19 @@ class MainLedgerEvidencePackage(StrictModel):
     @model_validator(mode="after")
     def validate_package(self) -> MainLedgerEvidencePackage:
         if self.status == "threshold_complete" and (
-            self.boundary_evidence is not None or self.terminal_boundary_reset is not None
+            self.boundary_evidence is not None
+            or self.terminal_boundary_reset is not None
+            or self.unresolved_tail
         ):
-            raise ValueError("threshold-complete package cannot contain boundary reset evidence")
+            raise ValueError(
+                "threshold-complete package cannot contain unresolved boundary evidence"
+            )
         if self.status == "boundary_reset" and (
             self.boundary_evidence is None or self.terminal_boundary_reset is None
         ):
             raise ValueError("boundary-reset package requires boundary evidence and reset")
         if self.activation.activation_digest != self.final_state.activation_digest:
             raise ValueError("ledger final state activation differs")
-        if len(self.submissions) != len(self.classifications):
-            raise ValueError("every submission requires controller classification")
         ordered = sorted(self.submissions, key=lambda item: item.scheduler_sequence)
         if ordered != self.submissions:
             raise ValueError("submissions must be in scheduler order")
@@ -748,9 +840,14 @@ class MainLedgerEvidencePackage(StrictModel):
             raise ValueError("duplicate physical submission content")
         if len(set(content_digests)) != len(content_digests):
             raise ValueError("duplicate physical submission artifact")
-        expected = self.activation.scheduler_sequence_watermark + 1
+        watermark = self.activation.scheduler_sequence_watermark
+        first_expected = watermark + 1
+        expected = first_expected
+        by_sequence = {item.scheduler_sequence: item for item in self.submissions}
+        if len(by_sequence) != len(self.submissions):
+            raise ValueError("duplicate scheduler submission sequence")
         by_submission = {item.submission_digest: item for item in self.submissions}
-        for submission, classification in zip(self.submissions, self.classifications, strict=True):
+        for submission in self.submissions:
             if submission.activation_digest != self.activation.activation_digest:
                 raise ValueError("submission activation differs")
             if (
@@ -760,6 +857,40 @@ class MainLedgerEvidencePackage(StrictModel):
                 raise ValueError("submission repository target differs from activation")
             if submission.scheduler_sequence != expected:
                 raise ValueError("ledger scheduler sequence has a gap")
+            expected += 1
+        # A boundary package's classifications/transitions are exactly the
+        # processed prefix.  A threshold package has no unresolved tail and
+        # therefore retains the original all-submissions closure.
+        if self.status == "boundary_reset":
+            assert self.boundary_evidence is not None
+            first_unresolved = self.boundary_evidence.expected_scheduler_sequence
+            prefix_count = first_unresolved - watermark - 1
+            if prefix_count < 0:
+                raise ValueError("boundary expected sequence precedes activation watermark")
+            prefix_submissions = [
+                item for item in self.submissions if item.scheduler_sequence < first_unresolved
+            ]
+            if [item.scheduler_sequence for item in prefix_submissions] != list(
+                range(first_expected, first_unresolved)
+            ):
+                raise ValueError("processed submissions are not a contiguous prefix")
+            if any(item.scheduler_sequence >= first_unresolved for item in prefix_submissions):
+                raise ValueError("unresolved submission precedes processed prefix")
+            expected_classified_count = prefix_count
+        else:
+            prefix_submissions = self.submissions
+            expected_classified_count = len(self.submissions)
+            if [item.scheduler_sequence for item in self.submissions] != list(
+                range(first_expected, first_expected + len(self.submissions))
+            ):
+                raise ValueError("ledger scheduler sequence has a gap")
+        if len(self.classifications) != expected_classified_count:
+            if self.status == "boundary_reset":
+                raise ValueError("every processed submission requires controller classification")
+            raise ValueError("every submission requires controller classification")
+        for submission, classification in zip(
+            prefix_submissions, self.classifications, strict=True
+        ):
             if classification.activation_digest != self.activation.activation_digest:
                 raise ValueError("classification activation differs")
             if (
@@ -776,7 +907,6 @@ class MainLedgerEvidencePackage(StrictModel):
                 raise ValueError("classification policy does not bind activation")
             if classification.controller_authority != self.activation.controller_authority:
                 raise ValueError("classification controller authority differs")
-            expected += 1
         if len({item.scheduler_sequence for item in self.outcomes}) != len(self.outcomes):
             raise ValueError("terminal outcomes must be unique per scheduler sequence")
         if len({item.classification.scheduler_sequence for item in self.transitions}) != len(
@@ -793,8 +923,8 @@ class MainLedgerEvidencePackage(StrictModel):
             raise ValueError("each eligible classification requires exactly one terminal outcome")
         if any(item.submission_digest not in by_submission for item in self.outcomes):
             raise ValueError("outcome references an unknown submission")
-        if len(self.transitions) != len(self.submissions):
-            raise ValueError("every scheduler submission requires one CAS transition")
+        if len(self.transitions) != expected_classified_count:
+            raise ValueError("every processed submission requires one CAS transition")
         genesis = main_ledger_genesis_state(
             self.activation.activation_digest,
             self.activation.scheduler_sequence_watermark,
@@ -829,10 +959,10 @@ class MainLedgerEvidencePackage(StrictModel):
                 ):
                     raise ValueError("CAS transition outcome differs")
             expected_state = transition.resulting_state.last_scheduler_sequence
-        if set(transitions_by_sequence) != set(
-            item.scheduler_sequence for item in self.submissions
-        ):
-            raise ValueError("CAS transitions do not cover every submission")
+        if set(transitions_by_sequence) != {
+            item.scheduler_sequence for item in prefix_submissions
+        }:
+            raise ValueError("CAS transitions do not cover every processed submission")
         transition_outcomes = {
             item.classification.scheduler_sequence: item.outcome
             for item in self.transitions
@@ -847,6 +977,105 @@ class MainLedgerEvidencePackage(StrictModel):
         if self.status == "boundary_reset":
             assert self.boundary_evidence is not None
             assert self.terminal_boundary_reset is not None
+            tail = self.unresolved_tail
+            tail_sequences = [item.scheduler_sequence for item in tail]
+            if tail_sequences != list(
+                range(self.boundary_evidence.expected_scheduler_sequence,
+                      self.boundary_evidence.expected_scheduler_sequence + len(tail))
+            ) and (tail or self.boundary_evidence.expected_scheduler_sequence != watermark + 1):
+                # Keep the empty pre-submission closure accepted for the
+                # historical boundary-reset form; all non-empty tails must
+                # be explicit and contiguous.
+                raise ValueError("unresolved tail is not contiguous from expected sequence")
+            tail_digests: set[str] = set()
+            tail_content_digests: set[str] = set()
+            for entry in tail:
+                if entry.envelope is not None:
+                    if entry.envelope.scheduler_sequence != entry.scheduler_sequence:
+                        raise ValueError("unresolved envelope sequence differs from tail")
+                    if entry.scheduler_sequence in by_sequence:
+                        raise ValueError("unresolved envelope is duplicated in submissions")
+                    if (
+                        entry.envelope.activation_digest != self.activation.activation_digest
+                        or entry.envelope.repository_digest != self.activation.repository_digest
+                        or entry.envelope.target_ref != self.activation.target_ref
+                    ):
+                        raise ValueError("unresolved envelope target differs from activation")
+                    if (
+                        entry.envelope.submission_digest in by_submission
+                        or entry.envelope.submission_digest in tail_digests
+                    ):
+                        raise ValueError("duplicate unresolved submission content")
+                    if entry.envelope.content_artifact.digest in tail_content_digests or any(
+                        item.content_artifact.digest == entry.envelope.content_artifact.digest
+                        for item in self.submissions
+                    ):
+                        raise ValueError("duplicate unresolved submission artifact")
+                    tail_digests.add(entry.envelope.submission_digest)
+                    tail_content_digests.add(entry.envelope.content_artifact.digest)
+                elif entry.has_envelope_identity:
+                    envelope = by_sequence.get(entry.scheduler_sequence)
+                    if envelope is None:
+                        raise ValueError(
+                            "unresolved envelope identity references unknown submission"
+                        )
+                    identity = (
+                        envelope.submission_digest,
+                        envelope.operation_id,
+                        envelope.envelope_digest,
+                        envelope.content_artifact,
+                    )
+                    if (
+                        entry.submission_digest,
+                        entry.operation_id,
+                        entry.envelope_digest,
+                        entry.content_artifact,
+                    ) != identity:
+                        raise ValueError("unresolved envelope identity does not match submission")
+                elif entry.scheduler_sequence > self.boundary_evidence.expected_scheduler_sequence:
+                    raise ValueError("missing envelope may only be the first unresolved sequence")
+            if (
+                tail
+                and tail[0].envelope is None
+                and not tail[0].has_envelope_identity
+                and len(tail) > 1
+            ):
+                raise ValueError("missing envelope may only be the first unresolved sequence")
+            # A durable envelope after the prefix must appear in the tail;
+            # envelopes in the prefix are the only permitted inventory before
+            # the boundary.
+            for sequence in by_sequence:
+                if (
+                    sequence >= self.boundary_evidence.expected_scheduler_sequence
+                    and sequence not in {item.scheduler_sequence for item in tail}
+                ):
+                    raise ValueError("durable unresolved submission is omitted from tail")
+            first = tail[0] if tail else None
+            first_identity = (None, None, None, None)
+            if first is not None:
+                if first.envelope is not None:
+                    envelope = first.envelope
+                    first_identity = (
+                        envelope.submission_digest,
+                        envelope.operation_id,
+                        envelope.envelope_digest,
+                        envelope.content_artifact,
+                    )
+                elif first.has_envelope_identity:
+                    first_identity = (
+                        first.submission_digest,
+                        first.operation_id,
+                        first.envelope_digest,
+                        first.content_artifact,
+                    )
+            evidence_identity = (
+                self.boundary_evidence.submission_digest,
+                self.boundary_evidence.operation_id,
+                self.boundary_evidence.envelope_digest,
+                self.boundary_evidence.content_artifact,
+            )
+            if first_identity != evidence_identity:
+                raise ValueError("boundary evidence does not bind first unresolved submission")
             if (
                 self.boundary_evidence.activation_digest != self.activation.activation_digest
                 or self.boundary_evidence.controller_authority
@@ -981,6 +1210,8 @@ __all__ = [
     "MainLedgerTerminalOutcomeV2",
     "MainLedgerThresholdAccumulatorState",
     "MainLedgerThresholdAccumulatorTransition",
+    "MainLedgerUnresolvedSubmission",
+    "MainLedgerUnresolvedTailEntry",
     "MainSchedulerSubmissionEnvelope",
     "ThresholdAccumulatorStateV2",
     "ThresholdAccumulatorTransitionV2",
