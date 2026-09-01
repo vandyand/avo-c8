@@ -159,6 +159,26 @@ from avo_correlate.contracts.main_graduation_ledger import (
     ThresholdAccumulatorTransitionV2,
     main_ledger_genesis_state,
 )
+from avo_correlate.contracts.main_graduation_offline_drill import (
+    FROZEN_OFFLINE_DRILL_CASE_IDS,
+    FROZEN_OFFLINE_DRILL_CASE_VECTOR_MATRIX,
+    FROZEN_OFFLINE_DRILL_VECTOR_IDS,
+    OFFLINE_PROOF_CLASS,
+    MainGraduationOfflineDrillAggregateResult,
+    MainGraduationOfflineDrillCase,
+    MainGraduationOfflineDrillCaseResult,
+    MainGraduationOfflineDrillCaseSpec,
+    MainGraduationOfflineDrillCrashFacts,
+    MainGraduationOfflineDrillEvidenceRef,
+    MainGraduationOfflineDrillPlan,
+    MainGraduationOfflineDrillReplayFacts,
+    MainGraduationOfflineDrillResult,
+    MainGraduationOfflineDrillVector,
+    MainGraduationOfflineDrillVectorSpec,
+    offline_drill_case_id,
+    offline_drill_operation_id,
+    offline_drill_result_id,
+)
 from avo_correlate.contracts.policy import PolicyDecision
 from avo_correlate.contracts.prepublication import (
     RollbackOperationQuarantine,
@@ -202,6 +222,10 @@ from avo_correlate.contracts.variation import (
 )
 
 __all__ = [
+    "FROZEN_OFFLINE_DRILL_CASE_IDS",
+    "FROZEN_OFFLINE_DRILL_CASE_VECTOR_MATRIX",
+    "FROZEN_OFFLINE_DRILL_VECTOR_IDS",
+    "OFFLINE_PROOF_CLASS",
     "ActorRef",
     "AdmissionDecision",
     "AgentCompletion",
@@ -270,6 +294,17 @@ __all__ = [
     "MainGraduationIntent",
     "MainGraduationLedgerActivation",
     "MainGraduationLedgerActivationV2",
+    "MainGraduationOfflineDrillAggregateResult",
+    "MainGraduationOfflineDrillCase",
+    "MainGraduationOfflineDrillCaseResult",
+    "MainGraduationOfflineDrillCaseSpec",
+    "MainGraduationOfflineDrillCrashFacts",
+    "MainGraduationOfflineDrillEvidenceRef",
+    "MainGraduationOfflineDrillPlan",
+    "MainGraduationOfflineDrillReplayFacts",
+    "MainGraduationOfflineDrillResult",
+    "MainGraduationOfflineDrillVector",
+    "MainGraduationOfflineDrillVectorSpec",
     "MainGraduationPlan",
     "MainGraduationSubmissionEnvelope",
     "MainGraduationSubmissionEnvelopeV2",
@@ -385,6 +420,9 @@ __all__ = [
     "main_stage_identity_digest",
     "main_stage_nonce",
     "main_target_scope_digest",
+    "offline_drill_case_id",
+    "offline_drill_operation_id",
+    "offline_drill_result_id",
     "rollback_cleanup_authority_digest",
     "verify_campaign_package_artifact",
 ]

@@ -1,0 +1,37 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "byte_identical": {
+      "title": "Byte Identical",
+      "type": "boolean"
+    },
+    "mutation_delta": {
+      "maximum": 0,
+      "minimum": 0,
+      "title": "Mutation Delta",
+      "type": "integer"
+    },
+    "read_only": {
+      "title": "Read Only",
+      "type": "boolean"
+    },
+    "replayed": {
+      "title": "Replayed",
+      "type": "boolean"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "replayed",
+    "byte_identical",
+    "read_only",
+    "mutation_delta"
+  ],
+  "title": "MainGraduationOfflineDrillReplayFacts",
+  "type": "object"
+}

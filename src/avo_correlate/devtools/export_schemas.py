@@ -155,6 +155,16 @@ from avo_correlate.contracts.main_graduation_ledger import (
     MainLedgerTerminalOutcomeV2,
     MainLedgerUnresolvedTailEntry,
 )
+from avo_correlate.contracts.main_graduation_offline_drill import (
+    MainGraduationOfflineDrillCaseResult,
+    MainGraduationOfflineDrillCaseSpec,
+    MainGraduationOfflineDrillCrashFacts,
+    MainGraduationOfflineDrillEvidenceRef,
+    MainGraduationOfflineDrillPlan,
+    MainGraduationOfflineDrillReplayFacts,
+    MainGraduationOfflineDrillResult,
+    MainGraduationOfflineDrillVectorSpec,
+)
 from avo_correlate.contracts.model import ModelInvocationRecord, ModelRequest, ModelResponse
 from avo_correlate.contracts.operations import (
     DryRunReport,
@@ -376,6 +386,14 @@ MODELS: tuple[type[StrictModel], ...] = (
     MainLedgerAccumulatorTransitionV2,
     MainLedgerEvidencePackageV2,
     MainLedgerUnresolvedTailEntry,
+    MainGraduationOfflineDrillVectorSpec,
+    MainGraduationOfflineDrillCaseSpec,
+    MainGraduationOfflineDrillPlan,
+    MainGraduationOfflineDrillCrashFacts,
+    MainGraduationOfflineDrillReplayFacts,
+    MainGraduationOfflineDrillCaseResult,
+    MainGraduationOfflineDrillEvidenceRef,
+    MainGraduationOfflineDrillResult,
 )
 
 

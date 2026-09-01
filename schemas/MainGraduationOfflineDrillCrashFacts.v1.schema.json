@@ -1,0 +1,42 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "crash_boundary": {
+      "enum": [
+        "none",
+        "before-preparation-auth",
+        "after-preparation-auth",
+        "before-enqueue",
+        "after-enqueue",
+        "before-release-auth",
+        "after-release-auth",
+        "after-hold-success"
+      ],
+      "title": "Crash Boundary",
+      "type": "string"
+    },
+    "crash_injected": {
+      "title": "Crash Injected",
+      "type": "boolean"
+    },
+    "restart_count": {
+      "maximum": 32,
+      "minimum": 0,
+      "title": "Restart Count",
+      "type": "integer"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "crash_injected",
+    "crash_boundary",
+    "restart_count"
+  ],
+  "title": "MainGraduationOfflineDrillCrashFacts",
+  "type": "object"
+}
