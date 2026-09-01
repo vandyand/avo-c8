@@ -29,6 +29,7 @@ from avo_correlate.contracts.main_graduation_ledger import (
     MainLedgerTerminalOutcome,
     main_ledger_genesis_state,
 )
+from avo_correlate.contracts.promotion_policy import path_manifest_digest
 from avo_correlate.domain.canonical import canonical_digest
 
 
@@ -80,6 +81,7 @@ class MainGraduationLedgerService:
         self._clock = clock or trusted_clock
         self._resolver = resolver or content_resolver
         self._classifier = classifier or controller_classifier
+        self._state_cache: MainLedgerAccumulatorState | None = None
         if self._clock is None:
             raise ValueError("a trusted clock is required")
 
@@ -89,6 +91,11 @@ class MainGraduationLedgerService:
 
     def activate(self, activation: MainLedgerActivation) -> ArtifactRef:
         """Recheck the frozen authority window immediately before journaling."""
+        existing = self._journal.read_activation()
+        if existing is not None:
+            if existing[0] != activation:
+                raise MainGraduationLedgerJournalError("a different activation is already recorded")
+            return existing[1]
         now = self._now()
         authority = activation.controller_authority
         if not authority.authorized_at <= now <= authority.expires_at:
@@ -101,16 +108,6 @@ class MainGraduationLedgerService:
             raise MainGraduationLedgerJournalError(
                 "activation freshness or activated_at is in the future"
             )
-        existing = self._journal.read_activation()
-        if existing is not None:
-            if existing[0] != activation:
-                raise MainGraduationLedgerJournalError("a different activation is already recorded")
-            # A completed activation cannot be silently re-opened/replaced.
-            if self._journal.read_package(activation.activation_digest) is not None:
-                raise MainGraduationLedgerJournalError("activation is already terminal")
-            if self._journal.read_boundary_reset(activation.activation_digest) is not None:
-                raise MainGraduationLedgerJournalError("activation is already terminal")
-            return existing[1]
         return self._journal.record_activation(activation)
 
     def submit(
@@ -154,7 +151,9 @@ class MainGraduationLedgerService:
                 raise MainGraduationLedgerJournalError("conflicting submission retry")
             return old
         self._ensure_not_terminal(active)
-        timestamp = recorded_at if recorded_at is not None else self._now()
+        if recorded_at is not None:
+            raise MainGraduationLedgerJournalError("submission timestamp is controller-owned")
+        timestamp = self._mutation_now(active)
         envelope_values: dict[str, Any] = {
             "activation_digest": active.activation_digest,
             "repository_digest": active.repository_digest,
@@ -177,7 +176,13 @@ class MainGraduationLedgerService:
         )
         # The journal verifies and commits the scheduler envelope.  Only after
         # this call may the resolver/classifier be invoked by classify().
-        self._journal.record_submission(envelope)
+        try:
+            self._journal.record_submission(envelope)
+        except MainGraduationLedgerJournalError:
+            adopted = self._journal.read_submission(operation_id)
+            if adopted is not None and self._submission_matches(adopted[0], envelope):
+                return adopted[0]
+            raise
         return envelope
 
     def classify(
@@ -234,6 +239,19 @@ class MainGraduationLedgerService:
         classification = classification_loaded[0]
         if classification.classification != "eligible":
             raise MainGraduationLedgerJournalError("excluded submission cannot receive an outcome")
+        existing_outcome = self._journal.read_outcome(submission.scheduler_sequence)
+        if existing_outcome is not None:
+            if not self._outcome_inputs_match(
+                existing_outcome[0],
+                outcome,
+                terminal_evidence or evidence_artifact,
+                package_artifact or package,
+                package_digest,
+                reason,
+            ):
+                raise MainGraduationLedgerJournalError("conflicting terminal outcome retry")
+            return existing_outcome[0]
+        self._ensure_not_terminal(active)
         terminal_evidence = terminal_evidence or evidence_artifact
         package_artifact = package_artifact or package
         if terminal_evidence is None:
@@ -253,6 +271,8 @@ class MainGraduationLedgerService:
                 "submission_digest": submission.submission_digest,
             }
         )
+        if terminal_at is not None:
+            raise MainGraduationLedgerJournalError("outcome timestamp is controller-owned")
         values: dict[str, Any] = {
             "activation_digest": active.activation_digest,
             "submission_digest": submission.submission_digest,
@@ -281,7 +301,7 @@ class MainGraduationLedgerService:
                 else None
             ),
             "reason": reason,
-            "terminal_at": terminal_at if terminal_at is not None else self._now(),
+            "terminal_at": self._mutation_now(active),
         }
         outcome_record = MainLedgerTerminalOutcome.model_validate(
             {
@@ -291,7 +311,15 @@ class MainGraduationLedgerService:
                 ),
             }
         )
-        self._journal.record_outcome(outcome_record)
+        try:
+            self._journal.record_outcome(outcome_record)
+        except MainGraduationLedgerJournalError:
+            adopted = self._journal.read_outcome(submission.scheduler_sequence)
+            if adopted is not None and self._outcome_inputs_match(
+                adopted[0], outcome, terminal_evidence, package_artifact, package_digest, reason
+            ):
+                return adopted[0]
+            raise
         return outcome_record
 
     def advance(
@@ -302,6 +330,7 @@ class MainGraduationLedgerService:
         state = self._current_state(active)
         if self._journal.read_boundary_reset(active.activation_digest) is not None:
             return state
+        self._ensure_not_terminal(active, state=state)
         if state.threshold_complete:
             return state
         expected = state.last_scheduler_sequence + 1
@@ -347,7 +376,15 @@ class MainGraduationLedgerService:
                 ),
             }
         )
-        self._journal.record_transition(transition)
+        try:
+            self._journal.record_transition(transition)
+        except MainGraduationLedgerJournalError:
+            adopted = self._journal.read_transition(expected)
+            if adopted is not None:
+                self._state_cache = adopted[0].resulting_state
+                return adopted[0]
+            raise
+        self._state_cache = transition.resulting_state
         return transition
 
     def record_boundary_violation(
@@ -362,13 +399,39 @@ class MainGraduationLedgerService:
         existing = self._journal.read_boundary_evidence(active.activation_digest)
         reset_existing = self._journal.read_boundary_reset(active.activation_digest)
         if existing is not None and reset_existing is not None:
+            if not self._boundary_inputs_match(
+                existing[0], violation_kind, evidence_artifact, expected_scheduler_sequence
+            ):
+                raise MainGraduationLedgerJournalError("conflicting boundary retry")
             return existing[0], reset_existing[0]
+        if existing is not None:
+            if not self._boundary_inputs_match(
+                existing[0], violation_kind, evidence_artifact, expected_scheduler_sequence
+            ):
+                raise MainGraduationLedgerJournalError("conflicting boundary retry")
+            # Evidence is the recovery fence.  It already owns the timestamp;
+            # derive only the missing reset without consulting the clock.
+            state = self._current_state(active)
+            reset = self._derive_boundary_reset(active, existing[0], state)
+            try:
+                self._journal.record_boundary_reset(reset)
+            except MainGraduationLedgerJournalError:
+                adopted_reset = self._journal.read_boundary_reset(active.activation_digest)
+                if adopted_reset is not None and adopted_reset[0] == reset:
+                    self._state_cache = adopted_reset[0].resulting_state
+                    return existing[0], adopted_reset[0]
+                raise
+            return existing[0], reset
         self._ensure_not_terminal(active)
         state = self._current_state(active)
-        detected = detected_at if detected_at is not None else self._now()
+        if detected_at is not None:
+            raise MainGraduationLedgerJournalError("boundary timestamp is controller-owned")
+        detected = self._mutation_now(active)
         authority = active.controller_authority
-        if not authority.authorized_at <= detected <= authority.expires_at:
-            raise MainGraduationLedgerJournalError("boundary timestamp is outside authority window")
+        if detected < active.freshness_cutoff or detected < active.activated_at:
+            raise MainGraduationLedgerJournalError(
+                "boundary timestamp precedes activation chronology"
+            )
         sequence = state.last_scheduler_sequence + 1
         if expected_scheduler_sequence is not None and expected_scheduler_sequence != sequence:
             raise MainGraduationLedgerJournalError(
@@ -393,25 +456,25 @@ class MainGraduationLedgerService:
                 ),
             }
         )
-        self._journal.record_boundary_evidence(evidence)
-        result = self._boundary_state(state)
-        reset_values: dict[str, Any] = {
-            "activation_digest": active.activation_digest,
-            "prior_state": state,
-            "prior_state_digest": state.state_digest,
-            "violation": evidence,
-            "resulting_state": result,
-            "resulting_state_digest": result.state_digest,
-        }
-        reset = MainLedgerBoundaryResetTransition.model_validate(
-            {
-                **reset_values,
-                "transition_digest": self._digest_model(
-                    MainLedgerBoundaryResetTransition, reset_values, "transition_digest"
-                ),
-            }
-        )
-        self._journal.record_boundary_reset(reset)
+        try:
+            self._journal.record_boundary_evidence(evidence)
+        except MainGraduationLedgerJournalError:
+            adopted = self._journal.read_boundary_evidence(active.activation_digest)
+            if adopted is None or not self._boundary_inputs_match(
+                adopted[0], violation_kind, evidence_artifact, expected_scheduler_sequence
+            ):
+                raise
+            evidence = adopted[0]
+        reset = self._derive_boundary_reset(active, evidence, state)
+        try:
+            self._journal.record_boundary_reset(reset)
+        except MainGraduationLedgerJournalError:
+            adopted_reset = self._journal.read_boundary_reset(active.activation_digest)
+            if adopted_reset is not None and adopted_reset[0] == reset:
+                self._state_cache = adopted_reset[0].resulting_state
+                return evidence, adopted_reset[0]
+            raise
+        self._state_cache = reset.resulting_state
         return evidence, reset
 
     def record_boundary_reset(
@@ -540,11 +603,123 @@ class MainGraduationLedgerService:
             raise MainGraduationLedgerJournalError("ledger activation is not durably recorded")
         return loaded[0]
 
-    def _ensure_not_terminal(self, active: MainLedgerActivation) -> None:
+    def _ensure_not_terminal(
+        self,
+        active: MainLedgerActivation,
+        *,
+        state: MainLedgerAccumulatorState | None = None,
+    ) -> None:
+        current = state if state is not None else self._current_state(active)
+        if current.threshold_complete:
+            raise MainGraduationLedgerJournalError("activation threshold is already complete")
+        if self._journal.read_boundary_evidence(active.activation_digest) is not None:
+            raise MainGraduationLedgerJournalError("boundary evidence is awaiting terminal reset")
         if self._journal.read_package(active.activation_digest) is not None:
             raise MainGraduationLedgerJournalError("activation is already terminal")
         if self._journal.read_boundary_reset(active.activation_digest) is not None:
             raise MainGraduationLedgerJournalError("activation is already terminal")
+
+    def _mutation_now(self, active: MainLedgerActivation) -> datetime:
+        now = self._now()
+        authority = active.controller_authority
+        if not authority.authorized_at <= now <= authority.expires_at:
+            raise MainGraduationLedgerJournalError("trusted clock is outside authority window")
+        if now < active.freshness_cutoff or now < active.activated_at:
+            raise MainGraduationLedgerJournalError("trusted clock precedes activation chronology")
+        return now
+
+    @staticmethod
+    def _submission_matches(
+        existing: MainLedgerSubmissionEnvelope,
+        requested: MainLedgerSubmissionEnvelope,
+    ) -> bool:
+        return all(
+            getattr(existing, field) == getattr(requested, field)
+            for field in (
+                "activation_digest",
+                "repository_digest",
+                "target_ref",
+                "scheduler_sequence",
+                "source_identity",
+                "submission_identity",
+                "submission_digest",
+                "content_artifact",
+                "operation_id",
+                "content_inspected",
+            )
+        )
+
+    @staticmethod
+    def _outcome_inputs_match(
+        existing: MainLedgerTerminalOutcome,
+        outcome: str,
+        terminal_evidence: ArtifactRef | None,
+        package_artifact: ArtifactRef | None,
+        package_digest: str | None,
+        reason: str | None,
+    ) -> bool:
+        expected_package_digest = (
+            package_digest
+            if package_digest is not None
+            else package_artifact.digest
+            if package_artifact is not None
+            else None
+        )
+        return (
+            existing.outcome == outcome
+            and existing.terminal_evidence == terminal_evidence
+            and existing.package_artifact == package_artifact
+            and existing.package_digest == expected_package_digest
+            and existing.reason == reason
+        )
+
+    @staticmethod
+    def _boundary_inputs_match(
+        existing: MainLedgerBoundaryViolationEvidence,
+        violation_kind: str,
+        evidence_artifact: ArtifactRef,
+        expected_scheduler_sequence: int | None,
+    ) -> bool:
+        return (
+            existing.violation_kind == violation_kind
+            and existing.evidence_artifact == evidence_artifact
+            and (
+                expected_scheduler_sequence is None
+                or existing.expected_scheduler_sequence == expected_scheduler_sequence
+            )
+        )
+
+    def _derive_boundary_reset(
+        self,
+        active: MainLedgerActivation,
+        evidence: MainLedgerBoundaryViolationEvidence,
+        state: MainLedgerAccumulatorState,
+    ) -> MainLedgerBoundaryResetTransition:
+        if state.threshold_complete:
+            raise MainGraduationLedgerJournalError(
+                "boundary reset cannot erase threshold completion"
+            )
+        if evidence.current_state_digest != state.state_digest:
+            raise MainGraduationLedgerJournalError(
+                "boundary evidence predecessor differs from current state"
+            )
+        result = self._boundary_state(state)
+        values: dict[str, Any] = {
+            "activation_digest": active.activation_digest,
+            "prior_state": state,
+            "prior_state_digest": state.state_digest,
+            "violation": evidence,
+            "resulting_state": result,
+            "resulting_state_digest": result.state_digest,
+        }
+        return MainLedgerBoundaryResetTransition.model_validate(
+            {
+                **values,
+                "transition_digest": self._digest_model(
+                    MainLedgerBoundaryResetTransition, values, "transition_digest"
+                ),
+            }
+        )
 
     def _find_submission(self, identity: str | int) -> MainLedgerSubmissionEnvelope:
         loaded = (
@@ -575,6 +750,26 @@ class MainGraduationLedgerService:
         return loaded[0]
 
     def _current_state(self, active: MainLedgerActivation) -> MainLedgerAccumulatorState:
+        if (
+            self._state_cache is not None
+            and self._state_cache.activation_digest == active.activation_digest
+        ):
+            # The cache only avoids replaying an immutable prefix.  Probe the
+            # next durable transition so a second service instance cannot
+            # leave this instance with a stale terminal-fence decision.
+            boundary = self._journal.read_boundary_reset(active.activation_digest)
+            if boundary is not None:
+                if boundary[0].prior_state == self._state_cache:
+                    self._state_cache = boundary[0].resulting_state
+                    return self._state_cache
+            elif self._state_cache.threshold_complete:
+                return self._state_cache
+            else:
+                next_transition = self._journal.read_transition(
+                    self._state_cache.last_scheduler_sequence + 1
+                )
+                if next_transition is None:
+                    return self._state_cache
         state = main_ledger_genesis_state(
             active.activation_digest, active.scheduler_sequence_watermark
         )
@@ -597,6 +792,7 @@ class MainGraduationLedgerService:
                     "boundary reset predecessor differs from state"
                 )
             state = boundary[0].resulting_state
+        self._state_cache = state
         return state
 
     @staticmethod
@@ -634,6 +830,10 @@ class MainGraduationLedgerService:
 
     @staticmethod
     def _boundary_state(prior: MainLedgerAccumulatorState) -> MainLedgerAccumulatorState:
+        if prior.threshold_complete:
+            raise MainGraduationLedgerJournalError(
+                "boundary reset cannot erase threshold completion"
+            )
         values = {
             **prior.model_dump(exclude={"state_digest"}),
             "streak": 0,
@@ -692,11 +892,11 @@ class MainGraduationLedgerService:
         if "paths" not in data or "classification" not in data or "risk_class" not in data:
             raise MainGraduationLedgerJournalError("classifier output lacks policy classification")
         data["path_manifest_digest"] = (
-            canonical_digest(data["paths"])
+            path_manifest_digest(data["paths"])
             if "path_manifest_digest" not in data
             else data["path_manifest_digest"]
         )
-        if data["path_manifest_digest"] != canonical_digest(data["paths"]):
+        if data["path_manifest_digest"] != path_manifest_digest(data["paths"]):
             raise MainGraduationLedgerJournalError("classifier path manifest is not exact")
         data["empty"] = len(data["paths"]) == 0
         data["ordinary"] = data["risk_class"] == "ordinary"
