@@ -1,7 +1,7 @@
 """Narrow hosted capability protocols for C5 terminal rollback evidence.
 
 These protocols intentionally expose only authenticated observation and the
-two exact cleanup mutations.  They do not include a main-ref writer, force
+single exact rollback-candidate cleanup mutation.  They do not include a main-ref writer, force
 update, reset, merge, or any other protected-main mutation.
 """
 

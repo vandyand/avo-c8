@@ -1939,7 +1939,9 @@ class MainRollbackCleanupIntent(MainBound):
 class MainRollbackCleanupReceipt(MainBound):
     """Create-once provider receipt for rollback candidate cleanup."""
 
-    schema_version: Literal[1] = 1
+    # v2 makes the no-dispatch replay branch truthful.  v1 incorrectly forced
+    # every already-absent result to claim that a mutation had been sent.
+    schema_version: Literal[2] = 2
     operation_id: Sha256Digest
     intent_digest: Sha256Digest
     authorization_digest: Sha256Digest
@@ -1948,7 +1950,7 @@ class MainRollbackCleanupReceipt(MainBound):
     pull_request_number: StrictInt = Field(gt=0)
     pull_request_url: NonEmptyString
     outcome: Literal[
-        "applied", "already_applied", "ambiguous", "reconciliation_required", "invalid"
+        "applied", "already_absent", "ambiguous", "reconciliation_required", "invalid"
     ]
     dispatch_started: StrictBool
     response_digest: Sha256Digest
@@ -1960,12 +1962,13 @@ class MainRollbackCleanupReceipt(MainBound):
 
     @model_validator(mode="after")
     def validate_cleanup_receipt(self) -> MainRollbackCleanupReceipt:
-        if (
-            self.outcome in {"applied", "already_applied", "ambiguous", "reconciliation_required"}
-            and not self.dispatch_started
-        ):
-            raise ValueError("cleanup outcome requires a dispatched request")
-        if self.outcome == "invalid" and self.dispatch_started:
+        if self.outcome in {
+            "applied",
+            "ambiguous",
+            "reconciliation_required",
+        } and not self.dispatch_started:
+            raise ValueError("cleanup mutation outcome requires a dispatched request")
+        if self.outcome in {"already_absent", "invalid"} and self.dispatch_started:
             raise ValueError("invalid cleanup cannot claim dispatch")
         if self.receipt_digest != canonical_digest(
             self.model_dump(exclude={"receipt_digest"}, mode="json")
@@ -1977,7 +1980,7 @@ class MainRollbackCleanupReceipt(MainBound):
 class MainRollbackCleanupObservation(MainBound):
     """Read-only provider observation resolving cleanup idempotency/ambiguity."""
 
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     operation_id: Sha256Digest
     intent_digest: Sha256Digest
     receipt_digest: Sha256Digest
@@ -1988,6 +1991,11 @@ class MainRollbackCleanupObservation(MainBound):
     outcome: Literal["absent", "already_absent", "present"]
     provider_identity: NonEmptyString
     provider_api_version: NonEmptyString
+    observer_identity: NonEmptyString
+    observer_api_version: NonEmptyString
+    candidate_ref_absent: StrictBool
+    pull_request_state: Literal["absent", "open", "closed"]
+    pull_request_merged: StrictBool | None
     observed_at: datetime
     observation_digest: Sha256Digest
     deploy_performed: Literal[False] = False
@@ -1996,6 +2004,16 @@ class MainRollbackCleanupObservation(MainBound):
 
     @model_validator(mode="after")
     def validate_cleanup_observation(self) -> MainRollbackCleanupObservation:
+        if self.observer_identity == self.provider_identity:
+            raise ValueError("cleanup observer principal must differ from mutator principal")
+        if self.outcome in {"absent", "already_absent"} and (
+            not self.candidate_ref_absent
+            or self.pull_request_state not in {"absent", "closed"}
+            or (self.pull_request_state == "closed" and self.pull_request_merged is not True)
+        ):
+            raise ValueError("absent cleanup observation requires exact ref/merged PR absence")
+        if self.pull_request_state == "absent" and self.pull_request_merged is not None:
+            raise ValueError("absent pull request cannot have merged state")
         if self.observation_digest != canonical_digest(
             self.model_dump(exclude={"observation_digest"}, mode="json")
         ):
@@ -2162,7 +2180,9 @@ MainRollbackTerminalCleanupEvidence = MainRollbackCleanupTerminalEvidence
 class MainRollbackCompletionPackage(MainBound):
     """Content-addressed terminal closure for one rollback attempt."""
 
-    schema_version: Literal[3] = 3
+    # Cleanup receipt/observation gained new terminal-state and observer
+    # bindings; retain v3 as an immutable historical wire.
+    schema_version: Literal[4] = 4
     operation_id: Sha256Digest
     composition_id: Sha256Digest
     composition_artifact_digest: Sha256Digest
@@ -2323,7 +2343,7 @@ class MainRollbackCompletionPackage(MainBound):
             or self.cleanup_receipt.authorization_digest
             != self.cleanup_intent.authorization_digest
             or self.cleanup_receipt.outcome
-            not in {"applied", "already_applied", "ambiguous", "reconciliation_required"}
+            not in {"applied", "already_absent", "ambiguous", "reconciliation_required"}
             or self.cleanup_terminal.candidate_ref_absent is not True
             or self.cleanup_terminal.pull_request_state not in {"absent", "closed"}
             or self.cleanup_terminal.cleanup_intent_digest != self.cleanup_intent.intent_digest

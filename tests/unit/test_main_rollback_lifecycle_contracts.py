@@ -327,6 +327,11 @@ def _cleanup_observation(
         "outcome": "absent",
         "provider_identity": "github",
         "provider_api_version": "v1",
+        "observer_identity": "read-only-observer",
+        "observer_api_version": "v1",
+        "candidate_ref_absent": True,
+        "pull_request_state": "closed",
+        "pull_request_merged": True,
         "observed_at": NOW + timedelta(minutes=6),
     }
     return _signed(MainRollbackCleanupObservation, values, "observation_digest")

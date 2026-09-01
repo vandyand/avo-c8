@@ -319,7 +319,15 @@ class GitHubMainGraduationAdapter:
             or not provider_identity.strip()
         ):
             raise ValueError("protected-main check configuration is invalid")
-        if observer_principal is not None and id(observer_principal) in {id(p) for p in principals}:
+        principal_keys = {
+            (p.identity, p.app_id, p.isolation_digest)
+            for p in principals
+        }
+        if observer_principal is not None and (
+            observer_principal.identity,
+            observer_principal.app_id,
+            observer_principal.isolation_digest,
+        ) in principal_keys:
             raise ValueError("observer requires a distinct principal binding")
         if rollback_cleanup_transport is not None and cleanup_transport is not None:
             raise ValueError("rollback cleanup transport was supplied twice")
@@ -333,9 +341,11 @@ class GitHubMainGraduationAdapter:
             id(item) for item in transports
         }:
             raise ValueError("rollback cleanup requires a distinct transport")
-        if rollback_cleanup_principal is not None and id(rollback_cleanup_principal) in {
-            id(item) for item in principals
-        }:
+        if rollback_cleanup_principal is not None and (
+            rollback_cleanup_principal.identity,
+            rollback_cleanup_principal.app_id,
+            rollback_cleanup_principal.isolation_digest,
+        ) in principal_keys:
             raise ValueError("rollback cleanup requires a distinct principal binding")
         if rollback_cleanup_principal is not None and observer_principal is not None and (
             rollback_cleanup_principal.identity,
@@ -2047,6 +2057,12 @@ class GitHubMainGraduationAdapter:
         )
         return cls.model_validate(payload)
 
+    def _rollback_now(self) -> datetime:
+        now = self._trusted_clock()
+        if not isinstance(now, datetime) or now.tzinfo is None:
+            raise GitHubMainGraduationError("trusted clock returned a naive or malformed time")
+        return now.astimezone(UTC)
+
     def observe_rollback_post_state(
         self,
         result: MainRollbackResultReceipt,
@@ -2130,7 +2146,7 @@ class GitHubMainGraduationAdapter:
                 "response_digest": canonical_digest(
                     {"main_ref": ref_raw, "commit": commit_raw}
                 ),
-                "observed_at": datetime.now(UTC),
+                "observed_at": self._rollback_now(),
             },
             "observation_digest",
         )
@@ -2171,7 +2187,7 @@ class GitHubMainGraduationAdapter:
             raise _Precondition("rollback candidate ref identity differs")
         return True
 
-    def _cleanup_pr(self, intent: MainRollbackCleanupIntent) -> str:
+    def _cleanup_pr(self, intent: MainRollbackCleanupIntent) -> tuple[str, bool]:
         try:
             raw = _obj(
                 self._read(
@@ -2183,7 +2199,10 @@ class GitHubMainGraduationAdapter:
             )
         except _Precondition as exc:
             if exc.status == 404:
-                return "absent"
+                raise _Precondition(
+                    "rollback pull request must exist as the exact merged and closed PR",
+                    status=404,
+                ) from exc
             raise
         number = _int(raw, "number", "rollback pull request")
         url = _str(raw, "html_url", "rollback pull request")
@@ -2218,6 +2237,37 @@ class GitHubMainGraduationAdapter:
         merged = raw.get("merged")
         if not isinstance(merged, bool):
             raise _Precondition("rollback pull request merged state is malformed")
+        return state, merged
+
+    def _cleanup_state(self, intent: MainRollbackCleanupIntent) -> dict[str, Any]:
+        ref_present = self._cleanup_ref(intent)
+        pr_state, pr_merged = self._cleanup_pr(intent)
+        return {
+            "candidate_ref_absent": not ref_present,
+            "pull_request_state": pr_state,
+            "pull_request_merged": pr_merged if pr_state != "absent" else None,
+        }
+
+    def _cleanup_pre_state(self, intent: MainRollbackCleanupIntent) -> dict[str, Any]:
+        """Read PR gates first, then ref SHA as the final pre-delete observation."""
+        pr_state, pr_merged = self._cleanup_pr(intent)
+        ref_present = self._cleanup_ref(intent)
+        return {
+            "candidate_ref_absent": not ref_present,
+            "pull_request_state": pr_state,
+            "pull_request_merged": pr_merged,
+        }
+
+    def _cleanup_post_state(self, intent: MainRollbackCleanupIntent) -> dict[str, Any]:
+        state = self._cleanup_state(intent)
+        if (
+            not state["candidate_ref_absent"]
+            or state["pull_request_state"] != "closed"
+            or state["pull_request_merged"] is not True
+        ):
+            raise GitHubMainGraduationAmbiguous(
+                "rollback cleanup post-state is not exact absence"
+            )
         return state
 
     def _cleanup_receipt(
@@ -2243,104 +2293,50 @@ class GitHubMainGraduationAdapter:
                 "outcome": outcome,
                 "dispatch_started": dispatch,
                 "response_digest": canonical_digest(response),
-                "observed_at": datetime.now(UTC),
+                "observed_at": self._rollback_now(),
             },
             "receipt_digest",
         )
 
     def cleanup_rollback(self, intent: MainRollbackCleanupIntent) -> MainRollbackCleanupReceipt:
-        """Delete the exact rollback ref and close the exact same-repository PR."""
+        """Delete the exact rollback ref after the exact PR is merged and closed."""
         intent = self._cleanup_intent(intent)
         dispatch_started = False
         try:
             if "cleanup" not in self._transports or self._principals.get("cleanup") is None:
                 raise ValueError("rollback cleanup capability is unavailable")
-            ref_present = self._cleanup_ref(intent)
-            pr_state = self._cleanup_pr(intent)
-            if not ref_present and pr_state in {"absent", "closed"}:
+            state = self._cleanup_pre_state(intent)
+            if not state["candidate_ref_absent"] and (
+                state["pull_request_state"] != "closed"
+                or state["pull_request_merged"] is not True
+            ):
+                raise _Precondition("rollback pull request must already be merged and closed")
+            if state["candidate_ref_absent"]:
+                if (
+                    state["pull_request_state"] != "closed"
+                    or state["pull_request_merged"] is not True
+                ):
+                    raise _Precondition("rollback pull request is open or unmerged")
                 return self._cleanup_receipt(
                     intent,
-                    outcome="already_applied",
-                    response={"candidate_ref": "absent", "pull_request": pr_state},
-                    dispatch=True,
+                    outcome="already_absent",
+                    response=state,
+                    dispatch=False,
                 )
-            actions: list[str] = []
-            responses: list[Any] = []
-            if ref_present:
-                path = self.repository_path + "/git/refs/heads/" + quote(
-                    intent.candidate_ref.removeprefix("refs/heads/"), safe=""
+            path = self.repository_path + "/git/refs/heads/" + quote(
+                intent.candidate_ref.removeprefix("refs/heads/"), safe=""
+            )
+            dispatch_started = True
+            status, payload = self._cleanup_dispatch("DELETE", path, None)
+            if status != 204 or payload not in (None, {}):
+                return self._cleanup_receipt(
+                    intent, outcome="ambiguous", response=payload, dispatch=True
                 )
-                dispatch_started = True
-                status, payload = self._cleanup_dispatch("DELETE", path, None)
-                actions.append("delete_ref")
-                responses.append(payload)
-                if status != 204 or payload not in (None, {}):
-                    return self._cleanup_receipt(
-                        intent, outcome="ambiguous", response=responses, dispatch=True
-                    )
-            if pr_state == "open":
-                path = self.repository_path + f"/pulls/{intent.pull_request_number}"
-                dispatch_started = True
-                status, payload = self._cleanup_dispatch("PATCH", path, {"state": "closed"})
-                actions.append("close_pull_request")
-                responses.append(payload)
-                if not 200 <= status < 300:
-                    return self._cleanup_receipt(
-                        intent, outcome="ambiguous", response=responses, dispatch=True
-                    )
-                parsed = _obj(payload, "rollback pull request close response")
-                if (
-                    _int(parsed, "number", "rollback pull request close response")
-                    != intent.pull_request_number
-                    or _str(parsed, "html_url", "rollback pull request close response")
-                    != intent.pull_request_url
-                    or _str(parsed, "state", "rollback pull request close response").casefold()
-                    != "closed"
-                ):
-                    return self._cleanup_receipt(
-                        intent, outcome="ambiguous", response=responses, dispatch=True
-                    )
-                base = _nested(parsed, "base", "rollback pull request close response")
-                head = _nested(parsed, "head", "rollback pull request close response")
-                if (
-                    _str(
-                        _nested(base, "repo", "rollback pull request close response"),
-                        "full_name",
-                        "rollback pull request close response",
-                    ).casefold()
-                    != self.repository_name.casefold()
-                    or (
-                        _str(
-                            _nested(head, "repo", "rollback pull request close response"),
-                            "full_name",
-                            "rollback pull request close response",
-                        ).casefold()
-                        != self.repository_name.casefold()
-                    )
-                    or _str(base, "ref", "rollback pull request close response")
-                    not in {"main", "refs/heads/main"}
-                    or (
-                        _str(head, "ref", "rollback pull request close response")
-                        if _str(head, "ref", "rollback pull request close response").startswith(
-                            "refs/"
-                        )
-                        else "refs/heads/"
-                        + _str(head, "ref", "rollback pull request close response")
-                    )
-                    != intent.candidate_ref
-                    or _git(
-                        _str(head, "sha", "rollback pull request close response"),
-                        "rollback pull request close response",
-                    )
-                    != intent.candidate_commit
-                ):
-                    return self._cleanup_receipt(
-                        intent, outcome="ambiguous", response=responses, dispatch=True
-                    )
+            post_state = self._cleanup_post_state(intent)
             return self._cleanup_receipt(
                 intent,
                 outcome="applied",
-                response={"actions": actions, "responses": responses},
+                response={"delete": payload, "post_state": post_state},
                 dispatch=True,
             )
         except (GitHubMainGraduationAmbiguous, GitHubTransportError, GitHubRejected) as exc:
@@ -2369,7 +2365,7 @@ class GitHubMainGraduationAdapter:
             )
         except Exception as exc:
             raise GitHubMainGraduationAmbiguous("rollback cleanup transport is ambiguous") from exc
-        if not isinstance(status, int):
+        if isinstance(status, bool) or not isinstance(status, int):
             raise GitHubMainGraduationAmbiguous("rollback cleanup status is malformed")
         return status, payload
 
@@ -2388,9 +2384,12 @@ class GitHubMainGraduationAdapter:
             or receipt.pull_request_url != intent.pull_request_url
         ):
             raise ValueError("rollback cleanup receipt is not bound to intent")
-        ref_present = self._cleanup_ref(intent)
-        pr_state = self._cleanup_pr(intent)
-        outcome = "present" if ref_present or pr_state == "open" else "absent"
+        state = self._cleanup_state(intent)
+        outcome = "absent" if (
+            state["candidate_ref_absent"]
+            and state["pull_request_state"] == "closed"
+            and state["pull_request_merged"] is True
+        ) else "present"
         return self._rollback_record(
             MainRollbackCleanupObservation,
             {
@@ -2406,7 +2405,12 @@ class GitHubMainGraduationAdapter:
                 "outcome": outcome,
                 "provider_identity": intent.provider_identity,
                 "provider_api_version": intent.provider_api_version,
-                "observed_at": datetime.now(UTC),
+                "observer_identity": cast(
+                    GitHubPrincipalBinding, self._principals["observer"]
+                ).identity,
+                "observer_api_version": self.provider_api_version,
+                **state,
+                "observed_at": self._rollback_now(),
             },
             "observation_digest",
         )

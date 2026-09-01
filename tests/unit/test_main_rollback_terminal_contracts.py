@@ -167,7 +167,10 @@ def test_ambiguous_cleanup_closes_only_with_absence_observation() -> None:
     observation = _cleanup_observation(cleanup, receipt)
     observation_values = observation.model_dump(mode="json")
     observation_values.update(
-        {"provider_identity": "read-only-cleanup-observer", "observation_digest": D}
+        {
+            "observer_identity": "read-only-cleanup-observer",
+            "observation_digest": D,
+        }
     )
     observation = _signed(type(observation), observation_values, "observation_digest")
     terminal_values = {
@@ -184,8 +187,8 @@ def test_ambiguous_cleanup_closes_only_with_absence_observation() -> None:
         "candidate_ref_absent": True,
         "pull_request_state": "closed",
         "cleanup_observation_digest": observation.observation_digest,
-        "provider_identity": observation.provider_identity,
-        "provider_api_version": observation.provider_api_version,
+        "provider_identity": observation.observer_identity,
+        "provider_api_version": observation.observer_api_version,
         "observed_at": NOW + timedelta(minutes=7),
     }
     terminal = _signed(MainRollbackCleanupTerminalEvidence, terminal_values, "evidence_digest")
@@ -272,7 +275,7 @@ def test_terminal_contracts_reject_abandoned_v1_wires_and_round_trip_v2() -> Non
         MainRollbackCleanupTerminalEvidence.model_validate_json(canonical_bytes(terminal))
     ) == canonical_bytes(terminal)
 
-    assert MainRollbackCompletionPackage.model_fields["schema_version"].default == 3
+    assert MainRollbackCompletionPackage.model_fields["schema_version"].default == 4
     with pytest.raises(ValidationError, match="schema_version"):
         MainRollbackCompletionPackage.model_validate({"schema_version": 1})
 
@@ -331,7 +334,7 @@ def test_ambiguous_cleanup_terminal_filesystem_restart_and_observer_identity(
     observation_values = _cleanup_observation(cleanup, receipt).model_dump(mode="json")
     observation_values.update(
         {
-            "provider_identity": "independent-cleanup-observer",
+            "observer_identity": "independent-cleanup-observer",
             "observation_digest": D,
         }
     )
@@ -356,8 +359,8 @@ def test_ambiguous_cleanup_terminal_filesystem_restart_and_observer_identity(
             "candidate_ref_absent": True,
             "pull_request_state": "closed",
             "cleanup_observation_digest": observation.observation_digest,
-            "provider_identity": observation.provider_identity,
-            "provider_api_version": observation.provider_api_version,
+            "provider_identity": observation.observer_identity,
+            "provider_api_version": observation.observer_api_version,
             "observed_at": NOW + timedelta(minutes=7),
         },
         "evidence_digest",

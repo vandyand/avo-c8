@@ -14,7 +14,7 @@ import hashlib
 import hmac
 import json
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal, cast
@@ -290,6 +290,7 @@ class ProtectedMainProvider:
         token: str | None = None,
         transport: JsonTransport | None = None,
         webhook_secret: str | None = None,
+        trusted_clock: Callable[[], datetime] | None = None,
     ) -> None:
         owner, repo = _repository_binding(owner, repo)
         if repository_digest != github_repository_digest(owner, repo):
@@ -329,7 +330,14 @@ class ProtectedMainProvider:
         # Credentials are process-local verification material only.  They are
         # never copied into C1 evidence, manifests, or receipts.
         self._webhook_secret = webhook_secret
+        self._trusted_clock = trusted_clock or (lambda: datetime.now(UTC))
         self._seen_webhook_deliveries: set[str] = set()
+
+    def _trusted_now(self) -> datetime:
+        now = self._trusted_clock()
+        if type(now) is not datetime or now.tzinfo is None:
+            raise ProtectedMainProviderError("trusted clock returned a naive or malformed time")
+        return now.astimezone(UTC)
 
     @staticmethod
     def _missing_transport(
@@ -377,6 +385,8 @@ class ProtectedMainProvider:
             raise ProtectedMainProviderError(str(exc)) from exc
         except Exception as exc:
             raise ProtectedMainProviderError("provider transport failure") from exc
+        if type(status) is not int:
+            raise ProtectedMainProviderError("provider returned malformed status")
         if status >= 400:
             raise ProtectedMainRejected(f"provider rejected observation ({status})")
         if status < 200 or status >= 300:
@@ -408,6 +418,8 @@ class ProtectedMainProvider:
             raise ProtectedMainProviderError(str(exc)) from exc
         except Exception as exc:
             raise ProtectedMainProviderError("provider transport failure") from exc
+        if type(status) is not int:
+            raise ProtectedMainProviderError("provider returned malformed status")
         if status >= 400:
             raise ProtectedMainRejected(f"provider rejected observation ({status})")
         if status < 200 or status >= 300:
@@ -647,10 +659,10 @@ class ProtectedMainProvider:
             "observer_identity": self.provider_identity,
             "observer_api_version": self.provider_api_version,
             "response_digest": _json_digest({"main_ref": ref_raw, "commit": commit_raw}),
-            "observed_at": datetime.now(UTC),
+            "observed_at": self._trusted_now(),
             "observation_digest": "sha256:" + "0" * 64,
         }
-        probe = MainRollbackPostStateObservation.model_construct(**values)
+        probe = cast(Any, MainRollbackPostStateObservation).model_construct(**values)
         values["observation_digest"] = _json_digest(
             probe.model_dump(exclude={"observation_digest"}, mode="json")
         )
