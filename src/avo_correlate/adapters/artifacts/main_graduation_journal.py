@@ -374,6 +374,10 @@ class MainGraduationJournal:
         self._composition_repository_digest = repository_digest
         self._composition_base_reader = base_reader
         self._phase_a_authority_verifier = phase_a_authority_verifier
+        # Cache validated models per journal instance. Every hit still reads
+        # and hashes the content-addressed artifact, preserving same-process
+        # tamper detection; a restarted journal starts with an empty cache.
+        self._validated_records: dict[tuple[str, str], tuple[StrictModel, ArtifactRef]] = {}
         if self._policy_epoch is not None:
             _check_digest(self._policy_epoch)
 
@@ -541,6 +545,14 @@ class MainGraduationJournal:
             ):
                 raise ValueError("main graduation artifact metadata mismatch")
             data = self._store.read_bytes(reference)
+            cached = self._validated_records.get((kind, key))
+            if cached is not None and _same_artifact_ref(cached[1], reference):
+                # ``read_bytes`` verifies the complete content-addressed
+                # object on every hit. The cached model was already parsed and
+                # recursively validated against this immutable digest.
+                if kind == "completion":
+                    self._verify_children(cast(MainCompletionPackage, cached[0]))
+                return cached[0], reference
             parsed = json.loads(data.decode("utf-8"), object_pairs_hook=_strict_pairs)
             if canonical_bytes(parsed) != data:
                 raise ValueError("main graduation record is not canonical JSON")
@@ -593,6 +605,7 @@ class MainGraduationJournal:
                 raise MainGraduationRecordConflictError(
                     "main graduation identity does not match index"
                 )
+            self._validated_records[(kind, key)] = (record, reference)
             return record, reference
         except MainGraduationRecordConflictError:
             raise
@@ -867,6 +880,35 @@ class MainGraduationJournal:
         except (OSError, ValueError, TypeError, UnicodeError, json.JSONDecodeError) as exc:
             raise MainGraduationJournalError(f"{kind} index is malformed") from exc
 
+    def _validate_cached_phase_record(self, kind: str, record: StrictModel) -> None:
+        """Recheck sidecar/authority bindings without reopening the full chain.
+
+        The immutable artifact digest is checked by the caller. These direct
+        checks cover the phase-A indexes and injected authority hooks that are
+        not represented in the record bytes, while predecessor records remain
+        individually protected by their own content-addressed cache entries.
+        """
+        if kind == "mutation-intent":
+            self._assert_stage_identity(cast(MainMutationIntent, record))
+        elif kind == "unresolved-mutation-fence":
+            self._assert_target_fence(cast(MainUnresolvedMutationFence, record))
+        elif kind == "release-claim":
+            self._assert_release_claim(cast(MainReleaseClaim, record))
+        elif kind == "mutation-receipt":
+            receipt = cast(MainMutationReceipt, record)
+            self._assert_phase_identity(kind, receipt.intent_digest, receipt)
+            self._verify_mutation_receipt(receipt, self._source_intent(receipt))
+        elif kind == "mutation-fence-resolution":
+            resolution = cast(MainMutationFenceResolution, record)
+            self._assert_phase_identity(kind, resolution.fence_digest, resolution)
+            self._verify_fence_authority(resolution, self._source_receipt(resolution))
+        elif kind == "lease-evidence-record":
+            self._assert_target_lease(cast(MainLeaseEvidenceRecord, record))
+            self._verify_lease_authority(cast(MainLeaseEvidenceRecord, record))
+        elif kind == "claimed-release-transition":
+            transition = cast(MainClaimedReleaseTransitionReceipt, record)
+            self._assert_phase_identity(kind, transition.claim_digest, transition)
+
     def _read_phase_a(self, kind: str, key: str) -> tuple[StrictModel, ArtifactRef] | None:
         path = self._phase_local_path(kind, key)
         if not path.is_file():
@@ -879,6 +921,13 @@ class MainGraduationJournal:
                 or _digest_bytes(data) != envelope.reference.digest
             ):
                 raise ValueError("phase-A artifact hash mismatch")
+            cached = self._validated_records.get((kind, key))
+            if cached is not None and _same_artifact_ref(cached[1], envelope.reference):
+                # The artifact store has verified the immutable bytes above;
+                # reuse only the model whose full predecessor chain was
+                # validated for this exact content-addressed reference.
+                self._validate_cached_phase_record(kind, cached[0])
+                return cached[0], envelope.reference
             record: StrictModel = _MODELS[kind].model_validate_json(data)
             if _operation_id(record) != envelope.operation_id:
                 raise MainGraduationRecordConflictError("phase-A operation identity differs")
@@ -905,6 +954,7 @@ class MainGraduationJournal:
             elif kind == "claimed-release-transition":
                 transition = cast(MainClaimedReleaseTransitionReceipt, record)
                 self._assert_phase_identity(kind, transition.claim_digest, transition)
+            self._validated_records[(kind, key)] = (record, envelope.reference)
             return record, envelope.reference
         except MainGraduationRecordConflictError:
             raise

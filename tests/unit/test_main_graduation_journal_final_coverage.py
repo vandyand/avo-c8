@@ -109,6 +109,39 @@ def _chain(journal: MainGraduationJournal) -> tuple[Any, dict[str, Any]]:
     return package, records
 
 
+def test_repeated_read_uses_validated_cache_but_still_detects_deleted_artifact(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Repeated parent reads stay bounded without weakening content checks."""
+    journal = MainGraduationJournal(tmp_path)
+    started = EligibilityLedgerStarted(
+        activation_digest=D,
+        repository_digest=R,
+        controller_config_digest=D2,
+        scheduler_sequence_watermark=0,
+        streak=0,
+    )
+    reference = journal.record_ledger_started(started)
+    original = EligibilityLedgerStarted.model_validate
+    validations = 0
+
+    def counted(cls: Any, value: Any, *args: Any, **kwargs: Any) -> Any:
+        nonlocal validations
+        validations += 1
+        return original(value, *args, **kwargs)
+
+    monkeypatch.setattr(
+        EligibilityLedgerStarted, "model_validate", classmethod(counted)
+    )
+    for _ in range(100):
+        assert journal.read_ledger_started(D) == (started, reference)
+    assert validations == 1
+
+    journal.delete_artifact(reference.digest)
+    with pytest.raises(MainGraduationJournalError, match="malformed or unverifiable"):
+        journal.read_ledger_started(D)
+
+
 def test_constructor_and_key_guards_fail_closed(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="max_record_bytes"):
         MainGraduationJournal(tmp_path / "zero", max_record_bytes=0)
