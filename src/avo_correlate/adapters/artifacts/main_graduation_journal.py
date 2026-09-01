@@ -4134,8 +4134,8 @@ class MainGraduationJournal:
             raise MainGraduationJournalError(
                 "rollback post-state dependencies have unexpected record types"
             )
-        attempt = cast(MainRollbackAttemptAuthority, attempt_prior[0])
-        result = cast(MainRollbackResultReceipt, result_prior[0])
+        attempt = attempt_prior[0]
+        result = result_prior[0]
         if (
             observation.source_operation_id != attempt.source_operation_id
             or observation.attempt_manifest_digest != attempt.manifest_digest
@@ -4168,8 +4168,8 @@ class MainGraduationJournal:
             raise MainGraduationJournalError(
                 "rollback cleanup dependencies have unexpected record types"
             )
-        intent = cast(MainRollbackCleanupIntent, intent_prior[0])
-        receipt = cast(MainRollbackCleanupReceipt, receipt_prior[0])
+        intent = intent_prior[0]
+        receipt = receipt_prior[0]
         if (
             evidence.cleanup_intent_digest != intent.intent_digest
             or evidence.cleanup_receipt_digest != receipt.receipt_digest
@@ -4198,7 +4198,7 @@ class MainGraduationJournal:
                 raise MainGraduationJournalError(
                     "rollback cleanup observation has unexpected record type"
                 )
-            observation = cast(MainRollbackCleanupObservation, observation_prior[0])
+            observation = observation_prior[0]
             if (
                 evidence.cleanup_observation_digest != observation.observation_digest
                 or observation.outcome not in {"absent", "already_absent"}
