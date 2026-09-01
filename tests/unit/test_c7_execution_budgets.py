@@ -3,6 +3,10 @@
 
 from __future__ import annotations
 
+import importlib.metadata
+import importlib.util
+import json
+import shutil
 import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
@@ -83,16 +87,35 @@ def test_identity_probe_uses_short_finite_timeout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     launcher = Path(sys.executable).resolve()
+    pytest_distribution = importlib.metadata.distribution("pytest")
+    record = next(item for item in pytest_distribution.files or () if item.name == "RECORD")
+    pytest_origin = importlib.util.find_spec("pytest")
+    pytest_launcher = shutil.which("pytest")
+    assert pytest_origin is not None and pytest_origin.origin
+    assert pytest_launcher
     calls: list[dict[str, Any]] = []
 
     def runner(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         calls.append(kwargs)
-        payload = (
-            '{"implementation":"CPython","plugins":[],"pytest":"'
-            + str(launcher).replace("\\", "\\\\")
-            + '","pytest_version":"1","python":"'
-            + str(launcher).replace("\\", "\\\\")
-            + '","version":"3"}'
+        payload = json.dumps(
+            {
+                "implementation": "CPython",
+                "plugins": [],
+                "plugin_distributions": [],
+                "pytest": pytest_origin.origin,
+                "pytest_distribution": {
+                    "name": pytest_distribution.name,
+                    "version": pytest_distribution.version,
+                    "root": str(pytest_distribution.locate_file("")),
+                    "record": record.as_posix(),
+                },
+                "pytest_launcher": pytest_launcher,
+                "pytest_version": pytest_distribution.version,
+                "python": str(launcher),
+                "runtime_root": sys.prefix,
+                "version": "3",
+            },
+            sort_keys=True,
         )
         return subprocess.CompletedProcess(argv, 0, stdout=payload, stderr="")
 
