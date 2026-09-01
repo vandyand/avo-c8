@@ -1214,7 +1214,7 @@ def test_terminal_intent_replay_cannot_reopen_reservation(tmp_path: Path) -> Non
     journal = _journal(tmp_path)
     _disable_phase_prerequisites(journal)
     intent = _intent()
-    journal.record_mutation_intent(intent)
+    original = journal.record_mutation_intent(intent)
     terminal = _rejected_receipt(intent)
     journal.record_mutation_receipt(terminal)
     active = journal._target_fence_path(intent)  # pyright: ignore[reportPrivateUsage]
@@ -1222,8 +1222,9 @@ def test_terminal_intent_replay_cannot_reopen_reservation(tmp_path: Path) -> Non
 
     restarted = _journal(tmp_path)
     _disable_phase_prerequisites(restarted)
-    with pytest.raises(MainGraduationRecordConflictError, match="dispatch is prohibited"):
-        restarted.record_mutation_intent(intent)
+    # A completion replay may re-record the exact durable intent after its
+    # terminal receipt.  It is idempotent and still must not reopen the fence.
+    assert restarted.record_mutation_intent(intent) == original
     assert not active.exists()
 
 

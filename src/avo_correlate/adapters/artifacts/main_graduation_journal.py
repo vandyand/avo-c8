@@ -1209,6 +1209,13 @@ class MainGraduationJournal:
         prior_receipt = self._read_receipt_for_intent(intent.intent_digest)
         if prior_receipt is not None:
             if prior_receipt[0].outcome in {"applied", "already_applied", "rejected"}:
+                # Completion recovery records the already durable intent again
+                # after a successful provider call.  Treat that exact replay
+                # as idempotent, but keep the terminal receipt fail-closed for
+                # any caller that cannot prove the same durable intent.
+                durable = self._read("mutation-intent", intent.intent_digest)
+                if durable is not None and durable[0] == intent:
+                    return
                 raise MainGraduationRecordConflictError(
                     "mutation intent already has a terminal receipt; dispatch is prohibited"
                 )
