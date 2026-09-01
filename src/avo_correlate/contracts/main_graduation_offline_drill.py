@@ -9,12 +9,27 @@ controller-owned verifier.
 
 from __future__ import annotations
 
+from datetime import datetime
+from enum import StrEnum
 from types import MappingProxyType
 from typing import Annotated, Literal
 
-from pydantic import AliasChoices, Field, StrictBool, StrictInt, StringConstraints, model_validator
+from pydantic import (
+    AliasChoices,
+    Field,
+    StrictBool,
+    StrictInt,
+    StringConstraints,
+    field_validator,
+    model_validator,
+)
 
-from avo_correlate.contracts.base import ArtifactRef, Sha256Digest, StrictModel
+from avo_correlate.contracts.base import (
+    ArtifactRef,
+    Sha256Digest,
+    StrictModel,
+    require_aware_datetime,
+)
 from avo_correlate.domain.canonical import canonical_digest
 
 GitObject = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")]
@@ -140,6 +155,242 @@ DrillState = Literal[
 ]
 
 
+class MainGraduationOfflineEvidenceKind(StrEnum):
+    """Controller-defined native evidence namespaces (never substring matched)."""
+
+    C4_COMPLETION = "c4-completion"
+    C4_RECOVERY = "c4-recovery"
+    C5_ROLLBACK = "c5-rollback"
+    C5_CLEANUP = "c5-cleanup"
+    C6_LEDGER = "c6-ledger"
+    C6_BOUNDARY = "c6-boundary"
+    C6_THRESHOLD = "c6-threshold"
+    PROVIDER_ATTESTER = "provider-attester"
+    CONTROLLER_VERIFIER = "controller-verifier"
+    EXECUTION_AUTHORITY = "execution-authority"
+    EXECUTION_REPORT = "execution-report"
+
+
+OFFLINE_EVIDENCE_ROLE_MEDIA: MappingProxyType = MappingProxyType(
+    {
+        MainGraduationOfflineEvidenceKind.C4_COMPLETION: (
+            "c7-c4-completion",
+            "application/vnd.avo.c7.c4-completion+json",
+        ),
+        MainGraduationOfflineEvidenceKind.C4_RECOVERY: (
+            "c7-c4-recovery",
+            "application/vnd.avo.c7.c4-recovery+json",
+        ),
+        MainGraduationOfflineEvidenceKind.C5_ROLLBACK: (
+            "c7-c5-rollback",
+            "application/vnd.avo.c7.c5-rollback+json",
+        ),
+        MainGraduationOfflineEvidenceKind.C5_CLEANUP: (
+            "c7-c5-cleanup",
+            "application/vnd.avo.c7.c5-cleanup+json",
+        ),
+        MainGraduationOfflineEvidenceKind.C6_LEDGER: (
+            "c7-c6-ledger",
+            "application/vnd.avo.c7.c6-ledger+json",
+        ),
+        MainGraduationOfflineEvidenceKind.C6_BOUNDARY: (
+            "c7-c6-boundary",
+            "application/vnd.avo.c7.c6-boundary+json",
+        ),
+        MainGraduationOfflineEvidenceKind.C6_THRESHOLD: (
+            "c7-c6-threshold",
+            "application/vnd.avo.c7.c6-threshold+json",
+        ),
+        MainGraduationOfflineEvidenceKind.PROVIDER_ATTESTER: (
+            "c7-provider-attester",
+            "application/vnd.avo.c7.provider-attester+json",
+        ),
+        MainGraduationOfflineEvidenceKind.CONTROLLER_VERIFIER: (
+            "c7-controller-verifier",
+            "application/vnd.avo.c7.controller-verifier+json",
+        ),
+        MainGraduationOfflineEvidenceKind.EXECUTION_AUTHORITY: (
+            "c7-execution-authority",
+            "application/vnd.avo.c7.execution-authority+json",
+        ),
+        MainGraduationOfflineEvidenceKind.EXECUTION_REPORT: (
+            "c7-execution-report",
+            "application/vnd.avo.c7.execution-report+json",
+        ),
+    }
+)
+
+
+class MainGraduationOfflineEvidenceRef(StrictModel):
+    schema_version: Literal[1] = 1
+    kind: MainGraduationOfflineEvidenceKind
+    artifact: ArtifactRef
+
+    @model_validator(mode="after")
+    def validate_native_ref(self) -> MainGraduationOfflineEvidenceRef:
+        role, media_type = OFFLINE_EVIDENCE_ROLE_MEDIA[self.kind]
+        if self.artifact.role != role or self.artifact.media_type != media_type:
+            raise ValueError("native evidence role/media type is not allowed for its kind")
+        return self
+
+
+class MainGraduationOfflineExecutionNodeSpec(StrictModel):
+    schema_version: Literal[1] = 1
+    node_id: BoundedText
+    parameter_id: BoundedText
+    case_id: CaseId
+    vector_id: VectorId
+    expected_outcome: DrillOutcome
+    expected_state: DrillState
+
+
+def _frozen_node_specs() -> tuple[tuple[str, str, str, str], ...]:
+    return tuple(
+        (
+            f"c7::{case_id}::{vector_id}",
+            f"params::{case_id}::{vector_id}",
+            case_id,
+            vector_id,
+        )
+        for case_id in FROZEN_OFFLINE_DRILL_CASE_IDS
+        for vector_id in FROZEN_OFFLINE_DRILL_VECTOR_IDS[case_id]
+    )
+
+
+FROZEN_OFFLINE_EXECUTION_NODE_IDS = tuple(item[0] for item in _frozen_node_specs())
+FROZEN_OFFLINE_EXECUTION_PARAMETER_IDS = tuple(item[1] for item in _frozen_node_specs())
+
+
+class MainGraduationOfflineExecutionAuthority(StrictModel):
+    """Controller-owned authority manifest for one exact offline pytest run."""
+
+    schema_version: Literal[1] = 1
+    operation_id: Sha256Digest
+    authority_digest: Sha256Digest
+    controller_authority_digest: Sha256Digest
+    controller_authority_ref: BoundedText
+    issuer_identity: BoundedText
+    repository_digest: Sha256Digest
+    target_ref: Literal["refs/heads/main"] = "refs/heads/main"
+    source_commit: GitObject
+    source_tree: GitObject
+    source_tree_digest: Sha256Digest
+    protocol_digest: Sha256Digest
+    configuration_digest: Sha256Digest
+    policy_digest: Sha256Digest
+    activation_digest: Sha256Digest
+    lockfile_digest: Sha256Digest
+    interpreter_digest: Sha256Digest
+    pytest_digest: Sha256Digest
+    plugin_set_digest: Sha256Digest
+    toolchain_digest: Sha256Digest
+    argv: tuple[BoundedText, ...] = Field(min_length=1, max_length=32)
+    normalized_report_schema_digest: Sha256Digest
+    normalized_report_media_type: Literal[
+        "application/vnd.avo.c7.execution-report+json"
+    ] = "application/vnd.avo.c7.execution-report+json"
+    authorized_at: datetime
+    expires_at: datetime
+    nodes: tuple[MainGraduationOfflineExecutionNodeSpec, ...] = Field(
+        min_length=1, max_length=128
+    )
+
+    _aware_authorized = field_validator("authorized_at", "expires_at")(require_aware_datetime)
+
+    @model_validator(mode="after")
+    def validate_authority(self) -> MainGraduationOfflineExecutionAuthority:
+        if self.expires_at <= self.authorized_at:
+            raise ValueError("offline execution authority expiry must be after authorization")
+        expected = _frozen_node_specs()
+        actual = tuple((n.node_id, n.parameter_id, n.case_id, n.vector_id) for n in self.nodes)
+        if actual != expected or len({item[0] for item in actual}) != len(actual):
+            raise ValueError("authority nodes must exactly match the frozen case/vector matrix")
+        if self.authority_digest != _domain_digest(
+            "avo-004.7-c7/offline-execution-authority/v1",
+            self.model_dump(exclude={"authority_digest"}, mode="json"),
+        ):
+            raise ValueError("offline execution authority digest mismatch")
+        return self
+
+
+class MainGraduationOfflineNodeObservation(StrictModel):
+    schema_version: Literal[1] = 1
+    node_id: BoundedText = Field(validation_alias=AliasChoices("node_id", "nodeid"))
+    parameter_id: BoundedText
+    case_id: CaseId
+    vector_id: VectorId
+    collected: Literal[True] = True
+    outcome: DrillOutcome
+    exit_status: Literal[0] = 0
+    reason_code: Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9._-]{1,127}$")]
+    evidence_refs: tuple[MainGraduationOfflineEvidenceRef, ...] = Field(
+        min_length=1, max_length=16
+    )
+
+    @model_validator(mode="after")
+    def validate_observation(self) -> MainGraduationOfflineNodeObservation:
+        if (
+            self.node_id,
+            self.parameter_id,
+            self.case_id,
+            self.vector_id,
+        ) not in _frozen_node_specs():
+            raise ValueError("observation does not identify a frozen node")
+        if len({ref.artifact.digest for ref in self.evidence_refs}) != len(self.evidence_refs):
+            raise ValueError("node evidence refs must be unique")
+        return self
+
+
+class MainGraduationOfflineExecutionReport(StrictModel):
+    schema_version: Literal[1] = 1
+    operation_id: Sha256Digest
+    authority_digest: Sha256Digest
+    repository_digest: Sha256Digest
+    target_ref: Literal["refs/heads/main"] = "refs/heads/main"
+    source_commit: GitObject
+    source_tree: GitObject
+    source_tree_digest: Sha256Digest
+    protocol_digest: Sha256Digest
+    configuration_digest: Sha256Digest
+    policy_digest: Sha256Digest
+    activation_digest: Sha256Digest
+    lockfile_digest: Sha256Digest
+    interpreter_digest: Sha256Digest
+    pytest_digest: Sha256Digest
+    plugin_set_digest: Sha256Digest
+    toolchain_digest: Sha256Digest
+    argv: tuple[BoundedText, ...] = Field(min_length=1, max_length=32)
+    collection_count: StrictInt = Field(ge=1, le=128)
+    collected_node_ids: tuple[BoundedText, ...] = Field(min_length=1, max_length=128)
+    observations: tuple[MainGraduationOfflineNodeObservation, ...] = Field(
+        min_length=1, max_length=128
+    )
+    process_exit_code: Literal[0] = 0
+    executed_at: datetime
+    report_digest: Sha256Digest
+
+    _aware_executed = field_validator("executed_at")(require_aware_datetime)
+
+    @model_validator(mode="after")
+    def validate_report(self) -> MainGraduationOfflineExecutionReport:
+        if len(self.observations) != self.collection_count:
+            raise ValueError("execution collection count differs from observations")
+        expected = _frozen_node_specs()
+        actual = tuple(
+            (n.node_id, n.parameter_id, n.case_id, n.vector_id) for n in self.observations
+        )
+        if actual != expected or (
+            tuple(self.collected_node_ids) != FROZEN_OFFLINE_EXECUTION_NODE_IDS
+        ):
+            raise ValueError("execution report has missing, extra, duplicate, or reordered nodes")
+        if self.report_digest != _domain_digest(
+            "avo-004.7-c7/offline-execution-report/v1",
+            self.model_dump(exclude={"report_digest"}, mode="json"),
+        ):
+            raise ValueError("offline execution report digest mismatch")
+        return self
+
+
 class MainGraduationOfflineDrillVectorSpec(StrictModel):
     """One immutable expected vector in the C7 matrix."""
 
@@ -170,6 +421,7 @@ class MainGraduationOfflineDrillCaseSpec(StrictModel):
         min_length=1, max_length=16, validation_alias=AliasChoices("vectors", "vector_specs")
     )
     case_digest: Sha256Digest = Field(validation_alias=AliasChoices("case_digest", "digest"))
+    plan_operation_id: Sha256Digest | None = None
 
     @model_validator(mode="after")
     def validate_case(self) -> MainGraduationOfflineDrillCaseSpec:
@@ -183,7 +435,16 @@ class MainGraduationOfflineDrillCaseSpec(StrictModel):
             "avo-004.7-c7/offline-drill-case-spec/v1",
             self.model_dump(exclude={"case_digest"}, mode="json"),
         )
-        if self.case_digest != local:
+        bound = (
+            offline_drill_case_id(
+                self.plan_operation_id,
+                self.case_id,
+                [item.model_dump(mode="json") for item in self.vectors],
+            )
+            if self.plan_operation_id is not None
+            else None
+        )
+        if self.case_digest != local and self.case_digest != bound:
             raise ValueError("offline drill case digest mismatch")
         return self
 
@@ -220,6 +481,11 @@ class MainGraduationOfflineDrillPlan(StrictModel):
         max_length=len(FROZEN_OFFLINE_DRILL_CASE_IDS),
         validation_alias=AliasChoices("cases", "case_specs"),
     )
+    execution_authority_digest: Sha256Digest | None = Field(
+        default=None,
+        validation_alias=AliasChoices("execution_authority_digest", "authority_digest"),
+    )
+    execution_authority_ref: BoundedText | None = None
     plan_digest: Sha256Digest
 
     @model_validator(mode="after")
@@ -227,17 +493,15 @@ class MainGraduationOfflineDrillPlan(StrictModel):
         ids = tuple(item.case_id for item in self.cases)
         if ids != FROZEN_OFFLINE_DRILL_CASE_IDS or len(set(ids)) != len(ids):
             raise ValueError("plan cases must exactly match the frozen ordered matrix")
+        if (self.execution_authority_digest is None) != (self.execution_authority_ref is None):
+            raise ValueError("execution authority digest and ref must be supplied together")
         for case in self.cases:
             bound = offline_drill_case_id(
                 self.operation_id,
                 case.case_id,
                 [item.model_dump(mode="json") for item in case.vectors],
             )
-            local = _domain_digest(
-                "avo-004.7-c7/offline-drill-case-spec/v1",
-                case.model_dump(exclude={"case_digest"}, mode="json"),
-            )
-            if case.case_digest not in {bound, local}:
+            if case.case_digest != bound or case.plan_operation_id != self.operation_id:
                 raise ValueError("offline drill case is not bound to this plan")
         if self.plan_digest != _domain_digest(
             "avo-004.7-c7/offline-drill-plan/v1",
@@ -327,6 +591,11 @@ class MainGraduationOfflineDrillCaseResult(StrictModel):
     injected_fault_digest: Sha256Digest
     reason_code: Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9._-]{1,127}$")]
     evidence_artifacts: tuple[ArtifactRef, ...] = Field(min_length=7, max_length=32)
+    execution_authority_digest: Sha256Digest | None = None
+    execution_report_digest: Sha256Digest | None = None
+    native_evidence_refs: tuple[MainGraduationOfflineEvidenceRef, ...] = Field(
+        default_factory=tuple, max_length=16
+    )
     deploy_performed: Literal[False] = False
     result_digest: Sha256Digest
 
@@ -366,6 +635,10 @@ class MainGraduationOfflineDrillCaseResult(StrictModel):
             )
         if len({item.digest for item in self.evidence_artifacts}) != len(self.evidence_artifacts):
             raise ValueError("case evidence artifacts must be unique")
+        if len({item.artifact.digest for item in self.native_evidence_refs}) != len(
+            self.native_evidence_refs
+        ):
+            raise ValueError("native case evidence refs must be unique")
         evidence_roles = {item.role.casefold() for item in self.evidence_artifacts}
         required_kinds = ("c4", "c5", "c6", "provider", "rollback", "ledger", "verifier")
         if any(not any(kind in role for role in evidence_roles) for kind in required_kinds):
@@ -395,6 +668,8 @@ class MainGraduationOfflineDrillResult(StrictModel):
     main_after_tree: GitObject
     main_after_parents: tuple[GitObject, ...] = Field(min_length=0, max_length=2)
     cases: tuple[MainGraduationOfflineDrillCaseResult, ...] = Field(min_length=1, max_length=128)
+    execution_authority_digest: Sha256Digest | None = None
+    execution_report_digest: Sha256Digest | None = None
     proof_class: Literal["deterministic-offline-proof"] = OFFLINE_PROOF_CLASS
     deploy_performed: Literal[False] = False
     result_digest: Sha256Digest
@@ -426,6 +701,12 @@ class MainGraduationOfflineDrillResult(StrictModel):
             for item in self.cases
         ):
             raise ValueError("aggregate case binding differs from root")
+        if any(
+            item.execution_authority_digest != self.execution_authority_digest
+            or item.execution_report_digest != self.execution_report_digest
+            for item in self.cases
+        ):
+            raise ValueError("aggregate execution manifest binding differs from root")
         if self.main_before_commit != self.main_after_commit or (
             self.main_before_tree != self.main_after_tree
         ):

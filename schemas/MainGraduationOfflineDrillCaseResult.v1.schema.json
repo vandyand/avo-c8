@@ -123,6 +123,47 @@
       ],
       "title": "MainGraduationOfflineDrillReplayFacts",
       "type": "object"
+    },
+    "MainGraduationOfflineEvidenceKind": {
+      "description": "Controller-defined native evidence namespaces (never substring matched).",
+      "enum": [
+        "c4-completion",
+        "c4-recovery",
+        "c5-rollback",
+        "c5-cleanup",
+        "c6-ledger",
+        "c6-boundary",
+        "c6-threshold",
+        "provider-attester",
+        "controller-verifier",
+        "execution-authority",
+        "execution-report"
+      ],
+      "title": "MainGraduationOfflineEvidenceKind",
+      "type": "string"
+    },
+    "MainGraduationOfflineEvidenceRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "kind": {
+          "$ref": "#/$defs/MainGraduationOfflineEvidenceKind"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "artifact"
+      ],
+      "title": "MainGraduationOfflineEvidenceRef",
+      "type": "object"
     }
   },
   "additionalProperties": false,
@@ -149,6 +190,32 @@
       "minItems": 7,
       "title": "Evidence Artifacts",
       "type": "array"
+    },
+    "execution_authority_digest": {
+      "anyOf": [
+        {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Execution Authority Digest"
+    },
+    "execution_report_digest": {
+      "anyOf": [
+        {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Execution Report Digest"
     },
     "expected_outcome": {
       "enum": [
@@ -223,6 +290,14 @@
       "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
       "title": "Main Before Tree",
       "type": "string"
+    },
+    "native_evidence_refs": {
+      "items": {
+        "$ref": "#/$defs/MainGraduationOfflineEvidenceRef"
+      },
+      "maxItems": 16,
+      "title": "Native Evidence Refs",
+      "type": "array"
     },
     "observed_outcome": {
       "enum": [

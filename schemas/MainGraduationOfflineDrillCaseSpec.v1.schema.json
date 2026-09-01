@@ -78,6 +78,19 @@
       "title": "Case Id",
       "type": "string"
     },
+    "plan_operation_id": {
+      "anyOf": [
+        {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Plan Operation Id"
+    },
     "schema_version": {
       "const": 1,
       "default": 1,

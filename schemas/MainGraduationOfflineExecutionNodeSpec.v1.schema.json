@@ -1,0 +1,72 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "case_id": {
+      "pattern": "^[a-z0-9][a-z0-9-]{1,63}$",
+      "title": "Case Id",
+      "type": "string"
+    },
+    "expected_outcome": {
+      "enum": [
+        "passed",
+        "pass",
+        "success",
+        "rejected",
+        "safe_rejection",
+        "reconciliation_required",
+        "reconcile",
+        "failed",
+        "replayed"
+      ],
+      "title": "Expected Outcome",
+      "type": "string"
+    },
+    "expected_state": {
+      "enum": [
+        "unchanged",
+        "failed_closed",
+        "reconciled",
+        "completed",
+        "replayed_read_only",
+        "rejected",
+        "reconciliation_required",
+        "read_only"
+      ],
+      "title": "Expected State",
+      "type": "string"
+    },
+    "node_id": {
+      "maxLength": 256,
+      "minLength": 1,
+      "title": "Node Id",
+      "type": "string"
+    },
+    "parameter_id": {
+      "maxLength": 256,
+      "minLength": 1,
+      "title": "Parameter Id",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "vector_id": {
+      "pattern": "^[a-z0-9][a-z0-9-]{1,95}$",
+      "title": "Vector Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "node_id",
+    "parameter_id",
+    "case_id",
+    "vector_id",
+    "expected_outcome",
+    "expected_state"
+  ],
+  "title": "MainGraduationOfflineExecutionNodeSpec",
+  "type": "object"
+}

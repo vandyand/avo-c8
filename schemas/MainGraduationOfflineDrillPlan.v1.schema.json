@@ -13,6 +13,19 @@
           "title": "Case Id",
           "type": "string"
         },
+        "plan_operation_id": {
+          "anyOf": [
+            {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Plan Operation Id"
+        },
         "schema_version": {
           "const": 1,
           "default": 1,
@@ -140,6 +153,33 @@
       "default": false,
       "title": "Deploy Performed",
       "type": "boolean"
+    },
+    "execution_authority_digest": {
+      "anyOf": [
+        {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Execution Authority Digest"
+    },
+    "execution_authority_ref": {
+      "anyOf": [
+        {
+          "maxLength": 256,
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Execution Authority Ref"
     },
     "main_before_commit": {
       "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",

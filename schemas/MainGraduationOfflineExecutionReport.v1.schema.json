@@ -1,0 +1,343 @@
+{
+  "$defs": {
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Digest",
+          "type": "string"
+        },
+        "media_type": {
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "role": {
+          "minLength": 1,
+          "title": "Role",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "size_bytes": {
+          "minimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "digest",
+        "size_bytes",
+        "media_type",
+        "role",
+        "created_at"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "MainGraduationOfflineEvidenceKind": {
+      "description": "Controller-defined native evidence namespaces (never substring matched).",
+      "enum": [
+        "c4-completion",
+        "c4-recovery",
+        "c5-rollback",
+        "c5-cleanup",
+        "c6-ledger",
+        "c6-boundary",
+        "c6-threshold",
+        "provider-attester",
+        "controller-verifier",
+        "execution-authority",
+        "execution-report"
+      ],
+      "title": "MainGraduationOfflineEvidenceKind",
+      "type": "string"
+    },
+    "MainGraduationOfflineEvidenceRef": {
+      "additionalProperties": false,
+      "properties": {
+        "artifact": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "kind": {
+          "$ref": "#/$defs/MainGraduationOfflineEvidenceKind"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "artifact"
+      ],
+      "title": "MainGraduationOfflineEvidenceRef",
+      "type": "object"
+    },
+    "MainGraduationOfflineNodeObservation": {
+      "additionalProperties": false,
+      "properties": {
+        "case_id": {
+          "pattern": "^[a-z0-9][a-z0-9-]{1,63}$",
+          "title": "Case Id",
+          "type": "string"
+        },
+        "collected": {
+          "const": true,
+          "default": true,
+          "title": "Collected",
+          "type": "boolean"
+        },
+        "evidence_refs": {
+          "items": {
+            "$ref": "#/$defs/MainGraduationOfflineEvidenceRef"
+          },
+          "maxItems": 16,
+          "minItems": 1,
+          "title": "Evidence Refs",
+          "type": "array"
+        },
+        "exit_status": {
+          "const": 0,
+          "default": 0,
+          "title": "Exit Status",
+          "type": "integer"
+        },
+        "node_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Node Id",
+          "type": "string"
+        },
+        "outcome": {
+          "enum": [
+            "passed",
+            "pass",
+            "success",
+            "rejected",
+            "safe_rejection",
+            "reconciliation_required",
+            "reconcile",
+            "failed",
+            "replayed"
+          ],
+          "title": "Outcome",
+          "type": "string"
+        },
+        "parameter_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Parameter Id",
+          "type": "string"
+        },
+        "reason_code": {
+          "pattern": "^[a-z0-9][a-z0-9._-]{1,127}$",
+          "title": "Reason Code",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "vector_id": {
+          "pattern": "^[a-z0-9][a-z0-9-]{1,95}$",
+          "title": "Vector Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "node_id",
+        "parameter_id",
+        "case_id",
+        "vector_id",
+        "outcome",
+        "reason_code",
+        "evidence_refs"
+      ],
+      "title": "MainGraduationOfflineNodeObservation",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "activation_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Activation Digest",
+      "type": "string"
+    },
+    "argv": {
+      "items": {
+        "maxLength": 256,
+        "minLength": 1,
+        "type": "string"
+      },
+      "maxItems": 32,
+      "minItems": 1,
+      "title": "Argv",
+      "type": "array"
+    },
+    "authority_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Authority Digest",
+      "type": "string"
+    },
+    "collected_node_ids": {
+      "items": {
+        "maxLength": 256,
+        "minLength": 1,
+        "type": "string"
+      },
+      "maxItems": 128,
+      "minItems": 1,
+      "title": "Collected Node Ids",
+      "type": "array"
+    },
+    "collection_count": {
+      "maximum": 128,
+      "minimum": 1,
+      "title": "Collection Count",
+      "type": "integer"
+    },
+    "configuration_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Configuration Digest",
+      "type": "string"
+    },
+    "executed_at": {
+      "format": "date-time",
+      "title": "Executed At",
+      "type": "string"
+    },
+    "interpreter_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Interpreter Digest",
+      "type": "string"
+    },
+    "lockfile_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Lockfile Digest",
+      "type": "string"
+    },
+    "observations": {
+      "items": {
+        "$ref": "#/$defs/MainGraduationOfflineNodeObservation"
+      },
+      "maxItems": 128,
+      "minItems": 1,
+      "title": "Observations",
+      "type": "array"
+    },
+    "operation_id": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Operation Id",
+      "type": "string"
+    },
+    "plugin_set_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Plugin Set Digest",
+      "type": "string"
+    },
+    "policy_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Policy Digest",
+      "type": "string"
+    },
+    "process_exit_code": {
+      "const": 0,
+      "default": 0,
+      "title": "Process Exit Code",
+      "type": "integer"
+    },
+    "protocol_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Protocol Digest",
+      "type": "string"
+    },
+    "pytest_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Pytest Digest",
+      "type": "string"
+    },
+    "report_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Report Digest",
+      "type": "string"
+    },
+    "repository_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Repository Digest",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "source_commit": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Source Commit",
+      "type": "string"
+    },
+    "source_tree": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Source Tree",
+      "type": "string"
+    },
+    "source_tree_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Source Tree Digest",
+      "type": "string"
+    },
+    "target_ref": {
+      "const": "refs/heads/main",
+      "default": "refs/heads/main",
+      "title": "Target Ref",
+      "type": "string"
+    },
+    "toolchain_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Toolchain Digest",
+      "type": "string"
+    }
+  },
+  "required": [
+    "operation_id",
+    "authority_digest",
+    "repository_digest",
+    "source_commit",
+    "source_tree",
+    "source_tree_digest",
+    "protocol_digest",
+    "configuration_digest",
+    "policy_digest",
+    "activation_digest",
+    "lockfile_digest",
+    "interpreter_digest",
+    "pytest_digest",
+    "plugin_set_digest",
+    "toolchain_digest",
+    "argv",
+    "collection_count",
+    "collected_node_ids",
+    "observations",
+    "executed_at",
+    "report_digest"
+  ],
+  "title": "MainGraduationOfflineExecutionReport",
+  "type": "object"
+}

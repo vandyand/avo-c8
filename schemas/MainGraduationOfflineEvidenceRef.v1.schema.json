@@ -1,0 +1,88 @@
+{
+  "$defs": {
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Digest",
+          "type": "string"
+        },
+        "media_type": {
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "role": {
+          "minLength": 1,
+          "title": "Role",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "size_bytes": {
+          "minimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "digest",
+        "size_bytes",
+        "media_type",
+        "role",
+        "created_at"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "MainGraduationOfflineEvidenceKind": {
+      "description": "Controller-defined native evidence namespaces (never substring matched).",
+      "enum": [
+        "c4-completion",
+        "c4-recovery",
+        "c5-rollback",
+        "c5-cleanup",
+        "c6-ledger",
+        "c6-boundary",
+        "c6-threshold",
+        "provider-attester",
+        "controller-verifier",
+        "execution-authority",
+        "execution-report"
+      ],
+      "title": "MainGraduationOfflineEvidenceKind",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "artifact": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "kind": {
+      "$ref": "#/$defs/MainGraduationOfflineEvidenceKind"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "kind",
+    "artifact"
+  ],
+  "title": "MainGraduationOfflineEvidenceRef",
+  "type": "object"
+}
