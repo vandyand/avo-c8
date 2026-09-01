@@ -18,7 +18,7 @@ import json
 import os
 from pathlib import Path
 from threading import RLock
-from typing import Any, Protocol, cast
+from typing import Any, Literal, Protocol, cast, overload
 from uuid import uuid4
 
 from avo_correlate.adapters.artifacts.filesystem import FilesystemArtifactStore
@@ -683,6 +683,46 @@ class MainGraduationLedgerJournal:
     replay_submission = read_submission
 
     # ---- durable entry and validation helpers ---------------------------------
+
+    @overload
+    def _parse_record(
+        self, kind: Literal["activation"], record: MainLedgerActivation
+    ) -> MainLedgerActivation: ...
+
+    @overload
+    def _parse_record(
+        self, kind: Literal["submission"], record: MainLedgerSubmissionEnvelope
+    ) -> MainLedgerSubmissionEnvelope: ...
+
+    @overload
+    def _parse_record(
+        self, kind: Literal["classification"], record: MainLedgerClassificationEvidence
+    ) -> MainLedgerClassificationEvidence: ...
+
+    @overload
+    def _parse_record(
+        self, kind: Literal["outcome"], record: MainLedgerTerminalOutcome
+    ) -> MainLedgerTerminalOutcome: ...
+
+    @overload
+    def _parse_record(
+        self, kind: Literal["transition"], record: MainLedgerAccumulatorTransition
+    ) -> MainLedgerAccumulatorTransition: ...
+
+    @overload
+    def _parse_record(
+        self, kind: Literal["boundary"], record: MainLedgerBoundaryViolationEvidence
+    ) -> MainLedgerBoundaryViolationEvidence: ...
+
+    @overload
+    def _parse_record(
+        self, kind: Literal["boundary-reset"], record: MainLedgerBoundaryResetTransition
+    ) -> MainLedgerBoundaryResetTransition: ...
+
+    @overload
+    def _parse_record(
+        self, kind: Literal["package"], record: MainLedgerEvidencePackage
+    ) -> MainLedgerEvidencePackage: ...
 
     def _parse_record(self, kind: str, record: StrictModel) -> StrictModel:
         model: type[StrictModel]
