@@ -18,6 +18,10 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from avo_correlate.adapters.artifacts.filesystem import FilesystemArtifactStore
+from avo_correlate.application.main_graduation_offline_identity import (
+    FROZEN_OFFLINE_EXECUTION_ARGV,
+    C7WorkspaceIdentityVerifier,
+)
 from avo_correlate.contracts.base import ArtifactRef
 from avo_correlate.contracts.main_graduation_offline_drill import (
     FROZEN_OFFLINE_EXECUTION_NODE_IDS,
@@ -68,7 +72,10 @@ class HermeticPytestExecutor:
         self.artifact_store = artifact_store
         self.clock = clock
         self.runner = runner or _default_runner
-        self.identity_checker = identity_checker
+        # Production always performs an independent local identity check.  A
+        # checker may still be injected by focused unit tests, but omitting it
+        # can never disable the boundary.
+        self.identity_checker = identity_checker or C7WorkspaceIdentityVerifier(self.workspace)
         self.max_report_bytes = max_report_bytes
         self.calls = 0
 
@@ -80,13 +87,7 @@ class HermeticPytestExecutor:
             raise OfflinePytestExecutionError("execution authority expired")
         if not authority.argv or "pytest" not in authority.argv:
             raise OfflinePytestExecutionError("authority argv is not pytest")
-        if tuple(authority.argv[:5]) != (
-            "uv",
-            "run",
-            "pytest",
-            "--disable-warnings",
-            "-q",
-        ) or tuple(authority.argv[5:]) not in ((), ("{junitxml}",)):
+        if tuple(authority.argv) != FROZEN_OFFLINE_EXECUTION_ARGV:
             raise OfflinePytestExecutionError("authority argv is not the frozen pytest command")
         forbidden = {";", "&&", "|", "`", "$(", "cmd.exe", "powershell"}
         if any(any(token in item.lower() for token in forbidden) for item in authority.argv):
@@ -112,9 +113,7 @@ class HermeticPytestExecutor:
             raise OfflinePytestExecutionError("authority argv is invalid")
         with tempfile.TemporaryDirectory(prefix="avo-c7-junit-") as temp:
             report_path = Path(temp) / "junit.xml"
-            rendered = [item.replace("{junitxml}", str(report_path)) for item in argv]
-            if "{junitxml}" not in " ".join(argv):
-                rendered.append(f"--junitxml={report_path}")
+            rendered = [item.replace("{junitxml}", f"--junitxml={report_path}") for item in argv]
             # The authority bounds the command shape; the frozen node list is
             # appended by this executor so callers cannot substitute a test.
             rendered.extend(node.node_id for node in authority.nodes)

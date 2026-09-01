@@ -17,6 +17,12 @@ from avo_correlate.application.main_graduation_offline_drill_service import (
     OfflineDrillObservation,
     PinnedC7AuthorityVerifier,
 )
+from avo_correlate.application.main_graduation_offline_identity import (
+    FROZEN_OFFLINE_EXECUTION_ARGV,
+    C7WorkspaceIdentity,
+    C7WorkspaceIdentityError,
+    C7WorkspaceIdentityVerifier,
+)
 from avo_correlate.application.main_graduation_offline_pytest_executor import (
     HermeticPytestExecutor,
     OfflinePytestExecutionError,
@@ -36,6 +42,10 @@ from avo_correlate.application.main_rollback_coordinator import (
 from avo_correlate.application.rollback_bundle_authority import RollbackBundleAuthority
 
 __all__ = [
+    "FROZEN_OFFLINE_EXECUTION_ARGV",
+    "C7WorkspaceIdentity",
+    "C7WorkspaceIdentityError",
+    "C7WorkspaceIdentityVerifier",
     "HermeticPytestExecutor",
     "MainGraduationClassifier",
     "MainGraduationLedgerService",
