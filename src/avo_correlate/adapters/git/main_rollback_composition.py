@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
+from avo_correlate.adapters.artifacts.filesystem import ArtifactIntegrityError
 from avo_correlate.adapters.artifacts.main_graduation_journal import MainGraduationJournal
 from avo_correlate.adapters.git.main_composition import (
     MainBaseReader,
@@ -212,7 +213,13 @@ class MainRollbackCompositionAdapter:
             )
         except MainRollbackCompositionError:
             raise
-        except (MainCompositionError, ValueError, TypeError, AttributeError) as exc:
+        except (
+            MainCompositionError,
+            ArtifactIntegrityError,
+            ValueError,
+            TypeError,
+            AttributeError,
+        ) as exc:
             raise MainRollbackCompositionError("rollback inverse composition failed") from exc
 
     def _load_source_completion(
