@@ -18,8 +18,12 @@ import tempfile
 from collections.abc import Callable
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
+from avo_correlate.application.c7_controller_root import (
+    C7ControllerRootError,
+    load_controller_root,
+)
 from avo_correlate.application.main_graduation_offline_identity import (
     FROZEN_OFFLINE_EXECUTION_ARGV,
     C7WorkspaceIdentity,
@@ -41,7 +45,6 @@ from avo_correlate.domain.canonical import canonical_bytes, canonical_digest, fi
 # from creating an immediately unusable draft.
 MIN_TTL_SECONDS = 1
 MAX_TTL_SECONDS = 5 * 60
-MAX_CONTROLLER_ROOT_BYTES = 8 * 1024 * 1024
 MAX_AUTHORITY_BYTES = 8 * 1024 * 1024
 
 
@@ -65,41 +68,6 @@ class C7AuthorityDraft:
     @property
     def semantic_digest(self) -> str:
         return self.authority.authority_digest
-
-
-def _strict_canonical_object(path: Path, *, max_bytes: int) -> tuple[dict[str, Any], bytes]:
-    """Read one regular canonical JSON object, rejecting duplicate keys."""
-    if path.is_symlink() or not path.is_file():
-        raise C7AuthorityPreparationError("controller root must be a regular file")
-    try:
-        raw = path.read_bytes()
-    except OSError as exc:
-        raise C7AuthorityPreparationError("controller root is unreadable") from exc
-    if len(raw) > max_bytes:
-        raise C7AuthorityPreparationError("controller root exceeds size bound")
-
-    def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-        result: dict[str, Any] = {}
-        for key, value in pairs:
-            if key in result:
-                raise C7AuthorityPreparationError("controller root contains duplicate key")
-            result[key] = value
-        return result
-
-    try:
-        value = json.loads(raw, object_pairs_hook=reject_duplicates)
-    except C7AuthorityPreparationError:
-        raise
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise C7AuthorityPreparationError("controller root is invalid JSON") from exc
-    if not isinstance(value, dict):
-        raise C7AuthorityPreparationError("controller root must be a JSON object")
-    try:
-        if canonical_bytes(value) != raw:
-            raise C7AuthorityPreparationError("controller root is not canonical")
-    except ValueError as exc:
-        raise C7AuthorityPreparationError("controller root is not canonical") from exc
-    return cast(dict[str, Any], value), raw
 
 
 def _validate_digest(value: str, label: str) -> None:
@@ -212,8 +180,8 @@ def _frozen_nodes() -> tuple[MainGraduationOfflineExecutionNodeSpec, ...]:
                     parameter_id=FROZEN_OFFLINE_EXECUTION_PARAMETER_IDS[node_index],
                     case_id=case_id,
                     vector_id=vector_id,
-                    expected_outcome=expected_outcome,
-                    expected_state=expected_state,
+                    oracle_expected_outcome=expected_outcome,
+                    oracle_expected_state=expected_state,
                 )
             )
             node_index += 1
@@ -259,6 +227,7 @@ def _authority_values(
         "plugin_set_digest": identity.plugin_set_digest,
         "toolchain_digest": identity.toolchain_digest,
         "environment_identity_digest": identity.environment_identity_digest,
+        "uv_digest": identity.uv_digest,
         "argv": FROZEN_OFFLINE_EXECUTION_ARGV,
         "normalized_report_schema_digest": normalized_report_schema_digest,
         "normalized_report_media_type": "application/vnd.avo.c7.execution-report+json",
@@ -286,8 +255,6 @@ def prepare_authority(
     output_file: Path,
     *,
     expected_controller_root_artifact_digest: str,
-    controller_authority_digest: str,
-    controller_authority_ref: str,
     operation_id: str,
     issuer_identity: str,
     repository_digest: str,
@@ -302,19 +269,13 @@ def prepare_authority(
 ) -> C7AuthorityDraft:
     """Observe a clean workspace and publish one controller-bound authority draft."""
     _safe_existing_path(workspace, "workspace")
-    root_value, root_raw = _strict_canonical_object(
-        controller_root_file, max_bytes=MAX_CONTROLLER_ROOT_BYTES
-    )
-    del root_value  # Presence, canonicality, and raw identity are the boundary here.
-    actual_root_digest = file_digest(controller_root_file)
-    if actual_root_digest != expected_controller_root_artifact_digest:
-        raise C7AuthorityPreparationError("controller root artifact digest mismatch")
-    _validate_digest(expected_controller_root_artifact_digest, "controller root artifact digest")
-    if (
-        not controller_authority_ref.strip()
-        or controller_authority_ref != controller_authority_ref.strip()
-    ):
-        raise C7AuthorityPreparationError("controller authority ref is required")
+    try:
+        root_artifact = load_controller_root(
+            controller_root_file, expected_controller_root_artifact_digest
+        )
+    except C7ControllerRootError as exc:
+        raise C7AuthorityPreparationError(str(exc)) from exc
+    root = root_artifact.root
     if authorized_at.tzinfo is None:
         raise C7AuthorityPreparationError("authorized_at must be timezone-aware")
     if not MIN_TTL_SECONDS <= ttl_seconds <= MAX_TTL_SECONDS:
@@ -326,8 +287,6 @@ def prepare_authority(
         raise C7AuthorityPreparationError("authority expiry must follow authorization")
     for label, value in (
         ("operation_id", operation_id),
-        ("controller root artifact digest", expected_controller_root_artifact_digest),
-        ("controller_authority_digest", controller_authority_digest),
         ("repository_digest", repository_digest),
         ("protocol_digest", protocol_digest),
         ("configuration_digest", configuration_digest),
@@ -342,11 +301,28 @@ def prepare_authority(
         identity = verifier.observe()
     except C7WorkspaceIdentityError as exc:
         raise C7AuthorityPreparationError(str(exc)) from exc
+    root_bindings = {
+        "operation_id": operation_id,
+        "repository_digest": repository_digest,
+        "issuer_identity": issuer_identity,
+        "source_commit": identity.source_commit,
+        "source_tree": identity.source_tree,
+        "source_tree_digest": identity.source_tree_digest,
+        "protocol_digest": protocol_digest,
+        "configuration_digest": configuration_digest,
+        "policy_digest": policy_digest,
+        "activation_digest": activation_digest,
+    }
+    for name, supplied in root_bindings.items():
+        if getattr(root, name) != supplied:
+            raise C7AuthorityPreparationError(f"controller root binding mismatch: {name}")
+    if not root.authorized_at <= authorized_at <= expires_at <= root.expires_at:
+        raise C7AuthorityPreparationError("execution authority window is outside controller root")
     values = _authority_values(
         identity,
         operation_id=operation_id,
-        controller_authority_digest=controller_authority_digest,
-        controller_authority_ref=controller_authority_ref,
+        controller_authority_digest=root_artifact.controller_authority_digest,
+        controller_authority_ref=root_artifact.controller_authority_ref,
         issuer_identity=issuer_identity,
         repository_digest=repository_digest,
         protocol_digest=protocol_digest,
@@ -368,7 +344,7 @@ def prepare_authority(
         ) from exc
     # Keep this explicit so a future edit cannot accidentally stop checking the
     # controller-root bytes before authority publication.
-    if file_digest(controller_root_file) != file_digest_from_bytes(root_raw):
+    if file_digest(controller_root_file) != root_artifact.raw_digest:
         raise C7AuthorityPreparationError("controller root changed during preparation")
     data = canonical_bytes(authority.model_dump(mode="json"))
     artifact_digest = _write_create_once(output_file, data)
@@ -397,12 +373,6 @@ def main(argv: list[str] | None = None) -> int:
         required=True,
     )
     parser.add_argument(
-        "--controller-authority-digest",
-        "--controller-authority-semantic-digest",
-        required=True,
-    )
-    parser.add_argument("--controller-authority-ref", required=True)
-    parser.add_argument(
         "--output-file",
         "--authority-file",
         "--draft-authority-file",
@@ -430,8 +400,6 @@ def main(argv: list[str] | None = None) -> int:
             args.controller_root_file,
             args.output_file,
             expected_controller_root_artifact_digest=args.expected_controller_root_artifact_digest,
-            controller_authority_digest=args.controller_authority_digest,
-            controller_authority_ref=args.controller_authority_ref,
             operation_id=args.operation_id,
             issuer_identity=args.issuer_identity,
             repository_digest=args.repository_digest,
