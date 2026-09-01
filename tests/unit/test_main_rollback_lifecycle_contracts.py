@@ -23,6 +23,7 @@ from avo_correlate.contracts.main_graduation import (
     MainRollbackCleanupObservation,
     MainRollbackCleanupReceipt,
     MainRollbackIntent,
+    MainRollbackPreparationAuthorization,
     MainRollbackResultReceipt,
 )
 from avo_correlate.contracts.main_graduation_phase_a import MainLeaseEvidenceRecord
@@ -103,10 +104,10 @@ def _rollback_intent(*, recorded_at: datetime = NOW + timedelta(minutes=2)) -> M
         "current_main_tree": TREE,
         "current_main_parent_commit": BASE,
         "candidate_commit": RESULT,
-        "candidate_tree": TREE,
+        "candidate_tree": BASE,
         "candidate_parent_commit": HEAD,
         "candidate_ref": "refs/heads/avo/main-rollback/" + RB[7:],
-        "inverse_tree": TREE,
+        "inverse_tree": BASE,
         "lease_identity": "rollback-controller",
         "lease_digest": D,
         "lease_epoch_digest": LEASE_EPOCH,
@@ -134,7 +135,7 @@ def _rollback_authorization(
         "current_main_parent_commit": BASE,
         "inverse_delta_digest": D2,
         "inverse_delta_artifact_digest": D,
-        "inverse_tree": TREE,
+        "inverse_tree": BASE,
         "lease_identity": "rollback-controller",
         "lease_digest": D,
         "lease_epoch_digest": LEASE_EPOCH,
@@ -151,12 +152,12 @@ def _rollback_authorization(
 
 def _rollback_preparation(
     intent: MainRollbackIntent, auth: MainRollbackAuthorization, *, authorized_at: datetime
-) -> MainPreparationAuthorization:
+) -> MainRollbackPreparationAuthorization:
     values = {
         "operation_id": RB,
         "repository_digest": R,
-        "plan_digest": None,
-        "intent_digest": intent.intent_digest,
+        "rollback_authorization_digest": auth.authorization_digest,
+        "rollback_intent_digest": intent.intent_digest,
         "package_digest": intent.completion_package_digest,
         "composition_digest": intent.inverse_delta_artifact_digest,
         "base_commit": intent.base_commit,
@@ -166,13 +167,11 @@ def _rollback_preparation(
         "candidate_ref": intent.candidate_ref,
         "lease_identity": intent.lease_identity,
         "lease_digest": intent.lease_digest,
+        "lease_epoch_digest": intent.lease_epoch_digest,
         "policy_epoch": auth.policy_epoch,
-        "branch": "rollback",
-        "rollback_authorization_digest": auth.authorization_digest,
-        "rollback_intent_digest": intent.intent_digest,
         "authorized_at": authorized_at,
     }
-    return _signed(MainPreparationAuthorization, values, "authorization_digest")
+    return _signed(MainRollbackPreparationAuthorization, values, "authorization_digest")
 
 
 def _inverse(source: Any, *, policy_epoch: str = D) -> MainInverseDeltaArtifact:
@@ -187,7 +186,7 @@ def _inverse(source: Any, *, policy_epoch: str = D) -> MainInverseDeltaArtifact:
         current_main_tree=source.reconciliation.main_tree,
         current_main_parent_commit=source.reconciliation.main_parents[0],
         inverse_changed_paths=source.delta.changed_paths,
-        inverse_tree=source.composition.base_tree,
+        inverse_tree=BASE,
         policy_epoch=policy_epoch,
         inverse_delta_digest=D2,
     )
@@ -200,7 +199,7 @@ def _result(
     inverse: MainInverseDeltaArtifact,
     *,
     outcome: str = "applied",
-    result_tree: str = TREE,
+    result_tree: str = BASE,
     result_parent: str = HEAD,
     result_parents: list[str] | None = None,
 ) -> MainRollbackResultReceipt:
@@ -380,13 +379,20 @@ def test_rollback_intent_v3_binds_distinct_source_ref_and_lease_epoch() -> None:
         MainRollbackIntent.model_validate(missing_epoch)
 
 
-def test_preparation_authorization_separates_graduation_and_rollback_branches() -> None:
+def test_preparation_authorization_uses_separate_graduation_and_rollback_wires() -> None:
     intent = _rollback_intent()
     auth = _rollback_authorization()
     rollback = _rollback_preparation(intent, auth, authorized_at=NOW + timedelta(minutes=3))
-    assert rollback.branch == "rollback"
-    assert rollback.plan_digest is None
+    assert rollback.schema_version == 1
     assert rollback.rollback_intent_digest == intent.intent_digest
+    assert rollback.lease_epoch_digest == LEASE_EPOCH
+
+    with pytest.raises(ValidationError):
+        _signed(
+            MainRollbackPreparationAuthorization,
+            {**rollback.model_dump(mode="json"), "candidate_ref": "refs/heads/main"},
+            "authorization_digest",
+        )
 
     graduation_values = {
         "operation_id": D,
@@ -405,23 +411,11 @@ def test_preparation_authorization_separates_graduation_and_rollback_branches() 
         "authorized_at": NOW,
     }
     graduation = _signed(MainPreparationAuthorization, graduation_values, "authorization_digest")
-    assert graduation.branch == "graduation"
+    assert graduation.schema_version == 1
+    assert graduation.plan_digest == D2
     with pytest.raises(ValidationError):
         MainPreparationAuthorization.model_validate(
-            {
-                **graduation.model_dump(mode="json"),
-                "branch": "graduation",
-                "rollback_intent_digest": D,
-                "authorization_digest": D,
-            }
-        )
-    with pytest.raises(ValidationError):
-        MainPreparationAuthorization.model_validate(
-            {
-                **rollback.model_dump(mode="json"),
-                "plan_digest": D,
-                "authorization_digest": D,
-            }
+            {**graduation.model_dump(mode="json"), "rollback_intent_digest": D}
         )
 
 
@@ -459,7 +453,7 @@ def test_rollback_result_requires_exact_applied_topology() -> None:
 
     for updates in (
         {"result_parent_commit": BASE, "result_parents": [BASE]},
-        {"result_tree": BASE},
+        {"result_tree": TREE},
         {"result_parent_commit": HEAD, "result_parents": [HEAD, BASE]},
     ):
         values = exact.model_dump(mode="json")
@@ -477,7 +471,7 @@ def test_rollback_result_requires_exact_applied_topology() -> None:
     journal = _journal_with_records(Path("."), records)
     journal._require_rollback_result(exact)  # type: ignore[attr-defined]
     with pytest.raises(MainGraduationJournalError, match="topology"):
-        journal._require_rollback_result(exact.model_copy(update={"result_tree": BASE}))  # type: ignore[attr-defined]
+        journal._require_rollback_result(exact.model_copy(update={"result_tree": TREE}))  # type: ignore[attr-defined]
 
 
 def test_cleanup_contracts_bind_ref_suffix_digests_and_dispatch_outcome() -> None:
@@ -581,7 +575,7 @@ def test_fresh_journal_rejects_missing_or_tampered_dependencies_on_restart(tmp_p
             fresh._require_rollback_result(result)  # type: ignore[attr-defined]
 
     tampered = dict(records)
-    tampered["inverse-delta"] = inverse.model_copy(update={"inverse_tree": BASE})
+    tampered["inverse-delta"] = inverse.model_copy(update={"inverse_tree": TREE})
     fresh = _journal_with_records(tmp_path / "tampered", tampered)
     with pytest.raises(MainGraduationJournalError, match="authority binding"):
         fresh._require_rollback_result(result)  # type: ignore[attr-defined]
@@ -723,7 +717,7 @@ def test_tampered_or_mismatched_rollback_evidence_fails_before_authority_verifie
                 "inverse-delta": inverse,
                 "completion": source,
             },
-            result.model_copy(update={"result_tree": BASE}),
+                result.model_copy(update={"result_tree": TREE}),
         ),
         (
             "rollback-cleanup-receipt",
