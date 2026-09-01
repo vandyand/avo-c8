@@ -57,6 +57,8 @@ def _default_runner(argv: list[str], cwd: Path, report_path: Path) -> int:
         check=False,
         capture_output=True,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         env=sanitized_child_environment(),
         timeout=_COMMAND_TIMEOUT_SECONDS,
     )
