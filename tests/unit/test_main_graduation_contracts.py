@@ -444,6 +444,7 @@ def test_transition_rejects_attacker_repository_or_issuer(
         authorized_at=now,
         expires_at=now + timedelta(minutes=5),
     )
+    plan = MainGraduationPlan.model_construct(operation_id=DIGEST)
     receipt = MainReleaseTransitionReceipt.model_construct(
         operation_id=DIGEST,
         repository_digest=DIGEST,
@@ -459,7 +460,13 @@ def test_transition_rejects_attacker_repository_or_issuer(
         outcome="transitioned",
     ).model_copy(update={field: value})
     journal = MainGraduationJournal(tmp_path)
-    journal._read = lambda _kind, _operation: (authorization, None)  # type: ignore[method-assign]
+    journal._read = lambda kind, _operation: (  # type: ignore[method-assign]
+        (authorization, None)
+        if kind == "release-authorization"
+        else (plan, None)
+        if kind == "plan"
+        else None
+    )
     with pytest.raises(MainGraduationJournalError, match="does not bind"):
         journal._require_release_authorization(receipt)  # pyright: ignore[reportPrivateUsage]
 
@@ -483,6 +490,7 @@ def test_transition_requires_inclusive_authorization_time_window(
         authorized_at=issued,
         expires_at=issued + timedelta(seconds=300),
     )
+    plan = MainGraduationPlan.model_construct(operation_id=DIGEST)
     receipt = MainReleaseTransitionReceipt.model_construct(
         operation_id=DIGEST,
         repository_digest=DIGEST,
@@ -497,7 +505,13 @@ def test_transition_requires_inclusive_authorization_time_window(
         observed_at=issued + timedelta(seconds=offset),
     )
     journal = MainGraduationJournal(tmp_path)
-    journal._read = lambda _kind, _operation: (authorization, None)  # type: ignore[method-assign]
+    journal._read = lambda kind, _operation: (  # type: ignore[method-assign]
+        (authorization, None)
+        if kind == "release-authorization"
+        else (plan, None)
+        if kind == "plan"
+        else None
+    )
     if accepted:
         journal._require_release_authorization(receipt)  # pyright: ignore[reportPrivateUsage]
     else:
@@ -557,7 +571,9 @@ def test_provider_receipt_rejects_provider_identity_substitution(tmp_path: Path)
         "protection": protection,
         "plan": plan,
     }
-    journal._read = lambda kind, _operation: (records[kind], None)  # type: ignore[method-assign]
+    journal._read = lambda kind, _operation: (  # type: ignore[method-assign]
+        (records[kind], None) if kind in records else None
+    )
     journal._require_release_authorization = lambda _transition: None  # type: ignore[method-assign]
     with pytest.raises(MainGraduationJournalError, match="provider receipt authorization"):
         journal._require_provider_receipt(receipt)  # pyright: ignore[reportPrivateUsage]
@@ -653,7 +669,9 @@ def test_provider_recovery_receipts_do_not_claim_success_and_remain_verifiable(
         "protection": protection,
         "plan": plan,
     }
-    journal._read = lambda kind, _operation: (records[kind], None)  # type: ignore[method-assign]
+    journal._read = lambda kind, _operation: (  # type: ignore[method-assign]
+        (records[kind], None) if kind in records else None
+    )
     journal._require_release_authorization = lambda _transition: None  # type: ignore[method-assign]
     journal._require_provider_receipt(receipt)  # pyright: ignore[reportPrivateUsage]
 
@@ -764,7 +782,9 @@ def test_reconciliation_rejects_wrong_composition_tree_or_repository(tmp_path: P
         "protection": protection,
         "plan": plan,
     }
-    journal._read = lambda kind, _operation: (records[kind], None)  # type: ignore[method-assign]
+    journal._read = lambda kind, _operation: (  # type: ignore[method-assign]
+        (records[kind], None) if kind in records else None
+    )
     with pytest.raises(MainGraduationJournalError, match="reconciliation prior-stage"):
         journal._require_reconciliation(reconciliation)  # pyright: ignore[reportPrivateUsage]
 
