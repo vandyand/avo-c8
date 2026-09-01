@@ -260,6 +260,19 @@
           "title": "Hosted Rollback Proof Digest",
           "type": "string"
         },
+        "hosted_rollback_raw_artifact_digest": {
+          "anyOf": [
+            {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Hosted Rollback Raw Artifact Digest"
+        },
         "initial_streak": {
           "const": 0,
           "default": 0,
