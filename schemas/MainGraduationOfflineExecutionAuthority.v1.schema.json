@@ -8,7 +8,13 @@
           "title": "Case Id",
           "type": "string"
         },
-        "expected_outcome": {
+        "node_id": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Node Id",
+          "type": "string"
+        },
+        "oracle_expected_outcome": {
           "enum": [
             "passed",
             "pass",
@@ -20,10 +26,10 @@
             "failed",
             "replayed"
           ],
-          "title": "Expected Outcome",
+          "title": "Oracle Expected Outcome",
           "type": "string"
         },
-        "expected_state": {
+        "oracle_expected_state": {
           "enum": [
             "unchanged",
             "failed_closed",
@@ -34,13 +40,7 @@
             "reconciliation_required",
             "read_only"
           ],
-          "title": "Expected State",
-          "type": "string"
-        },
-        "node_id": {
-          "maxLength": 256,
-          "minLength": 1,
-          "title": "Node Id",
+          "title": "Oracle Expected State",
           "type": "string"
         },
         "parameter_id": {
@@ -66,8 +66,8 @@
         "parameter_id",
         "case_id",
         "vector_id",
-        "expected_outcome",
-        "expected_state"
+        "oracle_expected_outcome",
+        "oracle_expected_state"
       ],
       "title": "MainGraduationOfflineExecutionNodeSpec",
       "type": "object"
@@ -116,6 +116,11 @@
       "maxLength": 256,
       "minLength": 1,
       "title": "Controller Authority Ref",
+      "type": "string"
+    },
+    "environment_identity_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Environment Identity Digest",
       "type": "string"
     },
     "expires_at": {
@@ -220,6 +225,11 @@
       "pattern": "^sha256:[0-9a-f]{64}$",
       "title": "Toolchain Digest",
       "type": "string"
+    },
+    "uv_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Uv Digest",
+      "type": "string"
     }
   },
   "required": [
@@ -241,6 +251,8 @@
     "pytest_digest",
     "plugin_set_digest",
     "toolchain_digest",
+    "environment_identity_digest",
+    "uv_digest",
     "argv",
     "normalized_report_schema_digest",
     "authorized_at",

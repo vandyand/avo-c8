@@ -47,7 +47,12 @@
       "additionalProperties": false,
       "description": "One immutable expected vector in the C7 matrix.",
       "properties": {
-        "expected_outcome": {
+        "fault_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Fault Digest",
+          "type": "string"
+        },
+        "oracle_expected_outcome": {
           "enum": [
             "passed",
             "pass",
@@ -59,10 +64,10 @@
             "failed",
             "replayed"
           ],
-          "title": "Expected Outcome",
+          "title": "Oracle Expected Outcome",
           "type": "string"
         },
-        "expected_state": {
+        "oracle_expected_state": {
           "enum": [
             "unchanged",
             "failed_closed",
@@ -73,12 +78,7 @@
             "reconciliation_required",
             "read_only"
           ],
-          "title": "Expected State",
-          "type": "string"
-        },
-        "fault_digest": {
-          "pattern": "^sha256:[0-9a-f]{64}$",
-          "title": "Fault Digest",
+          "title": "Oracle Expected State",
           "type": "string"
         },
         "schema_version": {
@@ -100,8 +100,8 @@
       },
       "required": [
         "vector_id",
-        "expected_outcome",
-        "expected_state",
+        "oracle_expected_outcome",
+        "oracle_expected_state",
         "fault_digest",
         "vector_digest"
       ],
@@ -156,26 +156,6 @@
       "maxLength": 256,
       "minLength": 1,
       "title": "Execution Authority Ref",
-      "type": "string"
-    },
-    "main_before_commit": {
-      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
-      "title": "Main Before Commit",
-      "type": "string"
-    },
-    "main_before_parents": {
-      "items": {
-        "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
-        "type": "string"
-      },
-      "maxItems": 2,
-      "minItems": 0,
-      "title": "Main Before Parents",
-      "type": "array"
-    },
-    "main_before_tree": {
-      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
-      "title": "Main Before Tree",
       "type": "string"
     },
     "operation_id": {
@@ -237,9 +217,6 @@
     "activation_digest",
     "controller_authority_digest",
     "controller_authority_ref",
-    "main_before_commit",
-    "main_before_tree",
-    "main_before_parents",
     "cases",
     "execution_authority_digest",
     "execution_authority_ref",

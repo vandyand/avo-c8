@@ -58,7 +58,8 @@
         "provider-attester",
         "controller-verifier",
         "execution-authority",
-        "execution-report"
+        "execution-report",
+        "junit-xml"
       ],
       "title": "MainGraduationOfflineEvidenceKind",
       "type": "string"

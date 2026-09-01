@@ -45,85 +45,6 @@
       "title": "ArtifactRef",
       "type": "object"
     },
-    "MainGraduationOfflineDrillCrashFacts": {
-      "additionalProperties": false,
-      "properties": {
-        "crash_boundary": {
-          "enum": [
-            "none",
-            "before-preparation-auth",
-            "after-preparation-auth",
-            "before-enqueue",
-            "after-enqueue",
-            "before-release-auth",
-            "after-release-auth",
-            "after-hold-success"
-          ],
-          "title": "Crash Boundary",
-          "type": "string"
-        },
-        "crash_injected": {
-          "title": "Crash Injected",
-          "type": "boolean"
-        },
-        "restart_count": {
-          "maximum": 32,
-          "minimum": 0,
-          "title": "Restart Count",
-          "type": "integer"
-        },
-        "schema_version": {
-          "const": 1,
-          "default": 1,
-          "title": "Schema Version",
-          "type": "integer"
-        }
-      },
-      "required": [
-        "crash_injected",
-        "crash_boundary",
-        "restart_count"
-      ],
-      "title": "MainGraduationOfflineDrillCrashFacts",
-      "type": "object"
-    },
-    "MainGraduationOfflineDrillReplayFacts": {
-      "additionalProperties": false,
-      "properties": {
-        "byte_identical": {
-          "title": "Byte Identical",
-          "type": "boolean"
-        },
-        "mutation_delta": {
-          "maximum": 0,
-          "minimum": 0,
-          "title": "Mutation Delta",
-          "type": "integer"
-        },
-        "read_only": {
-          "title": "Read Only",
-          "type": "boolean"
-        },
-        "replayed": {
-          "title": "Replayed",
-          "type": "boolean"
-        },
-        "schema_version": {
-          "const": 1,
-          "default": 1,
-          "title": "Schema Version",
-          "type": "integer"
-        }
-      },
-      "required": [
-        "replayed",
-        "byte_identical",
-        "read_only",
-        "mutation_delta"
-      ],
-      "title": "MainGraduationOfflineDrillReplayFacts",
-      "type": "object"
-    },
     "MainGraduationOfflineEvidenceKind": {
       "description": "Controller-defined native evidence namespaces (never substring matched).",
       "enum": [
@@ -137,7 +58,8 @@
         "provider-attester",
         "controller-verifier",
         "execution-authority",
-        "execution-report"
+        "execution-report",
+        "junit-xml"
       ],
       "title": "MainGraduationOfflineEvidenceKind",
       "type": "string"
@@ -173,9 +95,6 @@
       "title": "Case Id",
       "type": "string"
     },
-    "crash_facts": {
-      "$ref": "#/$defs/MainGraduationOfflineDrillCrashFacts"
-    },
     "deploy_performed": {
       "const": false,
       "default": false,
@@ -192,78 +111,14 @@
       "title": "Execution Report Digest",
       "type": "string"
     },
-    "expected_outcome": {
-      "enum": [
-        "passed",
-        "pass",
-        "success",
-        "rejected",
-        "safe_rejection",
-        "reconciliation_required",
-        "reconcile",
-        "failed",
-        "replayed"
-      ],
-      "title": "Expected Outcome",
-      "type": "string"
-    },
-    "expected_state": {
-      "enum": [
-        "unchanged",
-        "failed_closed",
-        "reconciled",
-        "completed",
-        "replayed_read_only",
-        "rejected",
-        "reconciliation_required",
-        "read_only"
-      ],
-      "title": "Expected State",
-      "type": "string"
-    },
-    "injected_fault_digest": {
+    "fault_digest": {
       "pattern": "^sha256:[0-9a-f]{64}$",
-      "title": "Injected Fault Digest",
+      "title": "Fault Digest",
       "type": "string"
     },
-    "main_after_commit": {
-      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
-      "title": "Main After Commit",
-      "type": "string"
-    },
-    "main_after_parents": {
-      "items": {
-        "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
-        "type": "string"
-      },
-      "maxItems": 2,
-      "minItems": 0,
-      "title": "Main After Parents",
-      "type": "array"
-    },
-    "main_after_tree": {
-      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
-      "title": "Main After Tree",
-      "type": "string"
-    },
-    "main_before_commit": {
-      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
-      "title": "Main Before Commit",
-      "type": "string"
-    },
-    "main_before_parents": {
-      "items": {
-        "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
-        "type": "string"
-      },
-      "maxItems": 2,
-      "minItems": 0,
-      "title": "Main Before Parents",
-      "type": "array"
-    },
-    "main_before_tree": {
-      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
-      "title": "Main Before Tree",
+    "junit_xml_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Junit Xml Digest",
       "type": "string"
     },
     "native_evidence_refs": {
@@ -275,7 +130,12 @@
       "title": "Native Evidence Refs",
       "type": "array"
     },
-    "observed_outcome": {
+    "operation_id": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Operation Id",
+      "type": "string"
+    },
+    "oracle_expected_outcome": {
       "enum": [
         "passed",
         "pass",
@@ -287,10 +147,10 @@
         "failed",
         "replayed"
       ],
-      "title": "Observed Outcome",
+      "title": "Oracle Expected Outcome",
       "type": "string"
     },
-    "observed_state": {
+    "oracle_expected_state": {
       "enum": [
         "unchanged",
         "failed_closed",
@@ -301,12 +161,7 @@
         "reconciliation_required",
         "read_only"
       ],
-      "title": "Observed State",
-      "type": "string"
-    },
-    "operation_id": {
-      "pattern": "^sha256:[0-9a-f]{64}$",
-      "title": "Operation Id",
+      "title": "Oracle Expected State",
       "type": "string"
     },
     "plan_digest": {
@@ -314,31 +169,10 @@
       "title": "Plan Digest",
       "type": "string"
     },
-    "provider_mutation_count": {
-      "maximum": 100,
-      "minimum": 0,
-      "title": "Provider Mutation Count",
-      "type": "integer"
-    },
     "reason_code": {
       "pattern": "^[a-z0-9][a-z0-9._-]{1,127}$",
       "title": "Reason Code",
       "type": "string"
-    },
-    "reconciliation_mutation_count": {
-      "maximum": 100,
-      "minimum": 0,
-      "title": "Reconciliation Mutation Count",
-      "type": "integer"
-    },
-    "release_mutation_count": {
-      "maximum": 100,
-      "minimum": 0,
-      "title": "Release Mutation Count",
-      "type": "integer"
-    },
-    "replay_facts": {
-      "$ref": "#/$defs/MainGraduationOfflineDrillReplayFacts"
     },
     "result_digest": {
       "pattern": "^sha256:[0-9a-f]{64}$",
@@ -360,6 +194,12 @@
       "pattern": "^[a-z0-9][a-z0-9-]{1,95}$",
       "title": "Vector Id",
       "type": "string"
+    },
+    "verification_status": {
+      "const": "pass",
+      "default": "pass",
+      "title": "Verification Status",
+      "type": "string"
     }
   },
   "required": [
@@ -368,25 +208,13 @@
     "case_id",
     "vector_id",
     "operation_id",
-    "expected_outcome",
-    "observed_outcome",
-    "expected_state",
-    "observed_state",
-    "main_before_commit",
-    "main_before_tree",
-    "main_before_parents",
-    "main_after_commit",
-    "main_after_tree",
-    "main_after_parents",
-    "provider_mutation_count",
-    "reconciliation_mutation_count",
-    "release_mutation_count",
-    "crash_facts",
-    "replay_facts",
-    "injected_fault_digest",
+    "oracle_expected_outcome",
+    "oracle_expected_state",
+    "fault_digest",
     "reason_code",
     "execution_authority_digest",
     "execution_report_digest",
+    "junit_xml_digest",
     "native_evidence_refs",
     "result_digest"
   ],

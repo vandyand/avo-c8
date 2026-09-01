@@ -6,7 +6,13 @@
       "title": "Case Id",
       "type": "string"
     },
-    "expected_outcome": {
+    "node_id": {
+      "maxLength": 256,
+      "minLength": 1,
+      "title": "Node Id",
+      "type": "string"
+    },
+    "oracle_expected_outcome": {
       "enum": [
         "passed",
         "pass",
@@ -18,10 +24,10 @@
         "failed",
         "replayed"
       ],
-      "title": "Expected Outcome",
+      "title": "Oracle Expected Outcome",
       "type": "string"
     },
-    "expected_state": {
+    "oracle_expected_state": {
       "enum": [
         "unchanged",
         "failed_closed",
@@ -32,13 +38,7 @@
         "reconciliation_required",
         "read_only"
       ],
-      "title": "Expected State",
-      "type": "string"
-    },
-    "node_id": {
-      "maxLength": 256,
-      "minLength": 1,
-      "title": "Node Id",
+      "title": "Oracle Expected State",
       "type": "string"
     },
     "parameter_id": {
@@ -64,8 +64,8 @@
     "parameter_id",
     "case_id",
     "vector_id",
-    "expected_outcome",
-    "expected_state"
+    "oracle_expected_outcome",
+    "oracle_expected_state"
   ],
   "title": "MainGraduationOfflineExecutionNodeSpec",
   "type": "object"

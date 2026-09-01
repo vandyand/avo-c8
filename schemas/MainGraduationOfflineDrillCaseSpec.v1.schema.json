@@ -4,7 +4,12 @@
       "additionalProperties": false,
       "description": "One immutable expected vector in the C7 matrix.",
       "properties": {
-        "expected_outcome": {
+        "fault_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Fault Digest",
+          "type": "string"
+        },
+        "oracle_expected_outcome": {
           "enum": [
             "passed",
             "pass",
@@ -16,10 +21,10 @@
             "failed",
             "replayed"
           ],
-          "title": "Expected Outcome",
+          "title": "Oracle Expected Outcome",
           "type": "string"
         },
-        "expected_state": {
+        "oracle_expected_state": {
           "enum": [
             "unchanged",
             "failed_closed",
@@ -30,12 +35,7 @@
             "reconciliation_required",
             "read_only"
           ],
-          "title": "Expected State",
-          "type": "string"
-        },
-        "fault_digest": {
-          "pattern": "^sha256:[0-9a-f]{64}$",
-          "title": "Fault Digest",
+          "title": "Oracle Expected State",
           "type": "string"
         },
         "schema_version": {
@@ -57,8 +57,8 @@
       },
       "required": [
         "vector_id",
-        "expected_outcome",
-        "expected_state",
+        "oracle_expected_outcome",
+        "oracle_expected_state",
         "fault_digest",
         "vector_digest"
       ],

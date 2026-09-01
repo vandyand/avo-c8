@@ -1,0 +1,76 @@
+{
+  "additionalProperties": false,
+  "description": "Exact, locally measured identity of the verifier workspace/toolchain.",
+  "properties": {
+    "environment_identity_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Environment Identity Digest",
+      "type": "string"
+    },
+    "interpreter_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Interpreter Digest",
+      "type": "string"
+    },
+    "lockfile_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Lockfile Digest",
+      "type": "string"
+    },
+    "plugin_set_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Plugin Set Digest",
+      "type": "string"
+    },
+    "pytest_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Pytest Digest",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "source_commit": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Source Commit",
+      "type": "string"
+    },
+    "source_tree": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Source Tree",
+      "type": "string"
+    },
+    "source_tree_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Source Tree Digest",
+      "type": "string"
+    },
+    "toolchain_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Toolchain Digest",
+      "type": "string"
+    },
+    "uv_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Uv Digest",
+      "type": "string"
+    }
+  },
+  "required": [
+    "source_commit",
+    "source_tree",
+    "source_tree_digest",
+    "lockfile_digest",
+    "interpreter_digest",
+    "pytest_digest",
+    "plugin_set_digest",
+    "toolchain_digest",
+    "environment_identity_digest",
+    "uv_digest"
+  ],
+  "title": "MainGraduationOfflineWorkspaceIdentity",
+  "type": "object"
+}

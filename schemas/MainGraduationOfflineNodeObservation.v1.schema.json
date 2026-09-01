@@ -58,7 +58,8 @@
         "provider-attester",
         "controller-verifier",
         "execution-authority",
-        "execution-report"
+        "execution-report",
+        "junit-xml"
       ],
       "title": "MainGraduationOfflineEvidenceKind",
       "type": "string"
@@ -121,21 +122,6 @@
       "title": "Node Id",
       "type": "string"
     },
-    "outcome": {
-      "enum": [
-        "passed",
-        "pass",
-        "success",
-        "rejected",
-        "safe_rejection",
-        "reconciliation_required",
-        "reconcile",
-        "failed",
-        "replayed"
-      ],
-      "title": "Outcome",
-      "type": "string"
-    },
     "parameter_id": {
       "maxLength": 256,
       "minLength": 1,
@@ -157,6 +143,12 @@
       "pattern": "^[a-z0-9][a-z0-9-]{1,95}$",
       "title": "Vector Id",
       "type": "string"
+    },
+    "verification_status": {
+      "const": "pass",
+      "default": "pass",
+      "title": "Verification Status",
+      "type": "string"
     }
   },
   "required": [
@@ -164,7 +156,6 @@
     "parameter_id",
     "case_id",
     "vector_id",
-    "outcome",
     "reason_code",
     "evidence_refs"
   ],

@@ -58,7 +58,8 @@
         "provider-attester",
         "controller-verifier",
         "execution-authority",
-        "execution-report"
+        "execution-report",
+        "junit-xml"
       ],
       "title": "MainGraduationOfflineEvidenceKind",
       "type": "string"
@@ -121,21 +122,6 @@
           "title": "Node Id",
           "type": "string"
         },
-        "outcome": {
-          "enum": [
-            "passed",
-            "pass",
-            "success",
-            "rejected",
-            "safe_rejection",
-            "reconciliation_required",
-            "reconcile",
-            "failed",
-            "replayed"
-          ],
-          "title": "Outcome",
-          "type": "string"
-        },
         "parameter_id": {
           "maxLength": 256,
           "minLength": 1,
@@ -157,6 +143,12 @@
           "pattern": "^[a-z0-9][a-z0-9-]{1,95}$",
           "title": "Vector Id",
           "type": "string"
+        },
+        "verification_status": {
+          "const": "pass",
+          "default": "pass",
+          "title": "Verification Status",
+          "type": "string"
         }
       },
       "required": [
@@ -164,11 +156,86 @@
         "parameter_id",
         "case_id",
         "vector_id",
-        "outcome",
         "reason_code",
         "evidence_refs"
       ],
       "title": "MainGraduationOfflineNodeObservation",
+      "type": "object"
+    },
+    "MainGraduationOfflineWorkspaceIdentity": {
+      "additionalProperties": false,
+      "description": "Exact, locally measured identity of the verifier workspace/toolchain.",
+      "properties": {
+        "environment_identity_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Environment Identity Digest",
+          "type": "string"
+        },
+        "interpreter_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Interpreter Digest",
+          "type": "string"
+        },
+        "lockfile_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Lockfile Digest",
+          "type": "string"
+        },
+        "plugin_set_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Plugin Set Digest",
+          "type": "string"
+        },
+        "pytest_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Pytest Digest",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "source_commit": {
+          "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+          "title": "Source Commit",
+          "type": "string"
+        },
+        "source_tree": {
+          "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+          "title": "Source Tree",
+          "type": "string"
+        },
+        "source_tree_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Source Tree Digest",
+          "type": "string"
+        },
+        "toolchain_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Toolchain Digest",
+          "type": "string"
+        },
+        "uv_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Uv Digest",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_commit",
+        "source_tree",
+        "source_tree_digest",
+        "lockfile_digest",
+        "interpreter_digest",
+        "pytest_digest",
+        "plugin_set_digest",
+        "toolchain_digest",
+        "environment_identity_digest",
+        "uv_digest"
+      ],
+      "title": "MainGraduationOfflineWorkspaceIdentity",
       "type": "object"
     }
   },
@@ -222,6 +289,11 @@
       "title": "Configuration Digest",
       "type": "string"
     },
+    "environment_identity_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Environment Identity Digest",
+      "type": "string"
+    },
     "executed_at": {
       "format": "date-time",
       "title": "Executed At",
@@ -231,6 +303,9 @@
       "pattern": "^sha256:[0-9a-f]{64}$",
       "title": "Interpreter Digest",
       "type": "string"
+    },
+    "junit_xml_artifact": {
+      "$ref": "#/$defs/ArtifactRef"
     },
     "lockfile_digest": {
       "pattern": "^sha256:[0-9a-f]{64}$",
@@ -318,6 +393,17 @@
       "pattern": "^sha256:[0-9a-f]{64}$",
       "title": "Toolchain Digest",
       "type": "string"
+    },
+    "uv_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Uv Digest",
+      "type": "string"
+    },
+    "workspace_after_identity": {
+      "$ref": "#/$defs/MainGraduationOfflineWorkspaceIdentity"
+    },
+    "workspace_before_identity": {
+      "$ref": "#/$defs/MainGraduationOfflineWorkspaceIdentity"
     }
   },
   "required": [
@@ -336,10 +422,15 @@
     "pytest_digest",
     "plugin_set_digest",
     "toolchain_digest",
+    "environment_identity_digest",
+    "uv_digest",
     "argv",
     "collection_count",
     "collected_node_ids",
     "observations",
+    "workspace_before_identity",
+    "workspace_after_identity",
+    "junit_xml_artifact",
     "executed_at",
     "authority_expires_at",
     "report_digest"
