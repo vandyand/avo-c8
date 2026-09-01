@@ -80,14 +80,16 @@ jobs:
         run: |
           $wslProjectPath = (wsl.exe wslpath -u "$env:GITHUB_WORKSPACE").Trim()
           $head = (wsl.exe --cd $wslProjectPath --exec git rev-parse HEAD).Trim()
-          if ($head -ne $env:GITHUB_SHA) { throw "WSL workspace changed before sync" }
+          $status = (wsl.exe --cd $wslProjectPath --exec git status --porcelain).Trim()
+          if ($head -ne $env:GITHUB_SHA -or $status) { throw "WSL workspace changed before sync" }
           wsl.exe --cd $wslProjectPath --exec uv sync --all-groups --all-extras --frozen
       - name: Build development evaluator in WSL
         shell: pwsh
         run: |
           $wslProjectPath = (wsl.exe wslpath -u "$env:GITHUB_WORKSPACE").Trim()
           $head = (wsl.exe --cd $wslProjectPath --exec git rev-parse HEAD).Trim()
-          if ($head -ne $env:GITHUB_SHA) { throw "WSL workspace changed before development build" }
+          $status = (wsl.exe --cd $wslProjectPath --exec git status --porcelain).Trim()
+          if ($head -ne $env:GITHUB_SHA -or $status) { throw "WSL workspace changed before development build" }
           $metadataPath = "$wslProjectPath/.avo-runtime/ci-development-metadata.json"
           wsl.exe --cd $wslProjectPath --exec docker buildx build --output=type=docker --platform=linux/amd64 --provenance=false --build-arg SOURCE_DATE_EPOCH=0 --file evaluators/reference/Dockerfile.development --metadata-file $metadataPath --tag avo-reference-development:1.0.0 .
       - name: Build admission evaluator in WSL
@@ -95,7 +97,8 @@ jobs:
         run: |
           $wslProjectPath = (wsl.exe wslpath -u "$env:GITHUB_WORKSPACE").Trim()
           $head = (wsl.exe --cd $wslProjectPath --exec git rev-parse HEAD).Trim()
-          if ($head -ne $env:GITHUB_SHA) { throw "WSL workspace changed before admission build" }
+          $status = (wsl.exe --cd $wslProjectPath --exec git status --porcelain).Trim()
+          if ($head -ne $env:GITHUB_SHA -or $status) { throw "WSL workspace changed before admission build" }
           $metadataPath = "$wslProjectPath/.avo-runtime/ci-admission-metadata.json"
           wsl.exe --cd $wslProjectPath --exec docker buildx build --output=type=docker --platform=linux/amd64 --provenance=false --build-arg SOURCE_DATE_EPOCH=0 --file evaluators/reference/Dockerfile.admission --metadata-file $metadataPath --tag avo-reference-admission:1.0.0 .
       - name: Measure WSL evaluator platform overhead
@@ -103,19 +106,22 @@ jobs:
         run: |
           $wslProjectPath = (wsl.exe wslpath -u "$env:GITHUB_WORKSPACE").Trim()
           $head = (wsl.exe --cd $wslProjectPath --exec git rev-parse HEAD).Trim()
-          if ($head -ne $env:GITHUB_SHA) { throw "WSL workspace changed before benchmark" }
+          $status = (wsl.exe --cd $wslProjectPath --exec git status --porcelain).Trim()
+          if ($head -ne $env:GITHUB_SHA -or $status) { throw "WSL workspace changed before benchmark" }
           wsl.exe --cd $wslProjectPath --exec uv run avoctl platform benchmark
       - name: Run full parity and recovery suite through wrapper
         shell: pwsh
         run: |
           $wslProjectPath = (wsl.exe wslpath -u "$env:GITHUB_WORKSPACE").Trim()
           $head = (wsl.exe --cd $wslProjectPath --exec git rev-parse HEAD).Trim()
-          if ($head -ne $env:GITHUB_SHA) { throw "WSL workspace changed before parity tests" }
+          $status = (wsl.exe --cd $wslProjectPath --exec git status --porcelain).Trim()
+          if ($head -ne $env:GITHUB_SHA -or $status) { throw "WSL workspace changed before parity tests" }
           wsl.exe --cd $wslProjectPath --exec uv run avoctl test parity
       - name: Run complete canonical suite
         shell: pwsh
         run: |
           $wslProjectPath = (wsl.exe wslpath -u "$env:GITHUB_WORKSPACE").Trim()
           $head = (wsl.exe --cd $wslProjectPath --exec git rev-parse HEAD).Trim()
-          if ($head -ne $env:GITHUB_SHA) { throw "WSL workspace changed before canonical tests" }
+          $status = (wsl.exe --cd $wslProjectPath --exec git status --porcelain).Trim()
+          if ($head -ne $env:GITHUB_SHA -or $status) { throw "WSL workspace changed before canonical tests" }
           wsl.exe --cd $wslProjectPath --exec uv run pytest --cov=avo_correlate --cov-report=term
