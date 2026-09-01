@@ -6,6 +6,7 @@ into the C1 main-graduation contracts.  There are no POST, PUT, PATCH, DELETE,
 ref-update, enqueue, or merge methods here; preparation and the isolated release
 issuer are separate stages.
 """
+# pyright: reportUnknownVariableType=false, reportUnknownMemberType=false, reportUnknownArgumentType=false
 
 from __future__ import annotations
 
@@ -41,6 +42,9 @@ from avo_correlate.contracts.main_graduation import (
     MainReleaseAuthorization,
     MainReleaseHoldObservation,
     MainReleaseTransitionReceipt,
+    MainRollbackAttemptAuthority,
+    MainRollbackPostStateObservation,
+    MainRollbackResultReceipt,
 )
 from avo_correlate.domain.canonical import canonical_digest
 
@@ -572,6 +576,87 @@ class ProtectedMainProvider:
 
     def observe_main(self) -> MainRefObservation:
         return self.observe_ref()
+
+    def observe_rollback_post_state(
+        self,
+        result: MainRollbackResultReceipt,
+        attempt: MainRollbackAttemptAuthority,
+    ) -> MainRollbackPostStateObservation:
+        """Authenticate the final ``main`` state for a rollback attempt.
+
+        This provider is intentionally read-only.  The mutation receipt and
+        attempt authority only supply expected identities; all result objects
+        in the returned evidence come from fresh authenticated reads.
+        """
+        result = MainRollbackResultReceipt.model_validate(result.model_dump())
+        attempt = MainRollbackAttemptAuthority.model_validate(attempt.model_dump())
+        if (
+            result.outcome not in {"applied", "already_applied"}
+            or result.operation_id != attempt.operation_id
+            or result.source_operation_id != attempt.source_operation_id
+            or result.current_main_commit != attempt.current_main_commit
+            or result.inverse_tree != attempt.inverse_tree
+            or result.result_commit is None
+            or result.result_tree is None
+            or result.result_parents != [attempt.current_main_commit]
+        ):
+            raise ProtectedMainProviderError("rollback result is not bound to attempt authority")
+        if result.provider_identity == self.provider_identity:
+            raise ProtectedMainProviderError("rollback observer identity must differ from mutator")
+        ref_raw = _object(
+            self._call(self.repository_path + "/git/ref/heads/main"), "final main ref"
+        )
+        ref = _str(ref_raw, "ref", "final main ref")
+        ref_object = _nested(ref_raw, "object", "final main ref")
+        if ref != "refs/heads/main" or _str(ref_object, "type", "final main ref") != "commit":
+            raise ProtectedMainProviderError("final main ref identity differs")
+        commit = _git(_str(ref_object, "sha", "final main ref"), "final main commit")
+        if commit != result.result_commit:
+            raise ProtectedMainProviderError("final main commit differs from rollback result")
+        commit_raw = _object(
+            self._call(self.repository_path + "/git/commits/" + commit), "final main commit"
+        )
+        response_sha = _git(_str(commit_raw, "sha", "final main commit"), "final main SHA")
+        tree = _git(
+            _str(_nested(commit_raw, "tree", "final main commit"), "sha", "final main tree"),
+            "final main tree",
+        )
+        parents_raw = commit_raw.get("parents")
+        parents = tuple(
+            _git(_str(parent, "sha", "final main parent"), "final main parent")
+            for parent in _items(parents_raw, "final main parents")
+        )
+        if (
+            response_sha != commit
+            or tree != result.result_tree
+            or parents != (attempt.current_main_commit,)
+        ):
+            raise ProtectedMainProviderError("final main topology differs from rollback result")
+        values = {
+            "operation_id": attempt.operation_id,
+            "source_operation_id": attempt.source_operation_id,
+            "attempt_manifest_digest": attempt.manifest_digest,
+            "result_receipt_digest": result.receipt_digest,
+            "repository_digest": attempt.repository_digest,
+            "target_ref": "refs/heads/main",
+            "inverse_tree": attempt.inverse_tree,
+            "current_main_commit": attempt.current_main_commit,
+            "result_commit": commit,
+            "result_tree": tree,
+            "result_parents": list(parents),
+            "observer_identity": self.provider_identity,
+            "observer_api_version": self.provider_api_version,
+            "response_digest": _json_digest({"main_ref": ref_raw, "commit": commit_raw}),
+            "observed_at": datetime.now(UTC),
+            "observation_digest": "sha256:" + "0" * 64,
+        }
+        probe = MainRollbackPostStateObservation.model_construct(**values)
+        values["observation_digest"] = _json_digest(
+            probe.model_dump(exclude={"observation_digest"}, mode="json")
+        )
+        return MainRollbackPostStateObservation.model_validate(values)
+
+    observe_rollback_final_main = observe_rollback_post_state
 
     def _validate_pull_request_identity(self, raw: JsonObject, number: int) -> str:
         """Validate the repository and URL identity shared by PR reads."""
