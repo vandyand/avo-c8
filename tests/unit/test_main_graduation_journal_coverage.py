@@ -921,6 +921,54 @@ def test_canonical_helpers_and_journal_identity_guards(tmp_path: Path) -> None:
     assert MainGraduationJournal(tmp_path).root == tmp_path.resolve()
 
 
+def test_queue_observation_reference_uses_stable_completion_role_and_replays_exactly(
+    tmp_path: Path,
+) -> None:
+    group_parents = [BASE, HEAD]
+    topology = canonical_digest(
+        {
+            "expected_group_parents": group_parents,
+            "pull_request_number": 1,
+            "merge_method": "squash",
+            "provider_identity": "provider",
+            "provider_api_version": "v1",
+            "queue_manifest_digest": D,
+        }
+    )
+    queue = MainQueueObservation.model_construct(
+        operation_id=D,
+        repository_digest=R,
+        target_ref="refs/heads/main",
+        queue_generation_digest=D,
+        queue_manifest_digest=D,
+        queue_configuration_digest=D,
+        admission_observation_digest=D,
+        expected_base_commit=BASE,
+        expected_base_tree=TREE,
+        protection_manifest_digest=D,
+        protection_epoch=D,
+        provider_identity="provider",
+        provider_api_version="v1",
+        expected_group_parents=group_parents,
+        group_topology_digest=topology,
+        merge_method="squash",
+        isolated_release_issuer="isolated-release",
+        release_issuer_app_id=9001,
+        issuer_isolation_digest=D,
+        observed_at=NOW,
+        pull_request_number=1,
+    )
+    journal = MainGraduationJournal(tmp_path)
+    reference = journal.record_queue_observation(queue)
+
+    assert reference.role == "main-graduation-queue-observation"
+    assert reference.media_type == "application/vnd.avo.main-graduation-queue-observation+json"
+    assert journal.read_queue_observation(D) == (queue, reference)
+
+    replay = MainGraduationJournal(tmp_path).read_queue_observation(D)
+    assert replay == (queue, reference)
+
+
 def test_simple_contract_validators_cover_success_and_failure_edges() -> None:
     values = {
         "operation_id": D,

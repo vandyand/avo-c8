@@ -259,6 +259,17 @@ _MODELS: dict[str, type[StrictModel]] = {
     "claimed-release-transition": MainClaimedReleaseTransitionReceipt,
 }
 
+# Journal kind names are intentionally compact for the on-disk index, while
+# completion packages expose the stable semantic role names.  Keep that
+# distinction in one place so a durable reference can be reused verbatim by a
+# completion package instead of being reconstructed with a fresh timestamp or
+# a second metadata shape.
+_STANDARD_ROLE_SUFFIXES: dict[str, str] = {"queue": "queue-observation"}
+
+
+def _standard_artifact_role(kind: str) -> str:
+    return f"main-graduation-{_STANDARD_ROLE_SUFFIXES.get(kind, kind)}"
+
 _PHASE_A_KINDS = frozenset(
     {
         "lease-evidence-record",
@@ -438,8 +449,8 @@ class MainGraduationJournal:
             raise MainGraduationJournalError(f"invalid main graduation {kind}") from exc
         reference = self._store.put_bytes(
             data,
-            media_type=f"application/vnd.avo.main-graduation-{kind}+json",
-            role=f"main-graduation-{kind}",
+            media_type=f"application/vnd.avo.{_standard_artifact_role(kind)}+json",
+            role=_standard_artifact_role(kind),
             max_bytes=self._max,
         )
         _sync_directory(self._store.path_for_digest(reference.digest).parent)
@@ -519,8 +530,9 @@ class MainGraduationJournal:
         try:
             reference = self._read_reference(index)
             if (
-                reference.role != f"main-graduation-{kind}"
-                or reference.media_type != f"application/vnd.avo.main-graduation-{kind}+json"
+                reference.role != _standard_artifact_role(kind)
+                or reference.media_type
+                != f"application/vnd.avo.{_standard_artifact_role(kind)}+json"
                 or reference.size_bytes > self._max
             ):
                 raise ValueError("main graduation artifact metadata mismatch")
