@@ -13,9 +13,8 @@ This runbook operationalizes [ADR 0011](adr/0011-protected-main-graduation.md) a
 single-host, trusted-team boundary. It does not authorize deployment, production effects,
 repository transfer, branch-protection mutation, or direct ref writes.
 
-C4/C5 completion is offline coordinator/recovery evidence only. The next ready gate is C6
-campaign runner and eligibility ledger; no provider or `main` mutation is authorized by this
-status. C8 remains
+C4–C6 completion is offline coordinator/recovery/ledger evidence only. C7 deterministic offline
+gate is the next ready gate; no provider or `main` mutation is authorized by this status. C8 remains
 blocked pending organization-hosting/merge-queue capability and isolated release-hold authority.
 
 The GitHub REST ref-delete endpoint provides no expected-SHA CAS precondition. Before hosted
@@ -93,7 +92,8 @@ The ledger is append-only and its scheduler sequence must be gap-free. The contr
 continuously reconcile the next sequence after the watermark: every ordinary nonempty
 submission receives an eligible attempt from submission and a terminal durable disposition
 (success, failed, quarantined, or reconciliation-required). Later submissions cannot count
-while an earlier scheduler sequence remains open. Starvation, withholding, or silent
+while an earlier scheduler sequence remains open. Admission is exactly for the next expected
+sequence; no speculative tail may be admitted. Starvation, withholding, or silent
 exclusion is a boundary violation and resets the streak. The threshold streak counts only
 eligible full attempts. The controller, not the operator, derives eligibility, exclusions,
 and resets.

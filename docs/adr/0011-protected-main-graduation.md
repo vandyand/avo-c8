@@ -1,6 +1,6 @@
 # ADR 0011: Protected-main graduation boundary
 
-Status: accepted for the AVO-004.7 architecture; C4 and C5 complete for offline acceptance,
+Status: accepted for the AVO-004.7 architecture; C4, C5, and C6 complete for offline acceptance,
 implementation and hosted gate in progress.
 Live `main` mutation is blocked by current GitHub hosting capability and missing isolated
 release-hold authority.
@@ -10,8 +10,8 @@ C4 coordinator and recovery gate: complete on 2026-09-01 at code HEAD
 C5 is complete for offline acceptance at HEAD `e38d0b826f94f3f559fb2e3ef0b26d1d17128c53`
 with Terra APPROVE and combined 24 passed; see the [C5 result](../avo-0047-c5-result.md).
 This records offline authority and recovery evidence only, does not authorize hosted/live
-mutation, and does not complete AVO-004.7. C6 campaign runner and eligibility ledger is the next
-ready gate.
+mutation, and does not complete AVO-004.7. C7 deterministic offline gate is the next ready gate.
+C6's offline result is recorded in [the durable result](../avo-0047-c6-result.md).
 
 ## Context
 
@@ -324,7 +324,8 @@ before a canonical integration package exists; that upstream failure receives te
 durable failure/reset evidence. Exclusions are only independently classified empty or
 non-ordinary inputs, durable, and auditable; operators may not select only easy candidates.
 Later submissions cannot count while an earlier scheduler sequence lacks a terminal
-disposition. Any eligible failure, timeout, quarantine, ambiguity, operator intervention,
+disposition, and admission is limited to exactly the next expected sequence with no speculative
+tail. Any eligible failure, timeout, quarantine, ambiguity, operator intervention,
 reset condition, or boundary violation resets the streak to zero without deleting evidence.
 Any material protocol or configuration change starts a new campaign and threshold.
 

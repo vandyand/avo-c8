@@ -68,6 +68,11 @@ production authority outside the proposing agent's control.
   Its durable result records rollback contracts/journaling, deterministic inverse composition,
   authority verification, aggregate orchestration, terminal cleanup/closure, crash/replay, and
   adversarial recovery evidence. The preregistered 12-success threshold remains future hosted work.
+  C6 campaign runner and eligibility ledger is complete for offline acceptance at final code
+  HEAD `e6db424cc671d7a5d63b9b8a7246a316c4867f91`; 47 focused/parity tests passed, scoped
+  production Pyright reported 0 errors, Ruff and diff-check were clean, and Terra APPROVE had
+  no P0/P1 findings. The [durable C6 result](avo-0047-c6-result.md) records the exact scope,
+  invariants, remediations, and no-live boundary. C6 does not establish hosted/live readiness.
   Live `main` mutation is currently blocked on both required capabilities: the preferred
   merge-queue protocol needs an organization-owned repository with max-one-entry queue and
   exact admission/hold capability, while the current public repository is user-owned, and no
@@ -119,8 +124,8 @@ approving every ordinary patch.
 | C3 — protected-main provider and attester | complete | Protected PR #49; signed merge-group provenance, effective ruleset/bypass verification, complete check pagination, exact PR/queue/topology binding, durable delivery replay protection, and isolated-App transition observation pass independent Terra review and hosted Ubuntu/Windows checks. See the [runbook](avo-0047-main-graduation-runbook.md). |
 | C4 — coordinator and recovery | complete | Final offline coordinator/recovery acceptance passed at HEAD `82ace056cf9f0453b43c71845179c437914a041b` with Terra approval: 358 passed, 0 failed, filesystem recovery and replay covered, Ruff/scoped production Pyright/schema parity/roadmap validation green. No hosted or live mutation occurred. [Result](avo-0047-c4-result.md) |
 | C5 — main rollback authority | complete | Offline acceptance passed at HEAD `e38d0b826f94f3f559fb2e3ef0b26d1d17128c53` with Terra APPROVE and combined 24 passed, covering rollback contracts/journaling, inverse composition, authority verification, aggregate orchestration, terminal cleanup/closure, crash/replay, and adversarial recovery. No hosted/provider/main/deploy mutation occurred. [Result](avo-0047-c5-result.md) |
-| C6 — campaign runner and eligibility ledger | planned | Next ready gate after C5 offline acceptance; hosted ledger activation still requires blocked C8 prerequisites and a fresh hosted rollback drill. |
-| C7 — deterministic offline gate | planned | Begins only after C1–C6 pass. |
+| C6 — campaign runner and eligibility ledger | complete | Offline acceptance complete at final code HEAD `e6db424cc671d7a5d63b9b8a7246a316c4867f91`; [result](avo-0047-c6-result.md). Hosted ledger activation still requires blocked C8 prerequisites and a fresh hosted rollback drill. |
+| C7 — deterministic offline gate | ready | Next ready gate after C6 offline acceptance; no hosted mutation. |
 | C8 — hosted organization/queue/release gate | blocked | Requires explicit organization-hosting/max-one merge-queue capability and isolated admission/hold issuer authority; no live `main` mutation is authorized. |
 
 The roadmap gate was completed first because the operator explicitly authorized it. The green test
@@ -135,9 +140,10 @@ with immutable exact-SHA evidence. AVO-004.7 C1–C3 are now complete through pr
 matrix. C5 main rollback authority is complete for offline acceptance at HEAD
 `e38d0b826f94f3f559fb2e3ef0b26d1d17128c53`, with Terra APPROVE and combined 24 passed; see the
 [C5 result](avo-0047-c5-result.md). C5 evidence covers aggregate orchestration, terminal closure,
-adversarial recovery, and replay. C4 and C5 offline evidence do not establish hosted/live
-readiness, and AVO-004.7 remains in progress. C6 campaign runner and eligibility ledger is the
-next ready gate. The clean-run threshold
+adversarial recovery, and replay. C6 campaign runner and eligibility ledger is complete for
+offline acceptance at final code HEAD `e6db424`; see the [C6 result](avo-0047-c6-result.md).
+C4–C6 offline evidence do not establish hosted/live readiness, and AVO-004.7 remains in
+progress. C7 deterministic offline gate is the next ready gate. The clean-run threshold
 and main-specific rollback evidence remain preregistered in the linked ADR, plan, and runbook. The
 later live gate is blocked by two hosting/authority prerequisites: the preferred required merge queue
 with max one entry per group and exact PR-head admission/group-hold capability is available for
