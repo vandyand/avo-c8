@@ -13,7 +13,13 @@ from avo_correlate.application.main_graduation_offline_drill_service import (
     MainGraduationOfflineDrillService,
     OfflineDrillCaseExecutor,
     OfflineDrillClock,
+    OfflineDrillExecutor,
     OfflineDrillObservation,
+    PinnedC7AuthorityVerifier,
+)
+from avo_correlate.application.main_graduation_offline_pytest_executor import (
+    HermeticPytestExecutor,
+    OfflinePytestExecutionError,
 )
 from avo_correlate.application.main_rollback_authority import (
     MainRollbackAuthority,
@@ -30,6 +36,7 @@ from avo_correlate.application.main_rollback_coordinator import (
 from avo_correlate.application.rollback_bundle_authority import RollbackBundleAuthority
 
 __all__ = [
+    "HermeticPytestExecutor",
     "MainGraduationClassifier",
     "MainGraduationLedgerService",
     "MainGraduationOfflineDrillError",
@@ -45,7 +52,10 @@ __all__ = [
     "MainRollbackCurrentAuthority",
     "OfflineDrillCaseExecutor",
     "OfflineDrillClock",
+    "OfflineDrillExecutor",
     "OfflineDrillObservation",
+    "OfflinePytestExecutionError",
+    "PinnedC7AuthorityVerifier",
     "RollbackBundleAuthority",
     "RollbackResult",
     "SubmissionContentResolver",
