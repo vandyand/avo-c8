@@ -396,8 +396,6 @@ class MainLedgerTerminalOutcome(StrictModel):
     package_digest: Sha256Digest | None = None
     package_artifact: ArtifactRef | None = None
     package_binding_digest: Sha256Digest | None = None
-    boundary_violation: StrictBool = False
-    boundary_violation_evidence_digest: Sha256Digest | None = None
     reason: NonEmptyString | None = None
     terminal_at: datetime
     outcome_digest: Sha256Digest
@@ -465,10 +463,6 @@ class MainLedgerTerminalOutcome(StrictModel):
             )
             if self.package_binding_digest != expected_package_binding:
                 raise ValueError("package binding does not bind exact terminal outcome")
-        if self.boundary_violation != (self.boundary_violation_evidence_digest is not None):
-            raise ValueError("boundary violation requires typed evidence")
-        if self.boundary_violation and self.outcome == "success":
-            raise ValueError("successful outcome cannot be a boundary violation")
         if self.outcome_digest != canonical_digest(
             self.model_dump(exclude={"outcome_digest"}, mode="json")
         ):
@@ -675,14 +669,7 @@ class MainLedgerAccumulatorTransition(StrictModel):
         assert self.outcome is not None
         prior = self.prior_state
         result = self.resulting_state
-        if self.outcome.boundary_violation:
-            if not self.reset_applied or result.streak != 0:
-                raise ValueError("boundary violation must reset threshold streak")
-            if result.boundary_violations != prior.boundary_violations + 1:
-                raise ValueError("boundary violation counter delta is not exact")
-            if result.successes != prior.successes or result.failures != prior.failures:
-                raise ValueError("boundary violation must not increment success/failure")
-        elif self.outcome.outcome == "success":
+        if self.outcome.outcome == "success":
             if self.reset_applied or prior.streak >= 12:
                 raise ValueError("success must increment a non-complete threshold streak")
             if result.streak != prior.streak + 1 or result.successes != prior.successes + 1:
@@ -755,11 +742,22 @@ class MainLedgerEvidencePackage(StrictModel):
         ]
         if len(set(identity_keys)) != len(identity_keys):
             raise ValueError("duplicate scheduler submission identity")
+        submission_digests = [item.submission_digest for item in self.submissions]
+        content_digests = [item.content_artifact.digest for item in self.submissions]
+        if len(set(submission_digests)) != len(submission_digests):
+            raise ValueError("duplicate physical submission content")
+        if len(set(content_digests)) != len(content_digests):
+            raise ValueError("duplicate physical submission artifact")
         expected = self.activation.scheduler_sequence_watermark + 1
         by_submission = {item.submission_digest: item for item in self.submissions}
         for submission, classification in zip(self.submissions, self.classifications, strict=True):
             if submission.activation_digest != self.activation.activation_digest:
                 raise ValueError("submission activation differs")
+            if (
+                submission.repository_digest != self.activation.repository_digest
+                or submission.target_ref != self.activation.target_ref
+            ):
+                raise ValueError("submission repository target differs from activation")
             if submission.scheduler_sequence != expected:
                 raise ValueError("ledger scheduler sequence has a gap")
             if classification.activation_digest != self.activation.activation_digest:
@@ -786,10 +784,6 @@ class MainLedgerEvidencePackage(StrictModel):
         ):
             raise ValueError("CAS transitions must be unique per scheduler sequence")
         outcome_by_sequence = {item.scheduler_sequence: item for item in self.outcomes}
-        if self.status == "threshold_complete" and any(
-            item.boundary_violation for item in self.outcomes
-        ):
-            raise ValueError("boundary violations require terminal boundary-reset closure")
         eligible_sequences = {
             item.scheduler_sequence
             for item in self.classifications

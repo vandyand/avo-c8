@@ -331,6 +331,10 @@ def test_accumulator_transition_rejects_gap_and_forged_outcome_binding() -> None
         },
         "outcome_digest",
     )
+    with pytest.raises(ValidationError, match="boundary_violation"):
+        MainLedgerTerminalOutcome.model_validate(
+            {**outcome.model_dump(), "boundary_violation": True}
+        )
     with pytest.raises(ValidationError, match="sequence has a gap"):
         MainLedgerAccumulatorTransition.model_validate(
             {
@@ -495,6 +499,36 @@ def test_genesis_and_duplicate_delivery_are_closed_by_aggregate() -> None:
     )
     with pytest.raises(ValidationError, match="duplicate scheduler"):
         MainLedgerEvidencePackage.model_validate(forged_package)
+
+    distinct_identity = _submission(activation, 12, "distinct-identity")
+    physical_duplicate_package = MainLedgerEvidencePackage.model_construct(
+        activation=activation,
+        status="threshold_complete",
+        submissions=[submission, distinct_identity],
+        classifications=[fake_classification, fake_classification],
+        outcomes=[],
+        transitions=[],
+        final_state=genesis,
+        package_digest=DIGEST,
+    )
+    with pytest.raises(ValidationError, match="physical submission content"):
+        MainLedgerEvidencePackage.model_validate(physical_duplicate_package)
+
+    forged_repository = submission.model_copy(
+        update={"repository_digest": DIGEST[:-1] + "2"}
+    )
+    forged_repository_package = MainLedgerEvidencePackage.model_construct(
+        activation=activation,
+        status="threshold_complete",
+        submissions=[forged_repository],
+        classifications=[fake_classification],
+        outcomes=[],
+        transitions=[],
+        final_state=genesis,
+        package_digest=DIGEST,
+    )
+    with pytest.raises(ValidationError, match="repository target"):
+        MainLedgerEvidencePackage.model_validate(forged_repository_package)
 
 
 def test_boundary_reset_can_terminalize_before_first_submission() -> None:
