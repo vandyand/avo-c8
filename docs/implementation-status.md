@@ -2,14 +2,21 @@
 
 Status date: 2026-09-01. This is a development-complete v1 reference implementation, not a production or hostile-code security approval. Current priority, sequencing, and milestone status are governed by the [authoritative roadmap](roadmap.md); this document is an evidence snapshot.
 
-## AVO-004.7 C4 status
+## AVO-004.7 C4/C5 status
 
 C4 coordinator and recovery is complete at code HEAD
 `82ace056cf9f0453b43c71845179c437914a041b`, with Terra approval. See the [durable C4
 result](avo-0047-c4-result.md). The offline acceptance matrix passed 358 tests with 0 failures;
 Ruff, scoped production Pyright, schema parity, and roadmap validation passed. This does not
-establish hosted/live readiness or complete AVO-004.7. C5 main rollback authority is the next
-ready gate; C8 remains blocked and hosted `main` mutation remains unauthorized.
+establish hosted/live readiness or complete AVO-004.7. C5 main rollback authority is complete
+for offline acceptance at HEAD `e38d0b826f94f3f559fb2e3ef0b26d1d17128c53`, with Terra APPROVE
+and combined 24 passed; see the [C5 result](avo-0047-c5-result.md). C6 campaign runner and
+eligibility ledger is the next ready gate. C8 remains blocked and hosted `main` mutation remains
+unauthorized. No hosted/provider/main/deploy mutation occurred.
+
+GitHub REST ref deletion has no expected-SHA CAS. Before hosted use, the
+`avo/main-rollback/*` namespace requires exclusive ACL/ruleset authority; rollback cleanup
+must close only after exact-ref authoritative post-state observation.
 
 ## Roadmap coverage
 

@@ -63,18 +63,19 @@ production authority outside the proposing agent's control.
   `82ace056cf9f0453b43c71845179c437914a041b`, with Terra approval and the final offline
   acceptance matrix. The [durable C4 result](avo-0047-c4-result.md) records 358 passed tests,
   green Ruff, clean scoped production Pyright, schema parity, and roadmap validation. This is
-  not hosted or live readiness. C5 main rollback authority is in progress: its rollback-specific
-  contracts and journaling foundation, deterministic inverse composition, injected authority
-  verifier boundary, and admission-to-release dependency chain are implemented and passing focused
-  offline verification. The aggregate rollback coordinator, terminal cleanup/closure, and
-  adversarial recovery gate remain incomplete; the preregistered 12-success threshold remains
-  future work.
+  not hosted or live readiness. C5 main rollback authority is complete for offline acceptance at
+  HEAD `e38d0b826f94f3f559fb2e3ef0b26d1d17128c53` with Terra APPROVE and combined 24 passed.
+  Its durable result records rollback contracts/journaling, deterministic inverse composition,
+  authority verification, aggregate orchestration, terminal cleanup/closure, crash/replay, and
+  adversarial recovery evidence. The preregistered 12-success threshold remains future hosted work.
   Live `main` mutation is currently blocked on both required capabilities: the preferred
   merge-queue protocol needs an organization-owned repository with max-one-entry queue and
   exact admission/hold capability, while the current public repository is user-owned, and no
   isolated release-hold issuer/operator authority exists. No transfer, protection/queue
   mutation, admission or release transition, or main write is authorized until both hosting
-  authority and admission/hold authority are explicitly resolved.
+  authority and admission/hold authority are explicitly resolved. GitHub REST ref deletion has no
+  expected-SHA CAS; before hosted use, the `avo/main-rollback/*` namespace must have exclusive
+  ACL/ruleset authority for rollback cleanup.
 
 ## Milestone register
 
@@ -117,8 +118,8 @@ approving every ordinary patch.
 | C2 — deterministic composition | complete | Protected PR #48; exact sole-parent delta composition and durable controller-rooted composition proof pass. See the [implementation plan](avo-0047-main-graduation-plan.md). |
 | C3 — protected-main provider and attester | complete | Protected PR #49; signed merge-group provenance, effective ruleset/bypass verification, complete check pagination, exact PR/queue/topology binding, durable delivery replay protection, and isolated-App transition observation pass independent Terra review and hosted Ubuntu/Windows checks. See the [runbook](avo-0047-main-graduation-runbook.md). |
 | C4 — coordinator and recovery | complete | Final offline coordinator/recovery acceptance passed at HEAD `82ace056cf9f0453b43c71845179c437914a041b` with Terra approval: 358 passed, 0 failed, filesystem recovery and replay covered, Ruff/scoped production Pyright/schema parity/roadmap validation green. No hosted or live mutation occurred. [Result](avo-0047-c4-result.md) |
-| C5 — main rollback authority | in_progress | Rollback-specific contracts/journaling, deterministic inverse composition, authority verification, and the admission-to-release dependency chain are implemented offline. Aggregate orchestration, terminal cleanup/closure, crash/replay verification, and independent authority review remain. No hosted `main` mutation is authorized while C8 prerequisites remain blocked. |
-| C6 — campaign runner and eligibility ledger | planned | Begins only after C4 and C5 pass. |
+| C5 — main rollback authority | complete | Offline acceptance passed at HEAD `e38d0b826f94f3f559fb2e3ef0b26d1d17128c53` with Terra APPROVE and combined 24 passed, covering rollback contracts/journaling, inverse composition, authority verification, aggregate orchestration, terminal cleanup/closure, crash/replay, and adversarial recovery. No hosted/provider/main/deploy mutation occurred. [Result](avo-0047-c5-result.md) |
+| C6 — campaign runner and eligibility ledger | in_progress | Next ready gate after C5 offline acceptance; hosted ledger activation still requires blocked C8 prerequisites and a fresh hosted rollback drill. |
 | C7 — deterministic offline gate | planned | Begins only after C1–C6 pass. |
 | C8 — hosted organization/queue/release gate | blocked | Requires explicit organization-hosting/max-one merge-queue capability and isolated admission/hold issuer authority; no live `main` mutation is authorized. |
 
@@ -131,10 +132,12 @@ then completed deterministic failure injection and a real failed-soak/authorized
 with immutable exact-SHA evidence. AVO-004.7 C1–C3 are now complete through protected PRs
 #47–#49; C4 coordinator and recovery is complete at HEAD
 `82ace056cf9f0453b43c71845179c437914a041b` with Terra approval and the final offline acceptance
-matrix. C5 main rollback authority is now in progress through its offline contract, composition,
-authority-verifier, and admission-to-release journal foundation; aggregate orchestration,
-terminal closure, and the adversarial recovery gate remain. C4 and partial C5 work do not
-establish hosted/live readiness, and AVO-004.7 remains in progress. The clean-run threshold
+matrix. C5 main rollback authority is complete for offline acceptance at HEAD
+`e38d0b826f94f3f559fb2e3ef0b26d1d17128c53`, with Terra APPROVE and combined 24 passed; see the
+[C5 result](avo-0047-c5-result.md). C5 evidence covers aggregate orchestration, terminal closure,
+adversarial recovery, and replay. C4 and C5 offline evidence do not establish hosted/live
+readiness, and AVO-004.7 remains in progress. C6 campaign runner and eligibility ledger is the
+next ready gate. The clean-run threshold
 and main-specific rollback evidence remain preregistered in the linked ADR, plan, and runbook. The
 later live gate is blocked by two hosting/authority prerequisites: the preferred required merge queue
 with max one entry per group and exact PR-head admission/group-hold capability is available for
@@ -142,7 +145,8 @@ an organization-owned public repository, but the current public repository is us
 a dedicated isolated release issuer has not been authorized. No repository transfer,
 protection/queue mutation, admission or hold-success transition, or live `main` write is
 authorized until both boundaries are explicitly resolved (or an exact-CAS writer design is
-separately reviewed).
+separately reviewed). GitHub REST ref deletion has no expected-SHA CAS; before hosted use, the
+`avo/main-rollback/*` namespace must have exclusive ACL/ruleset authority for rollback cleanup.
 
 ### AVO-004.6 failure-drill sequence
 

@@ -1,13 +1,17 @@
 # ADR 0011: Protected-main graduation boundary
 
-Status: accepted for the AVO-004.7 architecture; C4 complete, implementation and hosted gate in progress.
+Status: accepted for the AVO-004.7 architecture; C4 and C5 complete for offline acceptance,
+implementation and hosted gate in progress.
 Live `main` mutation is blocked by current GitHub hosting capability and missing isolated
 release-hold authority.
 
 C4 coordinator and recovery gate: complete on 2026-09-01 at code HEAD
 `82ace056cf9f0453b43c71845179c437914a041b`, with Terra approval. See the [final C4 result](../avo-0047-c4-result.md).
+C5 is complete for offline acceptance at HEAD `e38d0b826f94f3f559fb2e3ef0b26d1d17128c53`
+with Terra APPROVE and combined 24 passed; see the [C5 result](../avo-0047-c5-result.md).
 This records offline authority and recovery evidence only, does not authorize hosted/live
-mutation, and does not complete AVO-004.7. C5 main rollback authority is the next ready gate.
+mutation, and does not complete AVO-004.7. C6 campaign runner and eligibility ledger is the next
+ready gate.
 
 ## Context
 
@@ -246,6 +250,11 @@ authorized by this ADR. An operator must explicitly authorize a move to an organ
 that meets the hosting requirement, or authorize a separately reviewed exact-CAS writer
 design. Until then, offline implementation and evidence work may proceed, but no hosted
 AVO-004.7 attempt may mutate `main`.
+
+The GitHub REST ref-delete endpoint has no expected-SHA CAS precondition. Consequently,
+rollback cleanup cannot treat a delete response as proof that the expected ref was deleted.
+Before hosted use, the `avo/main-rollback/*` namespace must be protected by exclusive
+ACL/ruleset authority for rollback cleanup, with exact-ref post-state reconciliation.
 
 The isolated release-check issuer is mandatory for AVO-004.7, not an optional future
 hardening step. It must be a dedicated least-privilege GitHub App or equivalent isolated

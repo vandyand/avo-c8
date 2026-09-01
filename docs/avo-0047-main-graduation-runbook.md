@@ -1,7 +1,9 @@
 # AVO-004.7 protected-main graduation runbook
 
 Status: activation and evidence runbook; C4 coordinator/recovery gate complete on
-2026-09-01 at HEAD `82ace056cf9f0453b43c71845179c437914a041b` with Terra approval; live `main`
+2026-09-01 at HEAD `82ace056cf9f0453b43c71845179c437914a041b` with Terra approval; C5 main
+rollback authority complete for offline acceptance on HEAD `e38d0b826f94f3f559fb2e3ef0b26d1d17128c53`
+with Terra APPROVE and combined 24 passed; live `main`
 mutation is blocked until both
 organization-hosting/merge-queue capability and isolated release-hold authority are
 explicitly authorized.
@@ -11,9 +13,14 @@ This runbook operationalizes [ADR 0011](adr/0011-protected-main-graduation.md) a
 single-host, trusted-team boundary. It does not authorize deployment, production effects,
 repository transfer, branch-protection mutation, or direct ref writes.
 
-C4 completion is offline coordinator/recovery evidence only. The next ready gate is C5 main
-rollback authority; no provider or `main` mutation is authorized by this status. C8 remains
+C4/C5 completion is offline coordinator/recovery evidence only. The next ready gate is C6
+campaign runner and eligibility ledger; no provider or `main` mutation is authorized by this
+status. C8 remains
 blocked pending organization-hosting/merge-queue capability and isolated release-hold authority.
+
+The GitHub REST ref-delete endpoint provides no expected-SHA CAS precondition. Before hosted
+use, protect the `avo/main-rollback/*` namespace with exclusive ACL/ruleset authority. Cleanup
+must be exact-ref scoped and close only after authoritative post-state observation.
 
 ## 1. Activation prerequisites
 
