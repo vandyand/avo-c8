@@ -38,6 +38,7 @@ from avo_correlate.adapters.git.repository import (
 __all__ = [
     "DeterministicCompositionAdapter",
     "DeterministicMainCompositionAdapter",
+    "DeterministicMainRollbackCompositionAdapter",
     "FilesystemPublicationJournal",
     "GitCandidatePublisher",
     "GitCommandRunner",
@@ -61,5 +62,4 @@ __all__ = [
     "PublicationResult",
     "StaleGitSnapshotError",
     "compose_main_candidate",
-    "DeterministicMainRollbackCompositionAdapter",
 ]
