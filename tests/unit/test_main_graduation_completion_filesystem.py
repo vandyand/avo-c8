@@ -16,6 +16,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
+import pytest
+
 from avo_correlate.adapters.artifacts.main_graduation_journal import MainGraduationJournal
 from avo_correlate.adapters.hosted_git.protected_main import MainMergeGroupObservation
 from avo_correlate.application.main_graduation_completion_coordinator import (
@@ -330,6 +332,42 @@ def _completion_coordinator(
         authority_verifier=Authority(),
         attester=None,
     )
+
+
+def test_completion_requires_separate_narrow_hold_and_release_capabilities(
+    tmp_path: Path,
+) -> None:
+    journal, provider = _completion_fixture(tmp_path)
+    with pytest.raises(ValueError, match="explicit hold capability"):
+        MainGraduationCompletionCoordinator(
+            journal=journal,
+            clock=provider.clock,
+            lease_fence=Fence(),
+            provider=provider,
+            authority_verifier=Authority(),
+        )
+    with pytest.raises(ValueError, match="separate objects"):
+        MainGraduationCompletionCoordinator(
+            journal=journal,
+            clock=provider.clock,
+            lease_fence=Fence(),
+            provider=provider,
+            hold_capability=provider,
+            release_capability=provider,
+            observation_capability=provider.observation_capability,
+            authority_verifier=Authority(),
+        )
+    with pytest.raises(ValueError, match="must not expose issue_release"):
+        MainGraduationCompletionCoordinator(
+            journal=journal,
+            clock=provider.clock,
+            lease_fence=Fence(),
+            provider=provider,
+            hold_capability=provider,
+            release_capability=provider.release_capability,
+            observation_capability=provider.observation_capability,
+            authority_verifier=Authority(),
+        )
 
 
 def _snapshot(root: Path) -> dict[str, bytes]:

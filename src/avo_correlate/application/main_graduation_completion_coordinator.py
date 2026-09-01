@@ -189,10 +189,29 @@ class MainGraduationCompletionCoordinator:
         self.provider = protected_main_provider or provider
         if self.provider is None:
             raise ValueError("a protected-main provider is required")
-        self.hold_capability = hold_capability or release_capability or provider or self.provider
-        self.release_capability = (
-            release_capability or release_issuer_capability or provider or self.provider
-        )
+        if hold_capability is None:
+            raise ValueError("an explicit hold capability is required")
+        if (
+            release_capability is not None
+            and release_issuer_capability is not None
+            and release_capability is not release_issuer_capability
+        ):
+            raise ValueError("release capabilities must name one exact capability")
+        exact_release_capability = release_capability or release_issuer_capability
+        if exact_release_capability is None:
+            raise ValueError("an explicit release capability is required")
+        if hold_capability is exact_release_capability:
+            raise ValueError("hold and release capabilities must be separate objects")
+        if not callable(getattr(hold_capability, "issue_group_hold", None)):
+            raise ValueError("hold capability does not expose issue_group_hold")
+        if callable(getattr(hold_capability, "issue_release", None)):
+            raise ValueError("hold capability must not expose issue_release")
+        if not callable(getattr(exact_release_capability, "issue_release", None)):
+            raise ValueError("release capability does not expose issue_release")
+        if callable(getattr(exact_release_capability, "issue_group_hold", None)):
+            raise ValueError("release capability must not expose issue_group_hold")
+        self.hold_capability = hold_capability
+        self.release_capability = exact_release_capability
         self.observation_capability = observation_capability or self.provider
         self.authority_verifier = authority_verifier
         self.attester = attester
