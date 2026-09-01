@@ -22,6 +22,10 @@ from avo_correlate.contracts.main_graduation_offline_drill import GitObject
 from avo_correlate.domain.canonical import canonical_bytes, canonical_digest
 
 MAX_CONTROLLER_ROOT_BYTES = 8 * 1024 * 1024
+# The root authorizes one bounded offline run.  Two hours leaves room for the
+# exact 47-node matrix while ensuring a forgotten or stale root cannot remain
+# usable indefinitely.
+MAX_CONTROLLER_ROOT_WINDOW_SECONDS = 2 * 60 * 60
 
 
 class C7ControllerRootError(ValueError):
@@ -56,6 +60,10 @@ class C7ControllerRoot(StrictModel):
     def validate_root(self) -> C7ControllerRoot:
         if self.expires_at <= self.authorized_at:
             raise ValueError("controller root expiry must follow authorization")
+        if (
+            self.expires_at - self.authorized_at
+        ).total_seconds() > MAX_CONTROLLER_ROOT_WINDOW_SECONDS:
+            raise ValueError("controller root window exceeds maximum")
         expected = canonical_digest(
             {
                 "domain": "avo-004.7-c7/controller-root/v1",
@@ -135,6 +143,7 @@ def load_controller_root(path: Path, expected_raw_digest: str) -> C7ControllerRo
 
 __all__ = [
     "MAX_CONTROLLER_ROOT_BYTES",
+    "MAX_CONTROLLER_ROOT_WINDOW_SECONDS",
     "C7ControllerRoot",
     "C7ControllerRootArtifact",
     "C7ControllerRootError",

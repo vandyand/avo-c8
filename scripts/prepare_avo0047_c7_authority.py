@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from avo_correlate.application.c7_controller_root import (
+    MAX_CONTROLLER_ROOT_WINDOW_SECONDS,
     C7ControllerRootError,
     load_controller_root,
 )
@@ -40,11 +41,10 @@ from avo_correlate.contracts.main_graduation_offline_drill import (
 )
 from avo_correlate.domain.canonical import canonical_bytes, canonical_digest, file_digest
 
-# C7 preparation should be short-lived.  Five minutes matches the existing
-# controller authorization default, while the lower bound prevents a caller
-# from creating an immediately unusable draft.
+# C7 preparation is bounded by the controller-root window, while the lower
+# bound prevents a caller from creating an immediately unusable draft.
 MIN_TTL_SECONDS = 1
-MAX_TTL_SECONDS = 5 * 60
+MAX_TTL_SECONDS = MAX_CONTROLLER_ROOT_WINDOW_SECONDS
 MAX_AUTHORITY_BYTES = 8 * 1024 * 1024
 
 

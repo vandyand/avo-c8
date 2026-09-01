@@ -41,7 +41,9 @@ FROZEN_OFFLINE_EXECUTION_ARGV: tuple[str, ...] = (
 
 _HEX_OBJECT = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
 _MAX_COMMAND_OUTPUT = 1024 * 1024
-_COMMAND_TIMEOUT_SECONDS = 30
+# Identity checks are several small local commands.  Keep their individual
+# bound short so a hung probe cannot consume the execution window.
+_IDENTITY_COMMAND_TIMEOUT_SECONDS = 60
 _MAX_ARCHIVE_BYTES = 256 * 1024 * 1024
 _MAX_ARCHIVE_ENTRIES = 100_000
 _MAX_ARCHIVE_FILE_BYTES = 64 * 1024 * 1024
@@ -252,7 +254,7 @@ class C7WorkspaceIdentityVerifier:
                 text=True,
                 encoding="utf-8",
                 errors="replace",
-                timeout=_COMMAND_TIMEOUT_SECONDS,
+                timeout=_IDENTITY_COMMAND_TIMEOUT_SECONDS,
                 shell=False,
                 env={
                     **sanitized_child_environment(),
@@ -281,7 +283,7 @@ class C7WorkspaceIdentityVerifier:
                     text=True,
                     encoding="utf-8",
                     errors="replace",
-                    timeout=_COMMAND_TIMEOUT_SECONDS,
+                    timeout=_IDENTITY_COMMAND_TIMEOUT_SECONDS,
                     shell=False,
                     env={
                         **sanitized_child_environment(),
@@ -395,7 +397,7 @@ def _uv_runtime_identity(
             text=True,
             encoding="utf-8",
             errors="strict",
-            timeout=_COMMAND_TIMEOUT_SECONDS,
+            timeout=_IDENTITY_COMMAND_TIMEOUT_SECONDS,
             shell=False,
             env=environment,
         )

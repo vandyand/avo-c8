@@ -19,6 +19,7 @@ from avo_correlate.application.main_graduation_offline_identity import (
 )
 from avo_correlate.domain.canonical import canonical_bytes, canonical_digest
 from scripts.prepare_avo0047_c7_authority import (
+    MAX_TTL_SECONDS,
     C7AuthorityPreparationError,
     prepare_authority,
 )
@@ -88,7 +89,7 @@ def _root(path: Path, value: dict[str, Any] | None = None) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _prepare(tmp_path: Path, **updates: Any) -> tuple[Any, _Verifier, Path]:
+def _prepare(tmp_path: Path, **updates: Any) -> tuple[Any, _Verifier | None, Path]:
     root = tmp_path / "controller-root.json"
     root_digest = (
         _root(root)
@@ -179,7 +180,7 @@ def test_preparer_rejects_root_digest_duplicates_and_noncanonical_bytes(tmp_path
 
 def test_preparer_rejects_ttl_and_conflicting_existing_draft(tmp_path: Path) -> None:
     with pytest.raises(C7AuthorityPreparationError, match="ttl_seconds"):
-        _prepare(tmp_path, ttl_seconds=301)
+        _prepare(tmp_path, ttl_seconds=MAX_TTL_SECONDS + 1)
     with pytest.raises(C7AuthorityPreparationError, match="ttl_seconds"):
         _prepare(tmp_path, ttl_seconds=0)
 

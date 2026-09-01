@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Protocol, cast
 
 from avo_correlate.adapters.artifacts.filesystem import FilesystemArtifactStore
+from avo_correlate.application.c7_controller_root import MAX_CONTROLLER_ROOT_WINDOW_SECONDS
 from avo_correlate.application.main_graduation_offline_identity import (
     FROZEN_OFFLINE_EXECUTION_ARGV,
     C7WorkspaceIdentityError,
@@ -36,7 +37,9 @@ from avo_correlate.contracts.main_graduation_offline_drill import (
 )
 from avo_correlate.domain.canonical import canonical_digest
 
-_COMMAND_TIMEOUT_SECONDS = 300
+# The frozen matrix is one subprocess, so its bound must cover the complete
+# 47-node run while remaining finite and shorter than the authority window.
+_PYTEST_COMMAND_TIMEOUT_SECONDS = 60 * 60
 _MAX_PROCESS_OUTPUT = 2 * 1024 * 1024
 
 
@@ -60,7 +63,7 @@ def _default_runner(argv: list[str], cwd: Path, report_path: Path) -> int:
         encoding="utf-8",
         errors="replace",
         env=sanitized_child_environment(),
-        timeout=_COMMAND_TIMEOUT_SECONDS,
+        timeout=_PYTEST_COMMAND_TIMEOUT_SECONDS,
     )
     if len(completed.stdout.encode("utf-8")) > _MAX_PROCESS_OUTPUT or len(
         completed.stderr.encode("utf-8")
@@ -98,6 +101,10 @@ class HermeticPytestExecutor:
         if not self.workspace.is_dir():
             raise OfflinePytestExecutionError("workspace is unavailable")
         self._check_window(authority)
+        if (
+            authority.expires_at - authority.authorized_at
+        ).total_seconds() > MAX_CONTROLLER_ROOT_WINDOW_SECONDS:
+            raise OfflinePytestExecutionError("execution authority window exceeds maximum")
         if not authority.argv or "pytest" not in authority.argv:
             raise OfflinePytestExecutionError("authority argv is not pytest")
         if tuple(authority.argv) != FROZEN_OFFLINE_EXECUTION_ARGV:
