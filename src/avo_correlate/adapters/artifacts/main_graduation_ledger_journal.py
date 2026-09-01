@@ -202,11 +202,15 @@ class MainGraduationLedgerJournal:
                 raise MainGraduationLedgerJournalError(
                     "submission cannot be appended after boundary evidence"
                 )
+            self._require_fresh_mutation_allowed(activation, "submission")
+            current_state = self._current_accumulator_state(activation)
+            if record.scheduler_sequence != current_state.last_scheduler_sequence + 1:
+                raise MainGraduationLedgerJournalError(
+                    "submission must be the exact next unprocessed sequence; "
+                    "scheduler sequence has a gap"
+                )
             data = canonical_bytes(record)
             reference = self._put("submission", data)
-            max_sequence = self._max_committed_sequence(activation)
-            if record.scheduler_sequence != max_sequence + 1:
-                raise MainGraduationLedgerJournalError("scheduler sequence has a gap")
             for entry in self._entries_for(activation):
                 old = self._read_entry_submission(entry, activation)
                 if (
@@ -293,6 +297,7 @@ class MainGraduationLedgerJournal:
                 raise MainGraduationLedgerJournalError(
                     "classification cannot be appended after boundary evidence"
                 )
+            self._require_fresh_mutation_allowed(activation, "classification")
             data = canonical_bytes(record)
             reference = self._put("classification", data)
             return self._create_stage_once(
@@ -358,6 +363,7 @@ class MainGraduationLedgerJournal:
                 raise MainGraduationLedgerJournalError(
                     "outcome cannot be appended after boundary evidence"
                 )
+            self._require_fresh_mutation_allowed(activation, "outcome")
             data = canonical_bytes(record)
             reference = self._put("outcome", data)
             return self._create_stage_once(
@@ -439,6 +445,7 @@ class MainGraduationLedgerJournal:
                 raise MainGraduationLedgerJournalError(
                     "transition cannot be appended after boundary evidence"
                 )
+            self._require_fresh_mutation_allowed(activation, "transition")
             data = canonical_bytes(record)
             reference = self._put("transition", data)
             return self._create_stage_once(activation, sequence, "transition", reference, data)
@@ -490,15 +497,24 @@ class MainGraduationLedgerJournal:
                 raise MainGraduationLedgerJournalError(
                     "boundary evidence controller authority differs from activation"
                 )
+            data = canonical_bytes(record)
+            index = self._boundary_evidence_path(activation)
+            if index.is_file():
+                old_reference = self._read_reference(index, "boundary")
+                old_data = self._read_raw(old_reference, "boundary")
+                if old_data != data:
+                    raise MainGraduationLedgerRecordConflictError(
+                        "conflicting boundary create-once record"
+                    )
+                old = self._read_record(
+                    "boundary", old_reference, MainLedgerBoundaryViolationEvidence
+                )
+                self._verify("boundary", old, activation)
+                return old_reference
+            self._require_fresh_mutation_allowed(activation, "boundary evidence")
             self._validate_boundary_observation(activation, record)
             self._verify("boundary", record, activation)
-            data = canonical_bytes(record)
             reference = self._put("boundary", data)
-            index = (
-                self._indexes
-                / "boundary"
-                / (f"{activation.activation_digest.removeprefix('sha256:')}.json")
-            )
             return self._create_once(index, reference, data, "boundary")
 
     record_boundary_violation_evidence = record_boundary_evidence
@@ -539,12 +555,16 @@ class MainGraduationLedgerJournal:
             self._require_prior_state_for_boundary(activation, record.prior_state, evidence)
             self._verify("boundary-reset", record, activation, evidence)
             data = canonical_bytes(record)
+            index = self._boundary_reset_path(activation)
+            if index.is_file():
+                old_reference = self._read_reference(index, "boundary-reset")
+                old_data = self._read_raw(old_reference, "boundary-reset")
+                if old_data != data:
+                    raise MainGraduationLedgerRecordConflictError(
+                        "conflicting boundary reset create-once record"
+                    )
+                return old_reference
             reference = self._put("boundary-reset", data)
-            index = (
-                self._indexes
-                / "boundary-reset"
-                / (f"{activation.activation_digest.removeprefix('sha256:')}.json")
-            )
             return self._create_once(index, reference, data, "boundary-reset")
 
     record_boundary_reset_transition = record_boundary_reset
@@ -580,15 +600,23 @@ class MainGraduationLedgerJournal:
             record = self._parse_record("package", package)
             self._validate_record_artifacts(record)
             activation = self._require_activation(record.activation.activation_digest)
+            data = canonical_bytes(record)
+            index = self._package_path(activation)
+            if index.is_file():
+                old_reference = self._read_reference(index, "package")
+                old_data = self._read_raw(old_reference, "package")
+                if old_data != data:
+                    raise MainGraduationLedgerRecordConflictError(
+                        "conflicting package create-once record"
+                    )
+                old = self._read_record("package", old_reference, MainLedgerEvidencePackage)
+                self._verify_package_closure(old, activation)
+                self._verify("package", old)
+                return old_reference
+            self._require_package_write_allowed(activation)
             self._verify_package_closure(record, activation)
             self._verify("package", record)
-            data = canonical_bytes(record)
             reference = self._put("package", data)
-            index = (
-                self._indexes
-                / "package"
-                / f"{activation.activation_digest.removeprefix('sha256:')}.json"
-            )
             return self._create_once(index, reference, data, "package")
 
     record_evidence_package = record_package
@@ -881,6 +909,81 @@ class MainGraduationLedgerJournal:
                 raise MainGraduationLedgerJournalError("committed scheduler sequence has a gap")
             expected += 1
         return expected - 1
+
+    def _current_accumulator_state(self, activation: MainLedgerActivation) -> Any:
+        """Reconstruct the authoritative state from the durable CAS chain."""
+        state = main_ledger_genesis_state(
+            activation.activation_digest, activation.scheduler_sequence_watermark
+        )
+        for entry in self._entries_for(activation):
+            sequence = entry["scheduler_sequence"]
+            self._validate_entry(activation, entry)
+            submission = self._read_entry_submission(entry, activation)
+            if not self._stage_exists(activation, sequence, "classification"):
+                break
+            classification = self._read_entry_ref(
+                entry,
+                "classification",
+                MainLedgerClassificationEvidence,
+                activation,
+                submission,
+            )
+            outcome = None
+            if classification.classification == "eligible":
+                if not self._stage_exists(activation, sequence, "outcome"):
+                    break
+                outcome = self._require_outcome(entry, activation, submission, classification)
+            if not self._stage_exists(activation, sequence, "transition"):
+                break
+            transition = self._read_entry_ref(
+                entry,
+                "transition",
+                MainLedgerAccumulatorTransition,
+                activation,
+                submission,
+                classification,
+                outcome,
+            )
+            if transition.prior_state != state:
+                raise MainGraduationLedgerJournalError(
+                    "durable accumulator predecessor differs from chain"
+                )
+            state = transition.resulting_state
+        return state
+
+    def _require_fresh_mutation_allowed(
+        self, activation: MainLedgerActivation, kind: str
+    ) -> None:
+        """Reject new writes after any durable terminal fence."""
+        if self._current_accumulator_state(activation).threshold_complete:
+            raise MainGraduationLedgerJournalError(
+                f"{kind} cannot be written after threshold completion"
+            )
+        if self._package_path(activation).is_file():
+            raise MainGraduationLedgerJournalError(
+                f"{kind} cannot be written after terminal package"
+            )
+        if self._boundary_evidence_path(activation).is_file() or self._boundary_reset_path(
+            activation
+        ).is_file():
+            raise MainGraduationLedgerJournalError(
+                f"{kind} cannot be written after boundary fence"
+            )
+
+    def _require_package_write_allowed(self, activation: MainLedgerActivation) -> None:
+        if self._boundary_evidence_path(activation).is_file() and not self._boundary_reset_path(
+            activation
+        ).is_file():
+            raise MainGraduationLedgerJournalError(
+                "package cannot be written before boundary reset"
+            )
+        if not (
+            self._current_accumulator_state(activation).threshold_complete
+            or self._boundary_reset_path(activation).is_file()
+        ):
+            raise MainGraduationLedgerJournalError(
+                "package cannot be written before terminal state"
+            )
 
     def _read_entry_submission(
         self, entry: dict[str, Any], activation: MainLedgerActivation
@@ -1323,6 +1426,16 @@ class MainGraduationLedgerJournal:
 
     def _boundary_evidence_path(self, activation: MainLedgerActivation) -> Path:
         return self._indexes / "boundary" / (
+            f"{activation.activation_digest.removeprefix('sha256:')}.json"
+        )
+
+    def _boundary_reset_path(self, activation: MainLedgerActivation) -> Path:
+        return self._indexes / "boundary-reset" / (
+            f"{activation.activation_digest.removeprefix('sha256:')}.json"
+        )
+
+    def _package_path(self, activation: MainLedgerActivation) -> Path:
+        return self._indexes / "package" / (
             f"{activation.activation_digest.removeprefix('sha256:')}.json"
         )
 

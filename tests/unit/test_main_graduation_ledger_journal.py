@@ -557,17 +557,20 @@ def test_restart_rejects_tampered_cas_or_noncanonical_sequence_index(tmp_path: P
         MainGraduationLedgerJournal(tmp_path, _Verifier()).list_sequences()
 
 
-def test_later_submission_is_recordable_while_prior_outcome_is_open(tmp_path: Path) -> None:
+def test_speculative_later_submission_is_rejected_while_prior_outcome_is_open(
+    tmp_path: Path,
+) -> None:
     journal, activation, store = _journal(tmp_path)
     first = _submission(activation, store, 11)
     second = _submission(activation, store, 12)
     journal.record_submission(first)
-    journal.record_submission(second)
+    with pytest.raises(MainGraduationLedgerJournalError, match="exact next"):
+        journal.record_submission(second)
     classification = _classification(activation, first, store)
     journal.record_classification(classification)
     with pytest.raises(MainGraduationLedgerJournalError, match="transition"):
         journal.record_transition({})  # type: ignore[arg-type]
-    assert journal.read_submission(second.operation_id) is not None
+    assert journal.read_submission(second.operation_id) is None
 
 
 def test_duplicate_physical_content_is_rejected_across_sequences(tmp_path: Path) -> None:
@@ -594,7 +597,7 @@ def test_duplicate_physical_content_is_rejected_across_sequences(tmp_path: Path)
         duplicate_probe,
         "envelope_digest",
     )
-    with pytest.raises(MainGraduationLedgerJournalError, match="physical submission content"):
+    with pytest.raises(MainGraduationLedgerJournalError, match="exact next"):
         journal.record_submission(duplicate)
 
 
@@ -638,6 +641,8 @@ def test_terminal_and_transition_are_ordered_and_exact(tmp_path: Path) -> None:
     )
     assert journal.record_transition(transition).digest
     assert journal.record_transition(transition) == journal.read_transition(11)[1]
+    second = _submission(activation, store, 12)
+    assert journal.record_submission(second).digest
 
 
 def test_boundary_reset_and_aggregate_reload(tmp_path: Path) -> None:
@@ -687,6 +692,8 @@ def test_boundary_reset_and_aggregate_reload(tmp_path: Path) -> None:
         "transition_digest",
     )
     journal.record_boundary_evidence(evidence)
+    with pytest.raises(MainGraduationLedgerJournalError, match="boundary"):
+        journal.record_submission(_submission(activation, store, 12))
     journal.record_boundary_reset(reset)
     package_probe = MainLedgerEvidencePackage.model_construct(
         status="boundary_reset",
@@ -709,6 +716,9 @@ def test_boundary_reset_and_aggregate_reload(tmp_path: Path) -> None:
         }
     )
     journal.record_package(package)
+    assert journal.record_package(package) == journal.record_package(package)
+    with pytest.raises(MainGraduationLedgerJournalError, match=r"boundary|terminal package"):
+        journal.record_submission(_submission(activation, store, 11))
     restarted = MainGraduationLedgerJournal(tmp_path, _Verifier())
     loaded = restarted.read_package(activation.activation_digest)
     assert loaded is not None and loaded[0] == package
@@ -766,6 +776,8 @@ def test_boundary_package_closes_submitted_unclassified_tail(tmp_path: Path) -> 
         "transition_digest",
     )
     journal.record_boundary_evidence(evidence)
+    with pytest.raises(MainGraduationLedgerJournalError, match="boundary"):
+        journal.record_classification(_classification(activation, submission, store))
     journal.record_boundary_reset(reset)
     tail = _with_digest(
         MainLedgerUnresolvedTailEntry,
