@@ -2,6 +2,17 @@
 
 from avo_correlate.contracts.base import ActorRef, ArtifactRef, StrictModel, VersionedComponentRef
 from avo_correlate.contracts.budgets import BudgetSpec, UsageRecord
+from avo_correlate.contracts.c8_hosted_preflight import (
+    C8HostedPreflightReport,
+    C8IsolatedIssuerRead,
+    C8ProtectionRead,
+    C8QueueConfigurationRead,
+    C8RepositoryRead,
+    C8RollbackNamespaceRead,
+    C8ValidationIdentityRead,
+    C8WorkflowRead,
+    HostedC8PreflightReport,
+)
 from avo_correlate.contracts.evaluation import AdmissionDecision, EvaluationRecord
 from avo_correlate.contracts.experiment import ExperimentSpec
 from avo_correlate.contracts.integration_campaign import (
@@ -245,6 +256,14 @@ __all__ = [
     "AgentCompletion",
     "ArtifactRef",
     "BudgetSpec",
+    "C8HostedPreflightReport",
+    "C8IsolatedIssuerRead",
+    "C8ProtectionRead",
+    "C8QueueConfigurationRead",
+    "C8RepositoryRead",
+    "C8RollbackNamespaceRead",
+    "C8ValidationIdentityRead",
+    "C8WorkflowRead",
     "CampaignCompletionPlan",
     "CampaignDiscoveryEvidence",
     "CampaignFinalEvidenceRecord",
@@ -261,6 +280,7 @@ __all__ = [
     "GitRefSnapshot",
     "HarnessInvocationRecord",
     "HarnessRuntimeProfile",
+    "HostedC8PreflightReport",
     "IntegrationCampaignEvidencePackage",
     "IntegrationIntentTemplate",
     "IntegrationMergeResult",

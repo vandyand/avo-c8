@@ -1,0 +1,195 @@
+"""Non-authoritative, read-only C8 hosted preflight contracts.
+
+These contracts intentionally describe configuration observations only.  They
+cannot represent a pull request, check run, queue entry, hold, release,
+authority, activation, or rollback proof.
+"""
+
+from __future__ import annotations
+
+from typing import Literal
+
+from pydantic import Field, model_validator
+
+from avo_correlate.contracts.base import (
+    NonEmptyString,
+    PositiveInt,
+    Sha256Digest,
+    StrictModel,
+)
+from avo_correlate.domain.canonical import canonical_digest
+
+
+class C8RepositoryRead(StrictModel):
+    """Authenticated repository and immutable protected-main topology read."""
+
+    repository_digest: Sha256Digest
+    owner: NonEmptyString
+    repo: NonEmptyString
+    owner_type: Literal["Organization", "User", "Bot", "Unknown"]
+    target_ref: Literal["refs/heads/main"] = "refs/heads/main"
+    main_commit: NonEmptyString
+    main_tree: NonEmptyString
+    main_parents: list[NonEmptyString] = Field(min_length=0)
+
+
+class C8ProtectionRead(StrictModel):
+    """Sanitized effective protection/ruleset configuration."""
+
+    effective: bool
+    ruleset_ids: list[PositiveInt] = Field(min_length=0)
+    queue_required: bool
+    bypass_allowed: bool
+    direct_merge_allowed: bool
+
+    @model_validator(mode="after")
+    def rulesets_are_canonical(self) -> C8ProtectionRead:
+        if self.ruleset_ids != sorted(set(self.ruleset_ids)):
+            raise ValueError("ruleset_ids must be sorted and unique")
+        return self
+
+
+class C8QueueConfigurationRead(StrictModel):
+    """Merge-queue availability and configuration, without queue state."""
+
+    available: bool
+    maximum_entries_to_merge: PositiveInt | None = None
+    maximum_entries_to_build: PositiveInt | None = None
+    merge_method: NonEmptyString | None = None
+    merging_strategy: NonEmptyString | None = None
+
+
+class C8WorkflowRead(StrictModel):
+    """Workflow/event requirements derived from authenticated repository bytes."""
+
+    path: NonEmptyString
+    pull_request_event: bool
+    merge_group_event: bool
+    exact_sha_checkout: bool
+
+
+class C8ValidationIdentityRead(StrictModel):
+    """Validation identity observation; App 15368 is fixed by the contract."""
+
+    app_id: Literal[15368] | None = None
+    identity: NonEmptyString | None = None
+
+
+class C8IsolatedIssuerRead(StrictModel):
+    """Sanitized availability observation for the isolated release issuer.
+
+    This is deliberately capability metadata only.  It contains no token,
+    credential, check run, authorization, or transition payload.
+    """
+
+    available: bool
+    identity: NonEmptyString | None = None
+    app_id: PositiveInt | None = None
+    isolation_digest: Sha256Digest | None = None
+
+    @model_validator(mode="after")
+    def require_identity_when_available(self) -> C8IsolatedIssuerRead:
+        if self.available and (
+            self.identity is None or self.app_id is None or self.isolation_digest is None
+        ):
+            raise ValueError("available issuer observation is incomplete")
+        if self.app_id == 15368:
+            raise ValueError("validation App 15368 cannot be the isolated release issuer")
+        return self
+
+
+class C8RollbackNamespaceRead(StrictModel):
+    """Read-only controls observed for the rollback ref namespace."""
+
+    namespace: NonEmptyString
+    exclusive: bool
+    deletion_protected: bool
+    bypass_allowed: bool
+    exclusive_controller_write: bool = False
+    controller_delete_authorized: bool = False
+    other_delete_denied: bool = False
+
+
+class HostedC8PreflightReport(StrictModel):
+    """Deterministic diagnostics that are never activation evidence."""
+
+    schema_version: Literal[1] = 1
+    result: Literal["pass", "blocked", "unverifiable"]
+    passed_codes: list[NonEmptyString] = Field(min_length=0)
+    blocker_codes: list[NonEmptyString] = Field(min_length=0)
+    unverifiable_codes: list[NonEmptyString] = Field(min_length=0)
+    observation_digests: dict[str, Sha256Digest] = Field(default_factory=dict)
+    authority_consumable: Literal[False] = False
+    report_digest: Sha256Digest
+
+    @model_validator(mode="after")
+    def validate_report(self) -> HostedC8PreflightReport:
+        for values, label in (
+            (self.passed_codes, "passed codes"),
+            (self.blocker_codes, "blocker codes"),
+            (self.unverifiable_codes, "unverifiable codes"),
+        ):
+            if values != sorted(set(values)):
+                raise ValueError(f"{label} must be sorted and unique")
+        expected_outcome = (
+            "blocked"
+            if self.blocker_codes
+            else "unverifiable"
+            if self.unverifiable_codes
+            else "pass"
+        )
+        if self.result != expected_outcome:
+            raise ValueError("preflight outcome does not match diagnostic codes")
+        expected = canonical_digest(self.model_dump(exclude={"report_digest"}, mode="json"))
+        if self.report_digest != expected:
+            raise ValueError("preflight report digest mismatch")
+        return self
+
+    @classmethod
+    def build(
+        cls,
+        *,
+        passed_codes: list[str] | tuple[str, ...],
+        blocker_codes: list[str] | tuple[str, ...],
+        unverifiable_codes: list[str] | tuple[str, ...],
+        observation_digests: dict[str, str],
+    ) -> HostedC8PreflightReport:
+        passed = sorted(set(passed_codes))
+        blockers = sorted(set(blocker_codes))
+        unverifiable = sorted(set(unverifiable_codes))
+        result: Literal["pass", "blocked", "unverifiable"] = (
+            "blocked" if blockers else "unverifiable" if unverifiable else "pass"
+        )
+        values = {
+            "schema_version": 1,
+            "result": result,
+            "passed_codes": passed,
+            "blocker_codes": blockers,
+            "unverifiable_codes": unverifiable,
+            "observation_digests": dict(sorted(observation_digests.items())),
+            "authority_consumable": False,
+        }
+        return cls.model_validate({**values, "report_digest": canonical_digest(values)})
+
+    @property
+    def outcome(self) -> Literal["pass", "blocked", "unverifiable"]:
+        """Compatibility spelling; it is not serialized or authority-bearing."""
+        return self.result
+
+
+# The shorter name is useful to adapters and keeps callers independent of the
+# report's hosted implementation detail.
+C8HostedPreflightReport = HostedC8PreflightReport
+
+
+__all__ = [
+    "C8HostedPreflightReport",
+    "C8IsolatedIssuerRead",
+    "C8ProtectionRead",
+    "C8QueueConfigurationRead",
+    "C8RepositoryRead",
+    "C8RollbackNamespaceRead",
+    "C8ValidationIdentityRead",
+    "C8WorkflowRead",
+    "HostedC8PreflightReport",
+]
