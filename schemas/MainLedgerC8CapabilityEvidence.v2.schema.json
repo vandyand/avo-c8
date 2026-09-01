@@ -1,0 +1,112 @@
+{
+  "additionalProperties": false,
+  "description": "Controller-observed hosting, queue, validation, and release capability.",
+  "properties": {
+    "bypass_allowed": {
+      "const": false,
+      "default": false,
+      "title": "Bypass Allowed",
+      "type": "boolean"
+    },
+    "direct_merge_allowed": {
+      "const": false,
+      "default": false,
+      "title": "Direct Merge Allowed",
+      "type": "boolean"
+    },
+    "evidence_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Evidence Digest",
+      "type": "string"
+    },
+    "hosting_authority_identity": {
+      "minLength": 1,
+      "title": "Hosting Authority Identity",
+      "type": "string"
+    },
+    "max_entries_per_group": {
+      "const": 1,
+      "default": 1,
+      "title": "Max Entries Per Group",
+      "type": "integer"
+    },
+    "observed_at": {
+      "format": "date-time",
+      "title": "Observed At",
+      "type": "string"
+    },
+    "queue_configuration_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Queue Configuration Digest",
+      "type": "string"
+    },
+    "queue_generation_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Queue Generation Digest",
+      "type": "string"
+    },
+    "queue_required": {
+      "const": true,
+      "default": true,
+      "title": "Queue Required",
+      "type": "boolean"
+    },
+    "release_issuer_app_id": {
+      "exclusiveMinimum": 0,
+      "title": "Release Issuer App Id",
+      "type": "integer"
+    },
+    "release_issuer_authority_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Release Issuer Authority Digest",
+      "type": "string"
+    },
+    "release_issuer_identity": {
+      "minLength": 1,
+      "title": "Release Issuer Identity",
+      "type": "string"
+    },
+    "release_issuer_isolated": {
+      "const": true,
+      "default": true,
+      "title": "Release Issuer Isolated",
+      "type": "boolean"
+    },
+    "repository_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Repository Digest",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 2,
+      "default": 2,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "target_ref": {
+      "const": "refs/heads/main",
+      "default": "refs/heads/main",
+      "title": "Target Ref",
+      "type": "string"
+    },
+    "validation_app_id": {
+      "const": 15368,
+      "default": 15368,
+      "title": "Validation App Id",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "repository_digest",
+    "hosting_authority_identity",
+    "queue_configuration_digest",
+    "queue_generation_digest",
+    "release_issuer_identity",
+    "release_issuer_app_id",
+    "release_issuer_authority_digest",
+    "observed_at",
+    "evidence_digest"
+  ],
+  "title": "MainLedgerC8CapabilityEvidence",
+  "type": "object"
+}

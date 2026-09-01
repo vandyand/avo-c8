@@ -1,0 +1,88 @@
+{
+  "additionalProperties": false,
+  "description": "Fresh hosted main rollback proof required before ledger activation.",
+  "properties": {
+    "completed_at": {
+      "format": "date-time",
+      "title": "Completed At",
+      "type": "string"
+    },
+    "completion_state": {
+      "const": "successful",
+      "default": "successful",
+      "title": "Completion State",
+      "type": "string"
+    },
+    "deploy_performed": {
+      "const": false,
+      "default": false,
+      "title": "Deploy Performed",
+      "type": "boolean"
+    },
+    "fresh_hosted": {
+      "const": true,
+      "default": true,
+      "title": "Fresh Hosted",
+      "type": "boolean"
+    },
+    "operation_id": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Operation Id",
+      "type": "string"
+    },
+    "proof_artifact_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Proof Artifact Digest",
+      "type": "string"
+    },
+    "proof_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Proof Digest",
+      "type": "string"
+    },
+    "repository_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Repository Digest",
+      "type": "string"
+    },
+    "result_evidence_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Result Evidence Digest",
+      "type": "string"
+    },
+    "rollback_authority_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Rollback Authority Digest",
+      "type": "string"
+    },
+    "rollback_authority_identity": {
+      "minLength": 1,
+      "title": "Rollback Authority Identity",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 2,
+      "default": 2,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "target_ref": {
+      "const": "refs/heads/main",
+      "default": "refs/heads/main",
+      "title": "Target Ref",
+      "type": "string"
+    }
+  },
+  "required": [
+    "operation_id",
+    "repository_digest",
+    "proof_artifact_digest",
+    "rollback_authority_identity",
+    "rollback_authority_digest",
+    "result_evidence_digest",
+    "completed_at",
+    "proof_digest"
+  ],
+  "title": "MainLedgerHostedRollbackProof",
+  "type": "object"
+}

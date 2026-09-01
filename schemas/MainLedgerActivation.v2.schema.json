@@ -1,0 +1,124 @@
+{
+  "additionalProperties": false,
+  "description": "Frozen controller root for one 12-success campaign.",
+  "properties": {
+    "activated_at": {
+      "format": "date-time",
+      "title": "Activated At",
+      "type": "string"
+    },
+    "activation_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Activation Digest",
+      "type": "string"
+    },
+    "c8_capability_evidence_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "C8 Capability Evidence Digest",
+      "type": "string"
+    },
+    "controller_config_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Controller Config Digest",
+      "type": "string"
+    },
+    "controller_issuer_authority_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Controller Issuer Authority Digest",
+      "type": "string"
+    },
+    "controller_issuer_identity": {
+      "minLength": 1,
+      "title": "Controller Issuer Identity",
+      "type": "string"
+    },
+    "deploy_performed": {
+      "const": false,
+      "default": false,
+      "title": "Deploy Performed",
+      "type": "boolean"
+    },
+    "hosted_rollback_artifact_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Hosted Rollback Artifact Digest",
+      "type": "string"
+    },
+    "hosted_rollback_proof_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Hosted Rollback Proof Digest",
+      "type": "string"
+    },
+    "initial_streak": {
+      "const": 0,
+      "default": 0,
+      "title": "Initial Streak",
+      "type": "integer"
+    },
+    "policy_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Policy Digest",
+      "type": "string"
+    },
+    "policy_epoch": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Policy Epoch",
+      "type": "string"
+    },
+    "protocol_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Protocol Digest",
+      "type": "string"
+    },
+    "repository_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Repository Digest",
+      "type": "string"
+    },
+    "rollback_authority_identity": {
+      "minLength": 1,
+      "title": "Rollback Authority Identity",
+      "type": "string"
+    },
+    "scheduler_sequence_watermark": {
+      "minimum": 0,
+      "title": "Scheduler Sequence Watermark",
+      "type": "integer"
+    },
+    "schema_version": {
+      "const": 2,
+      "default": 2,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "target_ref": {
+      "const": "refs/heads/main",
+      "default": "refs/heads/main",
+      "title": "Target Ref",
+      "type": "string"
+    },
+    "threshold": {
+      "const": 12,
+      "default": 12,
+      "title": "Threshold",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "repository_digest",
+    "protocol_digest",
+    "controller_config_digest",
+    "policy_digest",
+    "policy_epoch",
+    "controller_issuer_identity",
+    "controller_issuer_authority_digest",
+    "scheduler_sequence_watermark",
+    "hosted_rollback_proof_digest",
+    "hosted_rollback_artifact_digest",
+    "rollback_authority_identity",
+    "c8_capability_evidence_digest",
+    "activated_at",
+    "activation_digest"
+  ],
+  "title": "MainLedgerActivation",
+  "type": "object"
+}

@@ -1,0 +1,145 @@
+{
+  "additionalProperties": false,
+  "description": "Controller-owned classification; exclusions require independent proof.",
+  "properties": {
+    "activation_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Activation Digest",
+      "type": "string"
+    },
+    "classification": {
+      "enum": [
+        "eligible",
+        "excluded"
+      ],
+      "title": "Classification",
+      "type": "string"
+    },
+    "classification_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Classification Digest",
+      "type": "string"
+    },
+    "deploy_performed": {
+      "const": false,
+      "default": false,
+      "title": "Deploy Performed",
+      "type": "boolean"
+    },
+    "empty": {
+      "title": "Empty",
+      "type": "boolean"
+    },
+    "exclusion_reason": {
+      "anyOf": [
+        {
+          "enum": [
+            "empty",
+            "nonordinary"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Exclusion Reason"
+    },
+    "independent_exclusion_evidence_digest": {
+      "anyOf": [
+        {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Independent Exclusion Evidence Digest"
+    },
+    "issuer_authority_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Issuer Authority Digest",
+      "type": "string"
+    },
+    "issuer_domain": {
+      "const": "controller-policy",
+      "default": "controller-policy",
+      "title": "Issuer Domain",
+      "type": "string"
+    },
+    "issuer_identity": {
+      "minLength": 1,
+      "title": "Issuer Identity",
+      "type": "string"
+    },
+    "operation_id": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Operation Id",
+      "type": "string"
+    },
+    "ordinary": {
+      "title": "Ordinary",
+      "type": "boolean"
+    },
+    "path_manifest_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Path Manifest Digest",
+      "type": "string"
+    },
+    "paths": {
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Paths",
+      "type": "array"
+    },
+    "policy_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Policy Digest",
+      "type": "string"
+    },
+    "policy_epoch": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Policy Epoch",
+      "type": "string"
+    },
+    "scheduler_sequence": {
+      "exclusiveMinimum": 0,
+      "title": "Scheduler Sequence",
+      "type": "integer"
+    },
+    "schema_version": {
+      "const": 2,
+      "default": 2,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "submission_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Submission Digest",
+      "type": "string"
+    }
+  },
+  "required": [
+    "activation_digest",
+    "submission_digest",
+    "operation_id",
+    "scheduler_sequence",
+    "classification",
+    "empty",
+    "ordinary",
+    "paths",
+    "path_manifest_digest",
+    "policy_digest",
+    "policy_epoch",
+    "issuer_identity",
+    "issuer_authority_digest",
+    "classification_digest"
+  ],
+  "title": "MainLedgerClassificationEvidence",
+  "type": "object"
+}

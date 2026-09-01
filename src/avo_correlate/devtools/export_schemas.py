@@ -140,6 +140,17 @@ from avo_correlate.contracts.main_graduation import (
     MainUnresolvedMutationFence,
     MainValidationIdentity,
 )
+from avo_correlate.contracts.main_graduation_ledger import (
+    MainLedgerAccumulatorStateV2,
+    MainLedgerAccumulatorTransitionV2,
+    MainLedgerActivationV2,
+    MainLedgerC8CapabilityEvidenceV2,
+    MainLedgerClassificationEvidenceV2,
+    MainLedgerEvidencePackageV2,
+    MainLedgerHostedRollbackProofV2,
+    MainLedgerSubmissionEnvelopeV2,
+    MainLedgerTerminalOutcomeV2,
+)
 from avo_correlate.contracts.model import ModelInvocationRecord, ModelRequest, ModelResponse
 from avo_correlate.contracts.operations import (
     DryRunReport,
@@ -348,6 +359,15 @@ MODELS: tuple[type[StrictModel], ...] = (
     MainValidationIdentity,
     MainExternalIdentity,
     MainUnresolvedMutationFence,
+    MainLedgerHostedRollbackProofV2,
+    MainLedgerC8CapabilityEvidenceV2,
+    MainLedgerActivationV2,
+    MainLedgerSubmissionEnvelopeV2,
+    MainLedgerClassificationEvidenceV2,
+    MainLedgerTerminalOutcomeV2,
+    MainLedgerAccumulatorStateV2,
+    MainLedgerAccumulatorTransitionV2,
+    MainLedgerEvidencePackageV2,
 )
 
 

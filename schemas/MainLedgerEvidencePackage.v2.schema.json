@@ -1,0 +1,699 @@
+{
+  "$defs": {
+    "MainLedgerAccumulatorState": {
+      "additionalProperties": false,
+      "description": "Content-addressed state used as the CAS predecessor of a transition.",
+      "properties": {
+        "activation_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Activation Digest",
+          "type": "string"
+        },
+        "boundary_violations": {
+          "minimum": 0,
+          "title": "Boundary Violations",
+          "type": "integer"
+        },
+        "failures": {
+          "minimum": 0,
+          "title": "Failures",
+          "type": "integer"
+        },
+        "last_scheduler_sequence": {
+          "minimum": 0,
+          "title": "Last Scheduler Sequence",
+          "type": "integer"
+        },
+        "schema_version": {
+          "const": 2,
+          "default": 2,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "state_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "State Digest",
+          "type": "string"
+        },
+        "streak": {
+          "maximum": 12,
+          "minimum": 0,
+          "title": "Streak",
+          "type": "integer"
+        },
+        "successes": {
+          "minimum": 0,
+          "title": "Successes",
+          "type": "integer"
+        },
+        "threshold_complete": {
+          "title": "Threshold Complete",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "activation_digest",
+        "last_scheduler_sequence",
+        "streak",
+        "successes",
+        "failures",
+        "boundary_violations",
+        "threshold_complete",
+        "state_digest"
+      ],
+      "title": "MainLedgerAccumulatorState",
+      "type": "object"
+    },
+    "MainLedgerAccumulatorTransition": {
+      "additionalProperties": false,
+      "description": "CAS transition: exactly one eligible outcome and no scheduler gaps.",
+      "properties": {
+        "activation_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Activation Digest",
+          "type": "string"
+        },
+        "deploy_performed": {
+          "const": false,
+          "default": false,
+          "title": "Deploy Performed",
+          "type": "boolean"
+        },
+        "outcome": {
+          "$ref": "#/$defs/MainLedgerTerminalOutcome"
+        },
+        "outcome_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Outcome Digest",
+          "type": "string"
+        },
+        "prior_state": {
+          "$ref": "#/$defs/MainLedgerAccumulatorState"
+        },
+        "prior_state_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Prior State Digest",
+          "type": "string"
+        },
+        "reset_applied": {
+          "title": "Reset Applied",
+          "type": "boolean"
+        },
+        "resulting_state": {
+          "$ref": "#/$defs/MainLedgerAccumulatorState"
+        },
+        "resulting_state_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Resulting State Digest",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": 2,
+          "default": 2,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "transition_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Transition Digest",
+          "type": "string"
+        }
+      },
+      "required": [
+        "activation_digest",
+        "prior_state",
+        "prior_state_digest",
+        "outcome",
+        "outcome_digest",
+        "reset_applied",
+        "resulting_state",
+        "resulting_state_digest",
+        "transition_digest"
+      ],
+      "title": "MainLedgerAccumulatorTransition",
+      "type": "object"
+    },
+    "MainLedgerActivation": {
+      "additionalProperties": false,
+      "description": "Frozen controller root for one 12-success campaign.",
+      "properties": {
+        "activated_at": {
+          "format": "date-time",
+          "title": "Activated At",
+          "type": "string"
+        },
+        "activation_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Activation Digest",
+          "type": "string"
+        },
+        "c8_capability_evidence_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "C8 Capability Evidence Digest",
+          "type": "string"
+        },
+        "controller_config_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Controller Config Digest",
+          "type": "string"
+        },
+        "controller_issuer_authority_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Controller Issuer Authority Digest",
+          "type": "string"
+        },
+        "controller_issuer_identity": {
+          "minLength": 1,
+          "title": "Controller Issuer Identity",
+          "type": "string"
+        },
+        "deploy_performed": {
+          "const": false,
+          "default": false,
+          "title": "Deploy Performed",
+          "type": "boolean"
+        },
+        "hosted_rollback_artifact_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Hosted Rollback Artifact Digest",
+          "type": "string"
+        },
+        "hosted_rollback_proof_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Hosted Rollback Proof Digest",
+          "type": "string"
+        },
+        "initial_streak": {
+          "const": 0,
+          "default": 0,
+          "title": "Initial Streak",
+          "type": "integer"
+        },
+        "policy_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Policy Digest",
+          "type": "string"
+        },
+        "policy_epoch": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Policy Epoch",
+          "type": "string"
+        },
+        "protocol_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Protocol Digest",
+          "type": "string"
+        },
+        "repository_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Repository Digest",
+          "type": "string"
+        },
+        "rollback_authority_identity": {
+          "minLength": 1,
+          "title": "Rollback Authority Identity",
+          "type": "string"
+        },
+        "scheduler_sequence_watermark": {
+          "minimum": 0,
+          "title": "Scheduler Sequence Watermark",
+          "type": "integer"
+        },
+        "schema_version": {
+          "const": 2,
+          "default": 2,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "target_ref": {
+          "const": "refs/heads/main",
+          "default": "refs/heads/main",
+          "title": "Target Ref",
+          "type": "string"
+        },
+        "threshold": {
+          "const": 12,
+          "default": 12,
+          "title": "Threshold",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "repository_digest",
+        "protocol_digest",
+        "controller_config_digest",
+        "policy_digest",
+        "policy_epoch",
+        "controller_issuer_identity",
+        "controller_issuer_authority_digest",
+        "scheduler_sequence_watermark",
+        "hosted_rollback_proof_digest",
+        "hosted_rollback_artifact_digest",
+        "rollback_authority_identity",
+        "c8_capability_evidence_digest",
+        "activated_at",
+        "activation_digest"
+      ],
+      "title": "MainLedgerActivation",
+      "type": "object"
+    },
+    "MainLedgerClassificationEvidence": {
+      "additionalProperties": false,
+      "description": "Controller-owned classification; exclusions require independent proof.",
+      "properties": {
+        "activation_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Activation Digest",
+          "type": "string"
+        },
+        "classification": {
+          "enum": [
+            "eligible",
+            "excluded"
+          ],
+          "title": "Classification",
+          "type": "string"
+        },
+        "classification_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Classification Digest",
+          "type": "string"
+        },
+        "deploy_performed": {
+          "const": false,
+          "default": false,
+          "title": "Deploy Performed",
+          "type": "boolean"
+        },
+        "empty": {
+          "title": "Empty",
+          "type": "boolean"
+        },
+        "exclusion_reason": {
+          "anyOf": [
+            {
+              "enum": [
+                "empty",
+                "nonordinary"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Exclusion Reason"
+        },
+        "independent_exclusion_evidence_digest": {
+          "anyOf": [
+            {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Independent Exclusion Evidence Digest"
+        },
+        "issuer_authority_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Issuer Authority Digest",
+          "type": "string"
+        },
+        "issuer_domain": {
+          "const": "controller-policy",
+          "default": "controller-policy",
+          "title": "Issuer Domain",
+          "type": "string"
+        },
+        "issuer_identity": {
+          "minLength": 1,
+          "title": "Issuer Identity",
+          "type": "string"
+        },
+        "operation_id": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Operation Id",
+          "type": "string"
+        },
+        "ordinary": {
+          "title": "Ordinary",
+          "type": "boolean"
+        },
+        "path_manifest_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Path Manifest Digest",
+          "type": "string"
+        },
+        "paths": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Paths",
+          "type": "array"
+        },
+        "policy_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Policy Digest",
+          "type": "string"
+        },
+        "policy_epoch": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Policy Epoch",
+          "type": "string"
+        },
+        "scheduler_sequence": {
+          "exclusiveMinimum": 0,
+          "title": "Scheduler Sequence",
+          "type": "integer"
+        },
+        "schema_version": {
+          "const": 2,
+          "default": 2,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "submission_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Submission Digest",
+          "type": "string"
+        }
+      },
+      "required": [
+        "activation_digest",
+        "submission_digest",
+        "operation_id",
+        "scheduler_sequence",
+        "classification",
+        "empty",
+        "ordinary",
+        "paths",
+        "path_manifest_digest",
+        "policy_digest",
+        "policy_epoch",
+        "issuer_identity",
+        "issuer_authority_digest",
+        "classification_digest"
+      ],
+      "title": "MainLedgerClassificationEvidence",
+      "type": "object"
+    },
+    "MainLedgerSubmissionEnvelope": {
+      "additionalProperties": false,
+      "description": "Immutable scheduler receipt written before candidate content inspection.",
+      "properties": {
+        "activation_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Activation Digest",
+          "type": "string"
+        },
+        "content_inspected": {
+          "const": false,
+          "default": false,
+          "title": "Content Inspected",
+          "type": "boolean"
+        },
+        "deploy_performed": {
+          "const": false,
+          "default": false,
+          "title": "Deploy Performed",
+          "type": "boolean"
+        },
+        "envelope_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Envelope Digest",
+          "type": "string"
+        },
+        "operation_id": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Operation Id",
+          "type": "string"
+        },
+        "recorded_at": {
+          "format": "date-time",
+          "title": "Recorded At",
+          "type": "string"
+        },
+        "repository_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Repository Digest",
+          "type": "string"
+        },
+        "scheduler_sequence": {
+          "exclusiveMinimum": 0,
+          "title": "Scheduler Sequence",
+          "type": "integer"
+        },
+        "schema_version": {
+          "const": 2,
+          "default": 2,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "source_identity": {
+          "minLength": 1,
+          "title": "Source Identity",
+          "type": "string"
+        },
+        "submission_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Submission Digest",
+          "type": "string"
+        },
+        "submission_identity": {
+          "minLength": 1,
+          "title": "Submission Identity",
+          "type": "string"
+        },
+        "target_ref": {
+          "const": "refs/heads/main",
+          "default": "refs/heads/main",
+          "title": "Target Ref",
+          "type": "string"
+        }
+      },
+      "required": [
+        "activation_digest",
+        "repository_digest",
+        "scheduler_sequence",
+        "source_identity",
+        "submission_identity",
+        "submission_digest",
+        "operation_id",
+        "recorded_at",
+        "envelope_digest"
+      ],
+      "title": "MainLedgerSubmissionEnvelope",
+      "type": "object"
+    },
+    "MainLedgerTerminalOutcome": {
+      "additionalProperties": false,
+      "description": "One append-only terminal outcome for one eligible scheduler submission.",
+      "properties": {
+        "activation_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Activation Digest",
+          "type": "string"
+        },
+        "attempt_id": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Attempt Id",
+          "type": "string"
+        },
+        "classification_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Classification Digest",
+          "type": "string"
+        },
+        "deploy_performed": {
+          "const": false,
+          "default": false,
+          "title": "Deploy Performed",
+          "type": "boolean"
+        },
+        "evidence_kind": {
+          "enum": [
+            "success",
+            "failure",
+            "quarantine",
+            "reconciliation",
+            "reset"
+          ],
+          "title": "Evidence Kind",
+          "type": "string"
+        },
+        "operation_id": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Operation Id",
+          "type": "string"
+        },
+        "outcome": {
+          "enum": [
+            "success",
+            "failure",
+            "quarantine",
+            "reconciliation",
+            "reset"
+          ],
+          "title": "Outcome",
+          "type": "string"
+        },
+        "outcome_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Outcome Digest",
+          "type": "string"
+        },
+        "package_binding_digest": {
+          "anyOf": [
+            {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Package Binding Digest"
+        },
+        "package_digest": {
+          "anyOf": [
+            {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Package Digest"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "scheduler_sequence": {
+          "exclusiveMinimum": 0,
+          "title": "Scheduler Sequence",
+          "type": "integer"
+        },
+        "schema_version": {
+          "const": 2,
+          "default": 2,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "submission_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Submission Digest",
+          "type": "string"
+        },
+        "terminal_at": {
+          "format": "date-time",
+          "title": "Terminal At",
+          "type": "string"
+        },
+        "terminal_evidence_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Terminal Evidence Digest",
+          "type": "string"
+        }
+      },
+      "required": [
+        "activation_digest",
+        "submission_digest",
+        "classification_digest",
+        "operation_id",
+        "attempt_id",
+        "scheduler_sequence",
+        "outcome",
+        "evidence_kind",
+        "terminal_evidence_digest",
+        "terminal_at",
+        "outcome_digest"
+      ],
+      "title": "MainLedgerTerminalOutcome",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Closed aggregate proving activation, accounting, terminality, and CAS.",
+  "properties": {
+    "activation": {
+      "$ref": "#/$defs/MainLedgerActivation"
+    },
+    "classifications": {
+      "items": {
+        "$ref": "#/$defs/MainLedgerClassificationEvidence"
+      },
+      "minItems": 1,
+      "title": "Classifications",
+      "type": "array"
+    },
+    "deploy_performed": {
+      "const": false,
+      "default": false,
+      "title": "Deploy Performed",
+      "type": "boolean"
+    },
+    "final_state": {
+      "$ref": "#/$defs/MainLedgerAccumulatorState"
+    },
+    "outcomes": {
+      "items": {
+        "$ref": "#/$defs/MainLedgerTerminalOutcome"
+      },
+      "title": "Outcomes",
+      "type": "array"
+    },
+    "package_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Package Digest",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 2,
+      "default": 2,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "submissions": {
+      "items": {
+        "$ref": "#/$defs/MainLedgerSubmissionEnvelope"
+      },
+      "minItems": 1,
+      "title": "Submissions",
+      "type": "array"
+    },
+    "transitions": {
+      "items": {
+        "$ref": "#/$defs/MainLedgerAccumulatorTransition"
+      },
+      "title": "Transitions",
+      "type": "array"
+    }
+  },
+  "required": [
+    "activation",
+    "submissions",
+    "classifications",
+    "final_state",
+    "package_digest"
+  ],
+  "title": "MainLedgerEvidencePackage",
+  "type": "object"
+}

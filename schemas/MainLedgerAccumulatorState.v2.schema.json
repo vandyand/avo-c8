@@ -1,0 +1,64 @@
+{
+  "additionalProperties": false,
+  "description": "Content-addressed state used as the CAS predecessor of a transition.",
+  "properties": {
+    "activation_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Activation Digest",
+      "type": "string"
+    },
+    "boundary_violations": {
+      "minimum": 0,
+      "title": "Boundary Violations",
+      "type": "integer"
+    },
+    "failures": {
+      "minimum": 0,
+      "title": "Failures",
+      "type": "integer"
+    },
+    "last_scheduler_sequence": {
+      "minimum": 0,
+      "title": "Last Scheduler Sequence",
+      "type": "integer"
+    },
+    "schema_version": {
+      "const": 2,
+      "default": 2,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "state_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "State Digest",
+      "type": "string"
+    },
+    "streak": {
+      "maximum": 12,
+      "minimum": 0,
+      "title": "Streak",
+      "type": "integer"
+    },
+    "successes": {
+      "minimum": 0,
+      "title": "Successes",
+      "type": "integer"
+    },
+    "threshold_complete": {
+      "title": "Threshold Complete",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "activation_digest",
+    "last_scheduler_sequence",
+    "streak",
+    "successes",
+    "failures",
+    "boundary_violations",
+    "threshold_complete",
+    "state_digest"
+  ],
+  "title": "MainLedgerAccumulatorState",
+  "type": "object"
+}

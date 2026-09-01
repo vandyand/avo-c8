@@ -1,0 +1,88 @@
+{
+  "additionalProperties": false,
+  "description": "Immutable scheduler receipt written before candidate content inspection.",
+  "properties": {
+    "activation_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Activation Digest",
+      "type": "string"
+    },
+    "content_inspected": {
+      "const": false,
+      "default": false,
+      "title": "Content Inspected",
+      "type": "boolean"
+    },
+    "deploy_performed": {
+      "const": false,
+      "default": false,
+      "title": "Deploy Performed",
+      "type": "boolean"
+    },
+    "envelope_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Envelope Digest",
+      "type": "string"
+    },
+    "operation_id": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Operation Id",
+      "type": "string"
+    },
+    "recorded_at": {
+      "format": "date-time",
+      "title": "Recorded At",
+      "type": "string"
+    },
+    "repository_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Repository Digest",
+      "type": "string"
+    },
+    "scheduler_sequence": {
+      "exclusiveMinimum": 0,
+      "title": "Scheduler Sequence",
+      "type": "integer"
+    },
+    "schema_version": {
+      "const": 2,
+      "default": 2,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "source_identity": {
+      "minLength": 1,
+      "title": "Source Identity",
+      "type": "string"
+    },
+    "submission_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Submission Digest",
+      "type": "string"
+    },
+    "submission_identity": {
+      "minLength": 1,
+      "title": "Submission Identity",
+      "type": "string"
+    },
+    "target_ref": {
+      "const": "refs/heads/main",
+      "default": "refs/heads/main",
+      "title": "Target Ref",
+      "type": "string"
+    }
+  },
+  "required": [
+    "activation_digest",
+    "repository_digest",
+    "scheduler_sequence",
+    "source_identity",
+    "submission_identity",
+    "submission_digest",
+    "operation_id",
+    "recorded_at",
+    "envelope_digest"
+  ],
+  "title": "MainLedgerSubmissionEnvelope",
+  "type": "object"
+}

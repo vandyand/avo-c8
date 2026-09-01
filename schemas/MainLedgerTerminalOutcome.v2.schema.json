@@ -1,0 +1,139 @@
+{
+  "additionalProperties": false,
+  "description": "One append-only terminal outcome for one eligible scheduler submission.",
+  "properties": {
+    "activation_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Activation Digest",
+      "type": "string"
+    },
+    "attempt_id": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Attempt Id",
+      "type": "string"
+    },
+    "classification_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Classification Digest",
+      "type": "string"
+    },
+    "deploy_performed": {
+      "const": false,
+      "default": false,
+      "title": "Deploy Performed",
+      "type": "boolean"
+    },
+    "evidence_kind": {
+      "enum": [
+        "success",
+        "failure",
+        "quarantine",
+        "reconciliation",
+        "reset"
+      ],
+      "title": "Evidence Kind",
+      "type": "string"
+    },
+    "operation_id": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Operation Id",
+      "type": "string"
+    },
+    "outcome": {
+      "enum": [
+        "success",
+        "failure",
+        "quarantine",
+        "reconciliation",
+        "reset"
+      ],
+      "title": "Outcome",
+      "type": "string"
+    },
+    "outcome_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Outcome Digest",
+      "type": "string"
+    },
+    "package_binding_digest": {
+      "anyOf": [
+        {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Package Binding Digest"
+    },
+    "package_digest": {
+      "anyOf": [
+        {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Package Digest"
+    },
+    "reason": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reason"
+    },
+    "scheduler_sequence": {
+      "exclusiveMinimum": 0,
+      "title": "Scheduler Sequence",
+      "type": "integer"
+    },
+    "schema_version": {
+      "const": 2,
+      "default": 2,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "submission_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Submission Digest",
+      "type": "string"
+    },
+    "terminal_at": {
+      "format": "date-time",
+      "title": "Terminal At",
+      "type": "string"
+    },
+    "terminal_evidence_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Terminal Evidence Digest",
+      "type": "string"
+    }
+  },
+  "required": [
+    "activation_digest",
+    "submission_digest",
+    "classification_digest",
+    "operation_id",
+    "attempt_id",
+    "scheduler_sequence",
+    "outcome",
+    "evidence_kind",
+    "terminal_evidence_digest",
+    "terminal_at",
+    "outcome_digest"
+  ],
+  "title": "MainLedgerTerminalOutcome",
+  "type": "object"
+}
