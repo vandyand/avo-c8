@@ -105,6 +105,15 @@ def sanitized_child_environment() -> dict[str, str]:
 
 def child_environment_identity(environment: dict[str, str] | None = None) -> str:
     values = environment if environment is not None else sanitized_child_environment()
+    if not values.get("PATH"):
+        raise C7WorkspaceIdentityError("scrubbed child environment has no PATH")
+    if any(key not in _SAFE_CHILD_ENV_KEYS for key in values) or any(
+        not isinstance(key, str) or not isinstance(value, str)
+        for key, value in values.items()
+    ):
+        raise C7WorkspaceIdentityError("child environment contains an unsafe value")
+    if sum(len(key) + len(value) for key, value in values.items()) > 128 * 1024:
+        raise C7WorkspaceIdentityError("scrubbed child environment exceeds bound")
     bounded = tuple(sorted((key, value) for key, value in values.items()))
     return canonical_digest(
         {"domain": "avo-004.7-c7/child-environment/v1", "value": bounded}
