@@ -18,6 +18,7 @@ from avo_correlate.adapters.artifacts.main_graduation_journal import (
     MainGraduationJournalError,
     MainGraduationRecordConflictError,
     MainPhaseAAuthorityVerifier,
+    MainRollbackAuthorityVerifier,
 )
 from avo_correlate.adapters.artifacts.rollback_bundle_authority import (
     RollbackBundleAuthorityJournal,
@@ -39,6 +40,7 @@ __all__ = [
     "MainGraduationJournalError",
     "MainGraduationRecordConflictError",
     "MainPhaseAAuthorityVerifier",
+    "MainRollbackAuthorityVerifier",
     "RollbackBundleAuthorityJournal",
     "RollbackOperationQuarantineJournal",
     "RollbackPublicationAuthorizationJournal",

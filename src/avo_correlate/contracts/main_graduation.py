@@ -705,6 +705,47 @@ class MainPreparationAuthorization(MainBound):
         return self
 
 
+class MainRollbackPreparationAuthorization(MainBound):
+    """Reversible rollback preparation, distinct from historical graduation wires."""
+
+    schema_version: Literal[1] = 1
+    operation_id: Sha256Digest
+    rollback_authorization_digest: Sha256Digest
+    rollback_intent_digest: Sha256Digest
+    package_digest: Sha256Digest
+    composition_digest: Sha256Digest
+    base_commit: GitObject
+    base_tree: GitObject
+    candidate_commit: GitObject
+    candidate_tree: GitObject
+    candidate_ref: NonEmptyString
+    lease_identity: NonEmptyString
+    lease_digest: Sha256Digest
+    lease_epoch_digest: Sha256Digest
+    policy_epoch: Sha256Digest
+    authorization_digest: Sha256Digest
+    scope: Literal["rollback_candidate_publication_pr_preparation_queue_admission"] = (
+        "rollback_candidate_publication_pr_preparation_queue_admission"
+    )
+    authorized: Literal[True] = True
+    deploy_performed: Literal[False] = False
+    authorized_at: datetime
+
+    _aware_authorized_at = field_validator("authorized_at")(_aware)
+
+    @model_validator(mode="after")
+    def validate_authorization(self) -> MainRollbackPreparationAuthorization:
+        if self.candidate_ref != _main_rollback_candidate_ref(self.operation_id):
+            raise ValueError("rollback preparation candidate ref is outside controller namespace")
+        if self.candidate_commit == self.base_commit or self.candidate_tree == self.base_tree:
+            raise ValueError("rollback preparation requires a distinct candidate")
+        if self.authorization_digest != canonical_digest(
+            self.model_dump(exclude={"authorization_digest"}, mode="json")
+        ):
+            raise ValueError("rollback preparation authorization digest mismatch")
+        return self
+
+
 class MainQueueAdmissionObservation(MainBound):
     """One-use, PR-head-only admission proof (never group evidence)."""
 
@@ -1694,7 +1735,7 @@ class MainRollbackAuthorization(MainBound):
 
 
 class MainRollbackIntent(MainBound):
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     operation_id: Sha256Digest
     source_operation_id: Sha256Digest
     completion_package_digest: Sha256Digest
@@ -1713,6 +1754,7 @@ class MainRollbackIntent(MainBound):
     inverse_tree: GitObject
     lease_identity: NonEmptyString
     lease_digest: Sha256Digest
+    lease_epoch_digest: Sha256Digest
     policy_epoch: Sha256Digest
     authorization_digest: Sha256Digest
     intent_digest: Sha256Digest
@@ -1740,6 +1782,178 @@ class MainRollbackIntent(MainBound):
             self.model_dump(exclude={"intent_digest"}, mode="json")
         ):
             raise ValueError("rollback intent digest mismatch")
+        return self
+
+
+class MainRollbackResultReceipt(MainBound):
+    """Provider receipt for the exact protected rollback result.
+
+    A successful receipt carries one and only one result parent.  Rejected or
+    invalid provider responses may carry no result objects; ambiguity remains
+    an explicit durable outcome and cannot be treated as success.
+    """
+
+    schema_version: Literal[1] = 1
+    operation_id: Sha256Digest
+    source_operation_id: Sha256Digest
+    completion_package_digest: Sha256Digest
+    intent_digest: Sha256Digest
+    authorization_digest: Sha256Digest
+    inverse_delta_digest: Sha256Digest
+    inverse_delta_artifact_digest: Sha256Digest
+    current_main_commit: GitObject
+    inverse_tree: GitObject
+    provider_identity: NonEmptyString
+    provider_api_version: NonEmptyString
+    result_commit: GitObject | None = None
+    result_tree: GitObject | None = None
+    result_parent_commit: GitObject | None = None
+    result_parents: list[GitObject] = Field(default_factory=list)
+    outcome: Literal["applied", "already_applied", "invalid"]
+    response_digest: Sha256Digest
+    observed_at: datetime
+    receipt_digest: Sha256Digest
+    deploy_performed: Literal[False] = False
+
+    _aware_observed_at = field_validator("observed_at")(_aware)
+
+    @model_validator(mode="after")
+    def validate_result(self) -> MainRollbackResultReceipt:
+        if self.source_operation_id == self.operation_id:
+            raise ValueError("rollback result operation must differ from source graduation")
+        if self.result_parent_commit is not None and self.result_parents not in (
+            [],
+            [self.result_parent_commit],
+        ):
+            raise ValueError("rollback result parent representations differ")
+        if self.result_parent_commit is None and len(self.result_parents) == 1:
+            object.__setattr__(self, "result_parent_commit", self.result_parents[0])
+        parent = self.result_parent_commit
+        if parent is not None and not self.result_parents:
+            object.__setattr__(self, "result_parents", [parent])
+        if self.outcome in {"applied", "already_applied"} and (
+            self.result_commit is None
+            or self.result_tree is None
+            or parent is None
+            or self.result_parents != [self.current_main_commit]
+            or parent != self.current_main_commit
+            or self.result_tree != self.inverse_tree
+            or self.result_commit == self.current_main_commit
+        ):
+            raise ValueError("successful rollback result requires exact commit, tree, and parent")
+        if self.outcome not in {"applied", "already_applied"} and any(
+            value is not None for value in (self.result_commit, self.result_tree, parent)
+        ):
+            raise ValueError("invalid rollback result cannot claim protected result objects")
+        if self.receipt_digest != canonical_digest(
+            self.model_dump(exclude={"receipt_digest"}, mode="json")
+        ):
+            raise ValueError("rollback result receipt digest mismatch")
+        return self
+
+
+class MainRollbackCleanupIntent(MainBound):
+    """Append-only intent to remove the rollback candidate/PR after completion."""
+
+    schema_version: Literal[1] = 1
+    operation_id: Sha256Digest
+    source_operation_id: Sha256Digest
+    completion_package_digest: Sha256Digest
+    result_receipt_digest: Sha256Digest
+    authorization_digest: Sha256Digest
+    candidate_ref: NonEmptyString
+    candidate_commit: GitObject
+    pull_request_number: StrictInt = Field(gt=0)
+    pull_request_url: NonEmptyString
+    provider_identity: NonEmptyString
+    provider_api_version: NonEmptyString
+    recorded_at: datetime
+    state: Literal["intent_recorded"] = "intent_recorded"
+    intent_digest: Sha256Digest
+    deploy_performed: Literal[False] = False
+
+    _aware_recorded_at = field_validator("recorded_at")(_aware)
+
+    @model_validator(mode="after")
+    def validate_cleanup_intent(self) -> MainRollbackCleanupIntent:
+        if self.source_operation_id == self.operation_id:
+            raise ValueError("rollback cleanup operation must differ from source graduation")
+        if self.candidate_ref != _main_rollback_candidate_ref(self.operation_id):
+            raise ValueError("rollback cleanup candidate ref is outside controller namespace")
+        if not self.pull_request_url.startswith("https://"):
+            raise ValueError("rollback cleanup pull request URL must use HTTPS")
+        if self.intent_digest != canonical_digest(
+            self.model_dump(exclude={"intent_digest"}, mode="json")
+        ):
+            raise ValueError("rollback cleanup intent digest mismatch")
+        return self
+
+
+class MainRollbackCleanupReceipt(MainBound):
+    """Create-once provider receipt for rollback candidate cleanup."""
+
+    schema_version: Literal[1] = 1
+    operation_id: Sha256Digest
+    intent_digest: Sha256Digest
+    authorization_digest: Sha256Digest
+    candidate_ref: NonEmptyString
+    candidate_commit: GitObject
+    pull_request_number: StrictInt = Field(gt=0)
+    pull_request_url: NonEmptyString
+    outcome: Literal[
+        "applied", "already_applied", "ambiguous", "reconciliation_required", "invalid"
+    ]
+    dispatch_started: StrictBool
+    response_digest: Sha256Digest
+    observed_at: datetime
+    receipt_digest: Sha256Digest
+    deploy_performed: Literal[False] = False
+
+    _aware_observed_at = field_validator("observed_at")(_aware)
+
+    @model_validator(mode="after")
+    def validate_cleanup_receipt(self) -> MainRollbackCleanupReceipt:
+        if (
+            self.outcome
+            in {"applied", "already_applied", "ambiguous", "reconciliation_required"}
+            and not self.dispatch_started
+        ):
+            raise ValueError("cleanup outcome requires a dispatched request")
+        if self.outcome == "invalid" and self.dispatch_started:
+            raise ValueError("invalid cleanup cannot claim dispatch")
+        if self.receipt_digest != canonical_digest(
+            self.model_dump(exclude={"receipt_digest"}, mode="json")
+        ):
+            raise ValueError("rollback cleanup receipt digest mismatch")
+        return self
+
+
+class MainRollbackCleanupObservation(MainBound):
+    """Read-only provider observation resolving cleanup idempotency/ambiguity."""
+
+    schema_version: Literal[1] = 1
+    operation_id: Sha256Digest
+    intent_digest: Sha256Digest
+    receipt_digest: Sha256Digest
+    candidate_ref: NonEmptyString
+    candidate_commit: GitObject
+    pull_request_number: StrictInt = Field(gt=0)
+    pull_request_url: NonEmptyString
+    outcome: Literal["absent", "already_absent", "present"]
+    provider_identity: NonEmptyString
+    provider_api_version: NonEmptyString
+    observed_at: datetime
+    observation_digest: Sha256Digest
+    deploy_performed: Literal[False] = False
+
+    _aware_observed_at = field_validator("observed_at")(_aware)
+
+    @model_validator(mode="after")
+    def validate_cleanup_observation(self) -> MainRollbackCleanupObservation:
+        if self.observation_digest != canonical_digest(
+            self.model_dump(exclude={"observation_digest"}, mode="json")
+        ):
+            raise ValueError("rollback cleanup observation digest mismatch")
         return self
 
 
@@ -1867,7 +2081,12 @@ __all__ = [
     "MainReleaseIssuerBinding",
     "MainReleaseTransitionReceipt",
     "MainRollbackAuthorization",
+    "MainRollbackCleanupIntent",
+    "MainRollbackCleanupObservation",
+    "MainRollbackCleanupReceipt",
     "MainRollbackIntent",
+    "MainRollbackPreparationAuthorization",
+    "MainRollbackResultReceipt",
     "MainSourcePackageBinding",
     "MainValidationIdentity",
     "main_operation_id",

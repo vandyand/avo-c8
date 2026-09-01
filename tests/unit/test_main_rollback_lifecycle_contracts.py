@@ -88,13 +88,17 @@ def _lease(*, expires_at: datetime = NOW + timedelta(minutes=10)) -> MainLeaseEv
     )
 
 
-def _rollback_intent(*, recorded_at: datetime = NOW + timedelta(minutes=2)) -> MainRollbackIntent:
+def _rollback_intent(
+    *,
+    recorded_at: datetime = NOW + timedelta(minutes=2),
+    completion_package_digest: str = D2,
+) -> MainRollbackIntent:
     values = {
         "operation_id": RB,
         "source_operation_id": D,
         "repository_digest": R,
         "target_ref": "refs/heads/main",
-        "completion_package_digest": D2,
+        "completion_package_digest": completion_package_digest,
         "original_delta_digest": D,
         "inverse_delta_digest": D2,
         "inverse_delta_artifact_digest": D,
@@ -122,13 +126,14 @@ def _rollback_authorization(
     *,
     authorized_at: datetime = NOW + timedelta(minutes=1),
     expires_at: datetime = NOW + timedelta(minutes=5),
+    completion_package_digest: str = D2,
 ) -> MainRollbackAuthorization:
     values = {
         "operation_id": RB,
         "source_operation_id": D,
         "repository_digest": R,
         "target_ref": "refs/heads/main",
-        "completion_package_digest": D2,
+        "completion_package_digest": completion_package_digest,
         "original_delta_digest": D,
         "current_main_commit": HEAD,
         "current_main_tree": TREE,
@@ -299,9 +304,10 @@ def _rollback_fixture() -> tuple[
     MainRollbackResultReceipt,
 ]:
     source = completion()
+    completion_digest = canonical_digest(source)
     inverse = _inverse(source)
-    intent = _rollback_intent()
-    auth = _rollback_authorization()
+    intent = _rollback_intent(completion_package_digest=completion_digest)
+    auth = _rollback_authorization(completion_package_digest=completion_digest)
     lease = _lease()
     result = _result(source, intent, auth, inverse)
     return source, inverse, intent, auth, lease, result
@@ -443,6 +449,22 @@ def test_c4_rollback_operation_kind_uses_private_namespace_and_rejects_downgrade
             candidate_commit=RESULT,
             preparation_authorization_digest=D,
         )
+
+
+def test_c4_graduation_request_digest_retains_pre_rollback_wire_identity() -> None:
+    request = CandidatePublicationRequest.build(
+        operation_id=RB,
+        repository_digest=R,
+        lease_epoch_digest=LEASE_EPOCH,
+        candidate_ref="refs/heads/avo/candidate/" + RB[7:],
+        candidate_commit=RESULT,
+        preparation_authorization_digest=D,
+    )
+    historical_request = request.model_dump(
+        exclude={"request_digest", "operation_kind"}, mode="json"
+    )
+    assert request.request_digest == canonical_digest(historical_request)
+    assert "operation_kind" not in request._object()  # type: ignore[attr-defined]
 
 
 def test_rollback_result_requires_exact_applied_topology() -> None:

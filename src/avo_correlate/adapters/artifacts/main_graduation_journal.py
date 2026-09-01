@@ -63,7 +63,12 @@ from avo_correlate.contracts.main_graduation import (
     MainReleaseIssuerBinding,
     MainReleaseTransitionReceipt,
     MainRollbackAuthorization,
+    MainRollbackCleanupIntent,
+    MainRollbackCleanupObservation,
+    MainRollbackCleanupReceipt,
     MainRollbackIntent,
+    MainRollbackPreparationAuthorization,
+    MainRollbackResultReceipt,
     MainSourcePackageBinding,
 )
 from avo_correlate.contracts.main_graduation_phase_a import (
@@ -139,6 +144,44 @@ class MainPhaseAAuthorityVerifier(Protocol):
         observation: MainProviderPostStateObservation,
         provider_receipt: MainProviderReceipt,
         reconciliation: MainReconciliation,
+    ) -> None: ...
+
+
+class MainRollbackAuthorityVerifier(Protocol):
+    """Controller-owned verifier for rollback provider evidence.
+
+    Rollback result and cleanup DTOs describe evidence; they are not authority
+    by themselves.  The journal therefore authenticates them both before the
+    create-once write and again on every top-level recovery read.
+    """
+
+    def verify_rollback_result(
+        self,
+        result: MainRollbackResultReceipt,
+        intent: MainRollbackIntent,
+        authorization: MainRollbackAuthorization,
+    ) -> None: ...
+
+    def verify_rollback_cleanup_receipt(
+        self,
+        receipt: MainRollbackCleanupReceipt,
+        intent: MainRollbackCleanupIntent,
+        result: MainRollbackResultReceipt,
+    ) -> None: ...
+
+    def verify_rollback_cleanup_intent(
+        self,
+        intent: MainRollbackCleanupIntent,
+        rollback_intent: MainRollbackIntent,
+        result: MainRollbackResultReceipt,
+        authorization: MainRollbackAuthorization,
+    ) -> None: ...
+
+    def verify_rollback_cleanup_observation(
+        self,
+        observation: MainRollbackCleanupObservation,
+        intent: MainRollbackCleanupIntent,
+        receipt: MainRollbackCleanupReceipt,
     ) -> None: ...
 
 
@@ -255,6 +298,7 @@ _MODELS: dict[str, type[StrictModel]] = {
     "release-issuer-binding": MainReleaseIssuerBinding,
     "intent": MainGraduationIntent,
     "preparation-authorization": MainPreparationAuthorization,
+    "rollback-preparation-authorization": MainRollbackPreparationAuthorization,
     "queue-admission": MainQueueAdmissionObservation,
     "release-hold": MainReleaseHoldObservation,
     "release-authorization": MainReleaseAuthorization,
@@ -265,6 +309,10 @@ _MODELS: dict[str, type[StrictModel]] = {
     "inverse-delta": MainInverseDeltaArtifact,
     "rollback-authorization": MainRollbackAuthorization,
     "rollback-intent": MainRollbackIntent,
+    "rollback-result": MainRollbackResultReceipt,
+    "rollback-cleanup-intent": MainRollbackCleanupIntent,
+    "rollback-cleanup-receipt": MainRollbackCleanupReceipt,
+    "rollback-cleanup-observation": MainRollbackCleanupObservation,
     "attempt": MainGraduationAttempt,
     "eligibility": MainGraduationEligibilityRecord,
     "completion": MainCompletionPackage,
@@ -360,6 +408,7 @@ class MainGraduationJournal:
         repository_digest: str | None = None,
         base_reader: _MainBaseReader | None = None,
         phase_a_authority_verifier: MainPhaseAAuthorityVerifier | None = None,
+        rollback_authority_verifier: MainRollbackAuthorityVerifier | None = None,
         max_record_bytes: int = 32 * 1024 * 1024,
     ) -> None:
         if max_record_bytes <= 0:
@@ -392,6 +441,7 @@ class MainGraduationJournal:
         self._composition_repository_digest = repository_digest
         self._composition_base_reader = base_reader
         self._phase_a_authority_verifier = phase_a_authority_verifier
+        self._rollback_authority_verifier = rollback_authority_verifier
         # Cache validated models only for the current read traversal. A
         # ContextVar keeps independent threads/tasks from sharing a cache,
         # while nested reads in one traversal still share it.
@@ -441,6 +491,10 @@ class MainGraduationJournal:
                 self._verify_intent_lease(cast(MainGraduationIntent, checked))
             elif kind == "preparation-authorization":
                 self._require_preparation_chain(cast(MainPreparationAuthorization, checked))
+            elif kind == "rollback-preparation-authorization":
+                self._require_rollback_preparation_chain(
+                    cast(MainRollbackPreparationAuthorization, checked)
+                )
             elif kind == "queue-admission":
                 self._require_queue_admission(cast(MainQueueAdmissionObservation, checked))
             elif kind == "release-hold":
@@ -473,6 +527,16 @@ class MainGraduationJournal:
                 self._require_rollback_intent(cast(MainRollbackAuthorization, checked))
             elif kind == "rollback-intent":
                 self._require_inverse_delta(cast(MainRollbackIntent, checked))
+            elif kind == "rollback-result":
+                self._require_rollback_result(cast(MainRollbackResultReceipt, checked))
+            elif kind == "rollback-cleanup-intent":
+                self._require_rollback_cleanup_intent(cast(MainRollbackCleanupIntent, checked))
+            elif kind == "rollback-cleanup-receipt":
+                self._require_rollback_cleanup_receipt(cast(MainRollbackCleanupReceipt, checked))
+            elif kind == "rollback-cleanup-observation":
+                self._require_rollback_cleanup_observation(
+                    cast(MainRollbackCleanupObservation, checked)
+                )
             if kind == "completion":
                 self._materialize_children(cast(MainCompletionPackage, checked))
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
@@ -636,6 +700,10 @@ class MainGraduationJournal:
                 self._verify_intent_lease(cast(MainGraduationIntent, record))
             elif kind == "preparation-authorization":
                 self._require_preparation_chain(cast(MainPreparationAuthorization, record))
+            elif kind == "rollback-preparation-authorization":
+                self._require_rollback_preparation_chain(
+                    cast(MainRollbackPreparationAuthorization, record)
+                )
             elif kind == "queue-admission":
                 self._require_queue_admission(cast(MainQueueAdmissionObservation, record))
             elif kind == "release-hold":
@@ -670,6 +738,16 @@ class MainGraduationJournal:
                 self._require_rollback_intent(cast(MainRollbackAuthorization, record))
             elif kind == "rollback-intent":
                 self._require_inverse_delta(cast(MainRollbackIntent, record))
+            elif kind == "rollback-result":
+                self._require_rollback_result(cast(MainRollbackResultReceipt, record))
+            elif kind == "rollback-cleanup-intent":
+                self._require_rollback_cleanup_intent(cast(MainRollbackCleanupIntent, record))
+            elif kind == "rollback-cleanup-receipt":
+                self._require_rollback_cleanup_receipt(cast(MainRollbackCleanupReceipt, record))
+            elif kind == "rollback-cleanup-observation":
+                self._require_rollback_cleanup_observation(
+                    cast(MainRollbackCleanupObservation, record)
+                )
             if kind == "completion":
                 self._verify_children(cast(MainCompletionPackage, record))
             if _operation_id(record) != key:
@@ -1964,6 +2042,29 @@ class MainGraduationJournal:
         if kind == "mutation-intent":
             intent = cast(MainMutationIntent, record)
             prep_prior = self._read("preparation-authorization", intent.operation_id)
+            rollback_prep = self._read(
+                "rollback-preparation-authorization", intent.operation_id
+            )
+            rollback_auth = self._read("rollback-authorization", intent.operation_id)
+            if rollback_prep is not None or rollback_auth is not None:
+                if rollback_prep is None or rollback_auth is None or prep_prior is not None:
+                    raise MainGraduationJournalError(
+                        "rollback mutation intent has an ambiguous preparation branch"
+                    )
+                rollback_preparation = cast(
+                    MainRollbackPreparationAuthorization, rollback_prep[0]
+                )
+                lease_prior = self._read("lease-evidence-record", intent.operation_id)
+                if lease_prior is None:
+                    raise MainGraduationJournalError(
+                        "mutation intent requires durable lease evidence"
+                    )
+                self._validate_rollback_mutation_intent(
+                    intent,
+                    rollback_preparation,
+                    cast(MainLeaseEvidenceRecord, lease_prior[0]),
+                )
+                return
             if prep_prior is None:
                 raise MainGraduationJournalError(
                     "mutation intent requires preparation authorization"
@@ -2333,11 +2434,85 @@ class MainGraduationJournal:
                     "claimed transition requires a dispatched mutation receipt"
                 )
 
+    def _validate_rollback_mutation_intent(
+        self,
+        intent: MainMutationIntent,
+        preparation: MainRollbackPreparationAuthorization,
+        lease: MainLeaseEvidenceRecord,
+    ) -> None:
+        auth_prior = self._read("rollback-authorization", intent.operation_id)
+        rollback_prior = self._read("rollback-intent", intent.operation_id)
+        if auth_prior is None or rollback_prior is None:
+            raise MainGraduationJournalError(
+                "rollback mutation intent requires durable rollback authority"
+            )
+        auth = cast(MainRollbackAuthorization, auth_prior[0])
+        rollback = cast(MainRollbackIntent, rollback_prior[0])
+        if self._policy_epoch is not None and auth.policy_epoch != self._policy_epoch:
+            raise MainGraduationJournalError("rollback mutation policy epoch is stale")
+        if (
+            intent.preparation_authorization_digest != preparation.authorization_digest
+            or intent.repository_digest != preparation.repository_digest
+            or intent.target_ref != preparation.target_ref
+            or intent.lease_identity != lease.owner
+            or intent.lease_digest != lease.lease_digest
+            or intent.lease_epoch_digest != lease.lease_epoch_digest
+            or intent.policy_epoch_digest != auth.policy_epoch
+            or intent.controller_config_digest != auth.controller_config_digest
+            or lease.operation_id != intent.operation_id
+            or lease.policy_epoch != auth.policy_epoch
+            or rollback.intent_digest != preparation.rollback_intent_digest
+            or auth.authorization_digest != preparation.rollback_authorization_digest
+            or rollback.authorization_digest != auth.authorization_digest
+            or preparation.repository_digest != rollback.repository_digest
+            or preparation.target_ref != rollback.target_ref
+            or preparation.candidate_ref != rollback.candidate_ref
+            or preparation.candidate_commit != rollback.candidate_commit
+            or preparation.candidate_tree != rollback.candidate_tree
+            or preparation.lease_identity != lease.owner
+            or preparation.lease_digest != lease.lease_digest
+            or preparation.lease_epoch_digest != lease.lease_epoch_digest
+            or preparation.policy_epoch != auth.policy_epoch
+            or intent.recorded_at < rollback.recorded_at
+            or intent.recorded_at >= auth.expires_at
+            or intent.recorded_at >= lease.expires_at
+        ):
+            raise MainGraduationJournalError("rollback mutation preparation binding differs")
+        if intent.stage == "release_transition":
+            auth_prior = self._read("release-authorization", intent.operation_id)
+            claim_prior = self._read("release-claim", intent.release_claim_digest or "")
+            if auth_prior is None or claim_prior is None:
+                raise MainGraduationJournalError(
+                    "rollback release intent requires final release authorization and claim"
+                )
+            release = cast(MainReleaseAuthorization, auth_prior[0])
+            claim = cast(MainReleaseClaim, claim_prior[0])
+            if (
+                intent.release_authorization_digest != release.authorization_digest
+                or release.preparation_authorization_digest
+                != preparation.authorization_digest
+                or release.package_digest != preparation.package_digest
+                or release.composition_digest != preparation.composition_digest
+                or release.lease_digest != lease.lease_digest
+                or release.lease_identity != lease.owner
+                or claim.authorization_digest != release.authorization_digest
+                or claim.lease_digest != lease.lease_digest
+                or claim.lease_epoch_digest != lease.lease_epoch_digest
+            ):
+                raise MainGraduationJournalError(
+                    "rollback release intent authority binding differs"
+                )
+
     def _controller_config_digest(self, operation_id: str) -> str:
         prior = self._read("plan", operation_id)
-        if prior is None:
-            raise MainGraduationJournalError("mutation intent plan is missing")
-        return cast(MainGraduationPlan, prior[0]).controller_config_digest
+        if prior is not None:
+            return cast(MainGraduationPlan, prior[0]).controller_config_digest
+        rollback = self._read("rollback-authorization", operation_id)
+        if rollback is None:
+            raise MainGraduationJournalError(
+                "mutation intent graduation or rollback authority is missing"
+            )
+        return cast(MainRollbackAuthorization, rollback[0]).controller_config_digest
 
     def _verify_completion_prerequisites(
         self, package: MainCompletionPackage, *, require_post_state_durable: bool = True
@@ -2812,6 +2987,17 @@ class MainGraduationJournal:
 
     def _require_preparation_chain(self, preparation: MainPreparationAuthorization) -> None:
         """Close the plan → intent → preparation authority chain once, everywhere."""
+        if (
+            self._read("rollback-authorization", preparation.operation_id) is not None
+            or self._read("rollback-intent", preparation.operation_id) is not None
+            or self._read(
+                "rollback-preparation-authorization", preparation.operation_id
+            )
+            is not None
+        ):
+            raise MainGraduationJournalError(
+                "graduation preparation conflicts with rollback authority"
+            )
         plan_prior = self._read("plan", preparation.operation_id)
         intent_prior = self._read("intent", preparation.operation_id)
         if plan_prior is None or intent_prior is None:
@@ -2866,6 +3052,71 @@ class MainGraduationJournal:
             raise MainGraduationJournalError("intent candidate ref is outside controller namespace")
         if intent.recorded_at > preparation.authorized_at:
             raise MainGraduationJournalError("preparation predates intent")
+
+    def _require_rollback_preparation_chain(
+        self, preparation: MainRollbackPreparationAuthorization
+    ) -> None:
+        """Validate rollback preparation without manufacturing a graduation plan."""
+        auth_prior = self._read("rollback-authorization", preparation.operation_id)
+        intent_prior = self._read("rollback-intent", preparation.operation_id)
+        lease_prior = self._read("lease-evidence-record", preparation.operation_id)
+        ordinary_plan = self._read("plan", preparation.operation_id)
+        ordinary_preparation = self._read("preparation-authorization", preparation.operation_id)
+        if auth_prior is None or intent_prior is None or lease_prior is None:
+            raise MainGraduationJournalError(
+                "rollback preparation requires durable authorization, intent, and lease"
+            )
+        if ordinary_plan is not None or ordinary_preparation is not None:
+            raise MainGraduationJournalError(
+                "rollback preparation conflicts with graduation authority"
+            )
+        auth = cast(MainRollbackAuthorization, auth_prior[0])
+        intent = cast(MainRollbackIntent, intent_prior[0])
+        lease = cast(MainLeaseEvidenceRecord, lease_prior[0])
+        self._require_rollback_intent(auth)
+        if self._policy_epoch is not None and auth.policy_epoch != self._policy_epoch:
+            raise MainGraduationJournalError("rollback preparation policy epoch is stale")
+        if (
+            preparation.operation_id != intent.operation_id
+            or preparation.repository_digest != intent.repository_digest
+            or preparation.target_ref != intent.target_ref
+            or preparation.rollback_intent_digest != intent.intent_digest
+            or preparation.rollback_authorization_digest != auth.authorization_digest
+            or preparation.package_digest != intent.completion_package_digest
+            or preparation.composition_digest != intent.inverse_delta_artifact_digest
+            or preparation.base_commit != intent.base_commit
+            or preparation.base_tree != intent.base_tree
+            or preparation.candidate_commit != intent.candidate_commit
+            or preparation.candidate_tree != intent.candidate_tree
+            or preparation.candidate_ref != intent.candidate_ref
+            or preparation.lease_identity != lease.owner
+            or preparation.lease_digest != lease.lease_digest
+            or preparation.lease_epoch_digest != lease.lease_epoch_digest
+            or intent.lease_identity != lease.owner
+            or intent.lease_digest != lease.lease_digest
+            or intent.lease_epoch_digest != lease.lease_epoch_digest
+            or auth.lease_identity != lease.owner
+            or auth.lease_digest != lease.lease_digest
+            or auth.lease_epoch_digest != lease.lease_epoch_digest
+            or auth.policy_epoch != lease.policy_epoch
+            or preparation.policy_epoch != auth.policy_epoch
+            or not (
+                auth.authorized_at <= intent.recorded_at <= preparation.authorized_at
+                < auth.expires_at
+            )
+            or not (
+                intent.recorded_at < lease.expires_at
+                and preparation.authorized_at < lease.expires_at
+                and auth.expires_at <= lease.expires_at
+            )
+        ):
+            raise MainGraduationJournalError("rollback preparation authority binding differs")
+        if re.fullmatch(
+            r"refs/heads/avo/main-rollback/[0-9a-f]{64}", intent.candidate_ref
+        ) is None:
+            raise MainGraduationJournalError(
+                "rollback preparation candidate ref is outside controller namespace"
+            )
 
     def _require_queue_admission(self, admission: MainQueueAdmissionObservation) -> None:
         """Admission closes the pre-enqueue queue configuration snapshot."""
@@ -3250,6 +3501,25 @@ class MainGraduationJournal:
             )
         ):
             raise MainGraduationJournalError("rollback intent binding differs from authorization")
+        lease_prior = self._read("lease-evidence-record", authorization.operation_id)
+        if lease_prior is None:
+            raise MainGraduationJournalError(
+                "rollback authorization requires a fresh durable rollback lease"
+            )
+        lease = cast(MainLeaseEvidenceRecord, lease_prior[0])
+        if (
+            lease.operation_id != authorization.operation_id
+            or lease.repository_digest != authorization.repository_digest
+            or lease.target_ref != authorization.target_ref
+            or lease.owner != authorization.lease_identity
+            or lease.lease_digest != authorization.lease_digest
+            or lease.lease_epoch_digest != authorization.lease_epoch_digest
+            or lease.policy_epoch != authorization.policy_epoch
+            or authorization.authorized_at >= lease.expires_at
+            or authorization.expires_at > lease.expires_at
+            or getattr(intent, "lease_epoch_digest", None) != authorization.lease_epoch_digest
+        ):
+            raise MainGraduationJournalError("rollback authorization lease binding differs")
         if intent.base_commit != authorization.current_main_commit:
             raise MainGraduationJournalError("rollback intent is not current-tip bound")
 
@@ -3280,6 +3550,11 @@ class MainGraduationJournal:
             != completion.release_authorization.issuer_isolation_digest
             or authorization.issuer_isolation_digest
             != completion.release_issuer_binding.isolation_digest
+            or (
+                self._release_issuer_binding is not None
+                and authorization.controller_config_digest
+                != self._release_issuer_binding.controller_config_digest
+            )
         ):
             raise MainGraduationJournalError("rollback authorization source binding differs")
 
@@ -3319,6 +3594,7 @@ class MainGraduationJournal:
             or inverse.target_ref != completion.target_ref
         ):
             raise MainGraduationJournalError("rollback inverse delta binding differs")
+        self._require_rollback_lease_for_intent(intent)
 
     def _require_inverse_source(self, inverse: MainInverseDeltaArtifact) -> None:
         """Require an inverse to name and match one exact completed source."""
@@ -3332,6 +3608,8 @@ class MainGraduationJournal:
                 "rollback inverse requires durable source completion"
             )
         completion = cast(MainCompletionPackage, source_prior[0])
+        if self._policy_epoch is not None and inverse.policy_epoch != self._policy_epoch:
+            raise MainGraduationJournalError("rollback inverse policy epoch is stale")
         if (
             inverse.completion_package_digest != canonical_digest(completion)
             or inverse.original_delta_digest != completion.delta.delta_digest
@@ -3347,6 +3625,248 @@ class MainGraduationJournal:
             or inverse.policy_epoch != completion.plan.policy_epoch
         ):
             raise MainGraduationJournalError("rollback inverse delta binding differs")
+
+    def _require_rollback_lease_for_intent(self, intent: MainRollbackIntent) -> None:
+        prior = self._read("lease-evidence-record", intent.operation_id)
+        if prior is None:
+            raise MainGraduationJournalError(
+                "rollback intent requires a fresh durable rollback lease"
+            )
+        lease = cast(MainLeaseEvidenceRecord, prior[0])
+        if (
+            lease.operation_id != intent.operation_id
+            or lease.repository_digest != intent.repository_digest
+            or lease.target_ref != intent.target_ref
+            or lease.owner != intent.lease_identity
+            or lease.lease_digest != intent.lease_digest
+            or lease.lease_epoch_digest != intent.lease_epoch_digest
+            or lease.policy_epoch != intent.policy_epoch
+            or intent.recorded_at >= lease.expires_at
+        ):
+            raise MainGraduationJournalError("rollback intent lease binding differs")
+
+    def _require_rollback_result(self, result: MainRollbackResultReceipt) -> None:
+        intent_prior = self._read("rollback-intent", result.operation_id)
+        auth_prior = self._read("rollback-authorization", result.operation_id)
+        inverse_prior = self._read("inverse-delta", result.operation_id)
+        source_prior = self._read("completion", result.source_operation_id)
+        if any(value is None for value in (intent_prior, auth_prior, inverse_prior, source_prior)):
+            raise MainGraduationJournalError(
+                "rollback result requires durable intent, authorization, inverse, and source"
+            )
+        assert intent_prior is not None
+        assert auth_prior is not None
+        assert inverse_prior is not None
+        assert source_prior is not None
+        intent = cast(MainRollbackIntent, intent_prior[0])
+        auth = cast(MainRollbackAuthorization, auth_prior[0])
+        inverse = cast(MainInverseDeltaArtifact, inverse_prior[0])
+        source = cast(MainCompletionPackage, source_prior[0])
+        if self._policy_epoch is not None and auth.policy_epoch != self._policy_epoch:
+            raise MainGraduationJournalError("rollback result policy epoch is stale")
+        if (
+            result.operation_id != intent.operation_id
+            or result.intent_digest != intent.intent_digest
+            or result.authorization_digest != auth.authorization_digest
+            or result.source_operation_id != source.operation_id
+            or result.completion_package_digest != canonical_digest(source)
+            or result.inverse_delta_digest != inverse.inverse_delta_digest
+            or result.inverse_delta_artifact_digest != canonical_digest(inverse)
+            or result.current_main_commit != auth.current_main_commit
+            or result.inverse_tree != inverse.inverse_tree
+            or result.repository_digest != intent.repository_digest
+            or result.target_ref != intent.target_ref
+            or result.repository_digest != source.repository_digest
+            or result.target_ref != source.target_ref
+            # Authorization expiry gates new mutation intent/dispatch.  A
+            # result may be observed later during mandatory read-only
+            # reconciliation of an already-durable operation.
+            or result.observed_at < intent.recorded_at
+        ):
+            raise MainGraduationJournalError("rollback result authority binding differs")
+        if result.outcome in {"applied", "already_applied"} and (
+            result.result_commit is None
+            or result.result_tree != inverse.inverse_tree
+            or result.result_parent_commit != result.current_main_commit
+            or result.result_parents != [result.current_main_commit]
+            or result.result_commit == result.current_main_commit
+        ):
+            raise MainGraduationJournalError("rollback result topology differs from inverse")
+        self._verify_rollback_result_authority(result, intent, auth)
+
+    def _require_rollback_cleanup_intent(self, intent: MainRollbackCleanupIntent) -> None:
+        result_prior = self._read("rollback-result", intent.operation_id)
+        rollback_prior = self._read("rollback-intent", intent.operation_id)
+        auth_prior = self._read("rollback-authorization", intent.operation_id)
+        if result_prior is None or rollback_prior is None or auth_prior is None:
+            raise MainGraduationJournalError(
+                "rollback cleanup intent requires durable rollback result and authority"
+            )
+        result = cast(MainRollbackResultReceipt, result_prior[0])
+        rollback = cast(MainRollbackIntent, rollback_prior[0])
+        auth = cast(MainRollbackAuthorization, auth_prior[0])
+        if (
+            intent.result_receipt_digest != result.receipt_digest
+            or intent.authorization_digest != auth.authorization_digest
+            or intent.source_operation_id != rollback.source_operation_id
+            or intent.candidate_ref != rollback.candidate_ref
+            or intent.candidate_commit != rollback.candidate_commit
+            or intent.repository_digest != rollback.repository_digest
+            or intent.target_ref != rollback.target_ref
+            or intent.completion_package_digest != result.completion_package_digest
+            or intent.completion_package_digest != rollback.completion_package_digest
+            or intent.provider_identity != result.provider_identity
+            or intent.provider_api_version != result.provider_api_version
+            or result.outcome not in {"applied", "already_applied"}
+            or intent.recorded_at < result.observed_at
+        ):
+            raise MainGraduationJournalError("rollback cleanup intent binding differs")
+        self._verify_rollback_cleanup_intent_authority(intent, rollback, result, auth)
+
+    def _require_rollback_cleanup_receipt(self, receipt: MainRollbackCleanupReceipt) -> None:
+        prior = self._read("rollback-cleanup-intent", receipt.operation_id)
+        if prior is None:
+            raise MainGraduationJournalError("rollback cleanup receipt requires durable intent")
+        intent = cast(MainRollbackCleanupIntent, prior[0])
+        if (
+            receipt.intent_digest != intent.intent_digest
+            or receipt.authorization_digest != intent.authorization_digest
+            or receipt.candidate_ref != intent.candidate_ref
+            or receipt.candidate_commit != intent.candidate_commit
+            or receipt.pull_request_number != intent.pull_request_number
+            or receipt.pull_request_url != intent.pull_request_url
+            or receipt.repository_digest != intent.repository_digest
+            or receipt.target_ref != intent.target_ref
+            or receipt.observed_at < intent.recorded_at
+        ):
+            raise MainGraduationJournalError("rollback cleanup receipt binding differs")
+        result_prior = self._read("rollback-result", receipt.operation_id)
+        if result_prior is None:
+            raise MainGraduationJournalError(
+                "rollback cleanup receipt requires a durable rollback result"
+            )
+        self._verify_rollback_cleanup_receipt_authority(
+            receipt,
+            intent,
+            cast(MainRollbackResultReceipt, result_prior[0]),
+        )
+
+    def _require_rollback_cleanup_observation(
+        self, observation: MainRollbackCleanupObservation
+    ) -> None:
+        prior = self._read("rollback-cleanup-receipt", observation.operation_id)
+        intent_prior = self._read("rollback-cleanup-intent", observation.operation_id)
+        if prior is None or intent_prior is None:
+            raise MainGraduationJournalError(
+                "rollback cleanup observation requires durable receipt and intent"
+            )
+        receipt = cast(MainRollbackCleanupReceipt, prior[0])
+        intent = cast(MainRollbackCleanupIntent, intent_prior[0])
+        if (
+            observation.receipt_digest != receipt.receipt_digest
+            or observation.intent_digest != intent.intent_digest
+            or observation.candidate_ref != intent.candidate_ref
+            or observation.candidate_commit != intent.candidate_commit
+            or observation.pull_request_number != intent.pull_request_number
+            or observation.pull_request_url != intent.pull_request_url
+            or observation.repository_digest != intent.repository_digest
+            or observation.target_ref != intent.target_ref
+            or observation.provider_identity != intent.provider_identity
+            or observation.provider_api_version != intent.provider_api_version
+            or observation.observed_at < receipt.observed_at
+            or receipt.outcome == "invalid"
+            or (
+                receipt.outcome in {"applied", "already_applied"}
+                and observation.outcome not in {"absent", "already_absent"}
+            )
+        ):
+            raise MainGraduationJournalError("rollback cleanup observation binding differs")
+        self._verify_rollback_cleanup_observation_authority(
+            observation, intent, receipt
+        )
+
+    def _verify_rollback_result_authority(
+        self,
+        result: MainRollbackResultReceipt,
+        intent: MainRollbackIntent,
+        authorization: MainRollbackAuthorization,
+    ) -> None:
+        verifier = self._rollback_authority_verifier
+        if verifier is None:
+            raise MainGraduationJournalError(
+                "rollback result requires an injected authority verifier"
+            )
+        try:
+            verifier.verify_rollback_result(result, intent, authorization)
+        except MainGraduationJournalError:
+            raise
+        except Exception as exc:
+            raise MainGraduationJournalError(
+                "rollback result authority verification failed"
+            ) from exc
+
+    def _verify_rollback_cleanup_receipt_authority(
+        self,
+        receipt: MainRollbackCleanupReceipt,
+        intent: MainRollbackCleanupIntent,
+        result: MainRollbackResultReceipt,
+    ) -> None:
+        verifier = self._rollback_authority_verifier
+        if verifier is None:
+            raise MainGraduationJournalError(
+                "rollback cleanup receipt requires an injected authority verifier"
+            )
+        try:
+            verifier.verify_rollback_cleanup_receipt(receipt, intent, result)
+        except MainGraduationJournalError:
+            raise
+        except Exception as exc:
+            raise MainGraduationJournalError(
+                "rollback cleanup receipt authority verification failed"
+            ) from exc
+
+    def _verify_rollback_cleanup_intent_authority(
+        self,
+        intent: MainRollbackCleanupIntent,
+        rollback_intent: MainRollbackIntent,
+        result: MainRollbackResultReceipt,
+        authorization: MainRollbackAuthorization,
+    ) -> None:
+        verifier = self._rollback_authority_verifier
+        if verifier is None:
+            raise MainGraduationJournalError(
+                "rollback cleanup intent requires an injected authority verifier"
+            )
+        try:
+            verifier.verify_rollback_cleanup_intent(
+                intent, rollback_intent, result, authorization
+            )
+        except MainGraduationJournalError:
+            raise
+        except Exception as exc:
+            raise MainGraduationJournalError(
+                "rollback cleanup intent authority verification failed"
+            ) from exc
+
+    def _verify_rollback_cleanup_observation_authority(
+        self,
+        observation: MainRollbackCleanupObservation,
+        intent: MainRollbackCleanupIntent,
+        receipt: MainRollbackCleanupReceipt,
+    ) -> None:
+        verifier = self._rollback_authority_verifier
+        if verifier is None:
+            raise MainGraduationJournalError(
+                "rollback cleanup observation requires an injected authority verifier"
+            )
+        try:
+            verifier.verify_rollback_cleanup_observation(observation, intent, receipt)
+        except MainGraduationJournalError:
+            raise
+        except Exception as exc:
+            raise MainGraduationJournalError(
+                "rollback cleanup observation authority verification failed"
+            ) from exc
 
     def _require_attempt_eligibility(self, attempt: MainGraduationAttempt) -> None:
         prior = self._read("eligibility", attempt.operation_id)
@@ -4531,6 +5051,19 @@ class MainGraduationJournal:
     ) -> tuple[StrictModel, ArtifactRef] | None:
         return self._read("preparation-authorization", operation_id)
 
+    def record_rollback_preparation_authorization(
+        self, record: MainRollbackPreparationAuthorization
+    ) -> ArtifactRef:
+        return self._record("rollback-preparation-authorization", record)
+
+    def read_rollback_preparation_authorization(
+        self, operation_id: str
+    ) -> tuple[MainRollbackPreparationAuthorization, ArtifactRef] | None:
+        return cast(
+            tuple[MainRollbackPreparationAuthorization, ArtifactRef] | None,
+            self._read("rollback-preparation-authorization", operation_id),
+        )
+
     def record_queue_admission(self, record: MainQueueAdmissionObservation) -> ArtifactRef:
         return self._record("queue-admission", record)
 
@@ -4620,6 +5153,52 @@ class MainGraduationJournal:
     def read_rollback_intent(self, operation_id: str) -> tuple[StrictModel, ArtifactRef] | None:
         return self._read("rollback-intent", operation_id)
 
+    def record_rollback_result(self, record: MainRollbackResultReceipt) -> ArtifactRef:
+        return self._record("rollback-result", record)
+
+    def read_rollback_result(
+        self, operation_id: str
+    ) -> tuple[MainRollbackResultReceipt, ArtifactRef] | None:
+        return cast(
+            tuple[MainRollbackResultReceipt, ArtifactRef] | None,
+            self._read("rollback-result", operation_id),
+        )
+
+    def record_rollback_cleanup_intent(self, record: MainRollbackCleanupIntent) -> ArtifactRef:
+        return self._record("rollback-cleanup-intent", record)
+
+    def read_rollback_cleanup_intent(
+        self, operation_id: str
+    ) -> tuple[MainRollbackCleanupIntent, ArtifactRef] | None:
+        return cast(
+            tuple[MainRollbackCleanupIntent, ArtifactRef] | None,
+            self._read("rollback-cleanup-intent", operation_id),
+        )
+
+    def record_rollback_cleanup_receipt(self, record: MainRollbackCleanupReceipt) -> ArtifactRef:
+        return self._record("rollback-cleanup-receipt", record)
+
+    def read_rollback_cleanup_receipt(
+        self, operation_id: str
+    ) -> tuple[MainRollbackCleanupReceipt, ArtifactRef] | None:
+        return cast(
+            tuple[MainRollbackCleanupReceipt, ArtifactRef] | None,
+            self._read("rollback-cleanup-receipt", operation_id),
+        )
+
+    def record_rollback_cleanup_observation(
+        self, record: MainRollbackCleanupObservation
+    ) -> ArtifactRef:
+        return self._record("rollback-cleanup-observation", record)
+
+    def read_rollback_cleanup_observation(
+        self, operation_id: str
+    ) -> tuple[MainRollbackCleanupObservation, ArtifactRef] | None:
+        return cast(
+            tuple[MainRollbackCleanupObservation, ArtifactRef] | None,
+            self._read("rollback-cleanup-observation", operation_id),
+        )
+
     def record_attempt(self, record: MainGraduationAttempt) -> ArtifactRef:
         return self._record("attempt", record)
 
@@ -4700,4 +5279,6 @@ __all__ = [
     "MainGraduationJournal",
     "MainGraduationJournalError",
     "MainGraduationRecordConflictError",
+    "MainPhaseAAuthorityVerifier",
+    "MainRollbackAuthorityVerifier",
 ]

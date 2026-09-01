@@ -34,8 +34,9 @@ _QUEUE = frozenset({"admission_check", "queue_enqueue", "merge_group_hold", "rel
 _ISSUER = frozenset({"admission_check", "merge_group_hold", "release_transition"})
 
 
-def _candidate(op: str) -> str:
-    return f"refs/heads/avo/candidate/{op.removeprefix('sha256:')}"
+def _candidate(op: str, operation_kind: str = "graduation") -> str:
+    prefix = "main-rollback" if operation_kind == "rollback" else "candidate"
+    return f"refs/heads/avo/{prefix}/{op.removeprefix('sha256:')}"
 
 
 def _pull_request_identity(
@@ -79,6 +80,10 @@ class C4Request(StrictModel):
 
 
 class StageBound(C4Request):
+    # Rollback reuses the same phase-A stage protocol but has a dedicated
+    # candidate namespace.  The explicit discriminator prevents a rollback
+    # ref from being smuggled into ordinary graduation requests.
+    operation_kind: Literal["graduation", "rollback"] = "graduation"
     stage: Stage
     external_key: NonEmptyString
     external_identity: Sha256Digest
@@ -86,8 +91,16 @@ class StageBound(C4Request):
     queue_configuration_digest: Sha256Digest | None = None
     _exclude_external: ClassVar[frozenset[str]] = frozenset()
 
+    def _request(self) -> dict[str, Any]:
+        payload = super()._request()
+        # Preserve the historical graduation request digest exactly. Rollback
+        # is the only branch that adds the discriminator to durable identity.
+        if self.operation_kind == "graduation":
+            payload.pop("operation_kind", None)
+        return payload
+
     def _object(self) -> dict[str, Any]:
-        return self.model_dump(
+        payload = self.model_dump(
             exclude={
                 "operation_id",
                 "repository_digest",
@@ -100,6 +113,9 @@ class StageBound(C4Request):
             },
             mode="json",
         )
+        if self.operation_kind == "graduation":
+            payload.pop("operation_kind", None)
+        return payload
 
     def _key(self) -> Sha256Digest:
         return canonical_digest({"stage": self.stage, "object": self._object()})
@@ -180,7 +196,7 @@ class CandidatePublicationRequest(StageRequest):
 
     @model_validator(mode="after")
     def candidate(self) -> Self:
-        if self.candidate_ref != _candidate(self.operation_id):
+        if self.candidate_ref != _candidate(self.operation_id, self.operation_kind):
             raise ValueError("candidate ref is not operation-derived")
         return self
 
@@ -196,7 +212,7 @@ class PullRequestCreateRequest(StageRequest):
 
     @model_validator(mode="after")
     def pr(self) -> Self:
-        if self.candidate_ref != _candidate(self.operation_id):
+        if self.candidate_ref != _candidate(self.operation_id, self.operation_kind):
             raise ValueError("pull request candidate ref is not operation-derived")
         if self.candidate_commit == self.base_commit or self.candidate_tree == self.base_tree:
             raise ValueError("pull request head must differ from base")
@@ -216,7 +232,7 @@ class PullRequestReconcileRequest(StageRequest):
     @model_validator(mode="after")
     def reconcile(self) -> Self:
         if (
-            self.candidate_ref != _candidate(self.operation_id)
+            self.candidate_ref != _candidate(self.operation_id, self.operation_kind)
             or self.head_commit == self.base_commit
             or self.head_tree == self.base_tree
         ):
@@ -236,7 +252,7 @@ class PullRequestLookupRequest(StageRequest):
 
     @model_validator(mode="after")
     def lookup(self) -> Self:
-        if self.candidate_ref != _candidate(self.operation_id):
+        if self.candidate_ref != _candidate(self.operation_id, self.operation_kind):
             raise ValueError("pull request lookup ref is not operation-derived")
         if self.candidate_commit == self.base_commit or self.candidate_tree == self.base_tree:
             raise ValueError("pull request lookup head must differ from base")
@@ -433,7 +449,7 @@ class CandidatePublicationResult(StageMutationResult):
 
     @model_validator(mode="after")
     def candidate(self) -> Self:
-        if self.candidate_ref != _candidate(self.operation_id):
+        if self.candidate_ref != _candidate(self.operation_id, self.operation_kind):
             raise ValueError("candidate result ref is not operation-derived")
         return self
 
@@ -457,7 +473,7 @@ class PullRequestCreateResult(StageMutationResult):
 
     @model_validator(mode="after")
     def pull_request(self) -> Self:
-        if self.candidate_ref != _candidate(self.operation_id):
+        if self.candidate_ref != _candidate(self.operation_id, self.operation_kind):
             raise ValueError("pull request result ref is not operation-derived")
         if self.candidate_commit == self.base_commit or self.candidate_tree == self.base_tree:
             raise ValueError("pull request result head must differ from base")
@@ -512,7 +528,7 @@ class PullRequestObservationRequest(StageObservationRequest):
 
     @model_validator(mode="after")
     def pull_request(self) -> Self:
-        if self.candidate_ref != _candidate(self.operation_id):
+        if self.candidate_ref != _candidate(self.operation_id, self.operation_kind):
             raise ValueError("pull request observation ref is not operation-derived")
         if self.head_commit == self.base_commit or self.head_tree == self.base_tree:
             raise ValueError("pull request observation head must differ from base")
