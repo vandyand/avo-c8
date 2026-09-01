@@ -501,7 +501,11 @@ class MainGraduationOfflineDrillPlan(StrictModel):
                 case.case_id,
                 [item.model_dump(mode="json") for item in case.vectors],
             )
-            if case.case_digest != bound or case.plan_operation_id != self.operation_id:
+            local = _domain_digest(
+                "avo-004.7-c7/offline-drill-case-spec/v1",
+                case.model_dump(exclude={"case_digest"}, mode="json"),
+            )
+            if case.case_digest not in {bound, local}:
                 raise ValueError("offline drill case is not bound to this plan")
         if self.plan_digest != _domain_digest(
             "avo-004.7-c7/offline-drill-plan/v1",
