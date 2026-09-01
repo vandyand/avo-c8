@@ -332,6 +332,8 @@ def test_provider_reconciliation_attestation_and_rollback_guards() -> None:
     rollback_values = {
         "operation_id": D,
         "source_operation_id": D2,
+        "composition_id": D,
+        "composition_artifact_digest": D2,
         "repository_digest": R,
         "completion_package_digest": D2,
         "original_delta_digest": D,
@@ -368,6 +370,8 @@ def test_provider_reconciliation_attestation_and_rollback_guards() -> None:
     rollback_intent_values = {
         "operation_id": D,
         "source_operation_id": D2,
+        "composition_id": D,
+        "composition_artifact_digest": D2,
         "repository_digest": R,
         "completion_package_digest": D2,
         "original_delta_digest": D,

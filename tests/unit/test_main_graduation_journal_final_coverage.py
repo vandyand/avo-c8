@@ -37,6 +37,7 @@ from avo_correlate.contracts.main_graduation import (
     MainPreparationAuthorization,
     MainReleaseHoldObservation,
     MainRollbackAuthorization,
+    MainRollbackCompositionArtifact,
     MainRollbackIntent,
 )
 from avo_correlate.contracts.main_graduation_phase_a import (
@@ -958,6 +959,8 @@ def test_rollback_intent_and_authorization_recovery_edges(
     intent = MainRollbackIntent.model_construct(
         operation_id=D,
         source_operation_id=D2,
+        composition_id=D,
+        composition_artifact_digest=D2,
         repository_digest=R,
         target_ref="refs/heads/main",
         completion_package_digest=D,
@@ -984,6 +987,8 @@ def test_rollback_intent_and_authorization_recovery_edges(
     authorization = MainRollbackAuthorization.model_construct(
         operation_id=D,
         source_operation_id=D2,
+        composition_id=D,
+        composition_artifact_digest=D2,
         repository_digest=R,
         target_ref="refs/heads/main",
         completion_package_digest=D,
@@ -1006,7 +1011,37 @@ def test_rollback_intent_and_authorization_recovery_edges(
         expires_at=NOW + timedelta(minutes=1),
         authorized_at=NOW,
     )
-    records = {"inverse-delta": inverse, "completion": package, "rollback-intent": intent}
+    rollback_composition = MainRollbackCompositionArtifact.model_construct(
+        composition_id=D,
+        source_operation_id=D2,
+        repository_digest=R,
+        target_ref="refs/heads/main",
+        completion_package_digest=D,
+        original_delta_digest=D,
+        current_main_commit=HEAD,
+        current_main_tree=TREE,
+        current_main_parent_commit=BASE,
+        inverse_changed_paths=["src/feature.py"],
+        inverse_tree=BASE,
+        inverse_delta_digest=D2,
+        policy_epoch=D,
+        candidate_commit=HEAD,
+        candidate_tree=TREE,
+        candidate_parent_commit=HEAD,
+        retention_ref="refs/avo/main-rollback/" + D[7:],
+    )
+    intent = intent.model_copy(
+        update={"composition_artifact_digest": canonical_digest(rollback_composition)}
+    )
+    authorization = authorization.model_copy(
+        update={"composition_artifact_digest": canonical_digest(rollback_composition)}
+    )
+    records = {
+        "inverse-delta": inverse,
+        "completion": package,
+        "rollback-intent": intent,
+        "rollback-composition": rollback_composition,
+    }
     monkeypatch.setattr(
         journal, "_read", lambda kind, _key: (records[kind], ref()) if kind in records else None
     )
