@@ -4,11 +4,12 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Mapping
 from typing import Any, cast
 from urllib.error import HTTPError
 from urllib.parse import urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from .github import GitHubRejected, GitHubTransportError, JsonBody, JsonValue
 
@@ -42,7 +43,6 @@ class GitHubJsonTransport:
             or parsed.username is not None
             or parsed.password is not None
             or parsed.path not in ("", "/")
-            or parsed.query
             or parsed.fragment
         ):
             raise ValueError("GitHub transport origin must be an exact HTTPS origin")
@@ -66,14 +66,18 @@ class GitHubJsonTransport:
             or parsed.username is not None
             or parsed.password is not None
             or not parsed.path.startswith("/")
-            or parsed.query or parsed.fragment
+            or parsed.fragment
         ):
             raise ValueError("GitHub request URL is outside the configured origin")
 
     @staticmethod
-    def _reject_duplicate(pairs: list[tuple[Any, Any]]) -> None:
-        del pairs
-        raise ValueError("duplicate JSON key")
+    def _object_pairs(pairs: list[tuple[Any, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if not isinstance(key, str) or key in result:
+                raise ValueError("duplicate or malformed JSON key")
+            result[key] = value
+        return result
 
     @staticmethod
     def _reject_constant(value: str) -> None:
@@ -94,6 +98,23 @@ class GitHubJsonTransport:
             }
         raise ValueError("unsupported JSON value")
 
+    @classmethod
+    def _request_value(cls, value: object) -> JsonValue:
+        if value is None or isinstance(value, (str, int, bool)):
+            return value
+        if isinstance(value, float):
+            if not math.isfinite(value):
+                raise ValueError("request body is not strict JSON")
+            return value
+        if isinstance(value, list):
+            return [cls._request_value(item) for item in cast(list[Any], value)]
+        if isinstance(value, dict):
+            raw = cast(dict[Any, Any], value)
+            if any(not isinstance(key, str) for key in raw):
+                raise ValueError("request body is not strict JSON")
+            return {key: cls._request_value(item) for key, item in raw.items()}
+        raise ValueError("request body is not strict JSON")
+
     def __call__(
         self, method: str, url: str, body: JsonBody | None, headers: Mapping[str, str]
     ) -> tuple[int, JsonValue]:
@@ -102,24 +123,26 @@ class GitHubJsonTransport:
             raise ValueError("invalid HTTP method")
         try:
             request_data = (
-                json.dumps(body, separators=(",", ":"), allow_nan=False).encode("utf-8")
+                json.dumps(
+                    self._request_value(dict(body)), separators=(",", ":"), allow_nan=False
+                ).encode("utf-8")
                 if body is not None
                 else None
             )
-        except (TypeError, ValueError) as exc:
-            raise ValueError("request body is not strict JSON") from exc
+        except (TypeError, ValueError):
+            raise ValueError("request body is not strict JSON") from None
         if request_data is not None and len(request_data) > self._max_request:
             raise ValueError("GitHub request body exceeded configured bound")
         safe_headers = dict(headers)
         request = Request(url, data=request_data, method=method, headers=safe_headers)
         try:
-            with urlopen(request, timeout=self._timeout) as response:
+            with _NO_REDIRECT_OPENER.open(request, timeout=self._timeout) as response:
                 raw = response.read(self._max_response + 1)
                 if len(raw) > self._max_response:
                     raise GitHubTransportError("GitHub response exceeded configured bound")
                 parsed: object = json.loads(
                     raw or b"{}",
-                    object_pairs_hook=self._reject_duplicate,
+                    object_pairs_hook=self._object_pairs,
                     parse_constant=self._reject_constant,
                 )
                 return int(response.status), self._json_value(parsed)
@@ -133,10 +156,18 @@ class GitHubJsonTransport:
             raise
         except GitHubTransportError:
             raise
-        except (ValueError, TypeError) as exc:
-            raise GitHubTransportError("GitHub response was not strict JSON") from exc
-        except Exception as exc:
-            raise GitHubTransportError("GitHub transport failure") from exc
+        except (ValueError, TypeError):
+            raise GitHubTransportError("GitHub response was not strict JSON") from None
+        except Exception:
+            raise GitHubTransportError("GitHub transport failure") from None
 
 
 __all__ = ["GitHubJsonTransport"]
+
+
+class _NoRedirectHandler(HTTPRedirectHandler):
+    def redirect_request(self, *args: Any, **kwargs: Any) -> None:
+        raise GitHubTransportError("GitHub redirect rejected")
+
+
+_NO_REDIRECT_OPENER = build_opener(_NoRedirectHandler())
