@@ -16,17 +16,25 @@ actual provider default, and controller-rooted activation with raw-proof CAS/leg
 schema support is locally implemented. Phase 1 is Terra-approved at `daeff01` through `f38840d`:
 its single-flight immutable diagnostic snapshot performs five authenticated GETs for repository,
 main ref, commit, workflow blob, and final main fence; verifies blob binding; and has 52 focused
-tests. It does not establish workflow semantics/check identity, protection/queue/issuer/rollback
+ tests. It does not establish validation-principal identity, protection/queue/issuer/rollback
 ACL, authority, or readiness. Local rollback and activation preparers are explicitly
-non-consumable drafts. No CLI/live execution, concrete trust root, live adapter, runner, or
+non-consumable drafts. No live execution, concrete trust root, live adapter, runner, or
 hosted mutation occurred.
 
 The atomic authenticated Phase 2 snapshot is Terra-approved at `1d911e3` with 30 snapshot/parser
 review tests and 82 combined focused checks. It uses two-pass mutable-configuration and final
 main-ref fences, bounded rules pagination, REST/GraphQL cross-binding, SHA-1/SHA-256 binding, and
 failure caching. App checks are configuration-only, not validation-principal identity or issuer
-authority. Workflow semantics and validation-principal identity remain unverifiable; issuer and
+authority. Workflow semantics are approved. Validation-principal identity remains unverifiable; issuer and
 rollback observations remain unsupported.
+
+The workflow-semantics and env-only diagnostic CLI gate is Terra-approved at
+`7ded390436010844f6044151c59b05a02c74b810` (69 Terra-focused tests; 125 focused parent tests;
+Ruff/scoped Pyright/uv lock/diff clean). It pins PyYAML 6.0.3/YAML 1.2 `on`, rejects duplicate
+keys, aliases, anchors, tags, merges, and multidocuments, and validates static PR/merge_group
+facts plus exact lowercase 40-hex `github.sha` checkout refs with `persist-credentials=false`.
+`avoctl c8 preflight` is fixed-origin/no-redirect, sanitized, read-only, env-only `GITHUB_TOKEN`,
+with no persistence or writer options. No live execution occurred because the token is absent.
 
 This runbook operationalizes [ADR 0011](adr/0011-protected-main-graduation.md) and the
 [implementation plan](avo-0047-main-graduation-plan.md). It is limited to the declared
@@ -44,12 +52,13 @@ organization-hosting/merge-queue capability and isolated release-hold authority.
 The Phase 1 snapshot may be run only as a bounded authenticated diagnostic read. It issues the
 fixed five-GET sequence (repository, `main` ref, pointed-to commit, workflow blob at that commit,
 then final `main` ref fence), verifies the Git blob binding, binds all responses to one canonical
-observation, and caches one result under a single-flight lock. It has no CLI/live execution path,
-writer capability, activation authority, or readiness meaning. Workflow semantics and check
-identity, effective protection and queue configuration, isolated issuer, and rollback namespace
-The Phase 2 parsers are delivered and approved but not integrated; workflow semantics/check
-identity and protection/queue/issuer/rollback ACL remain unverifiable until the atomic
-authenticated Phase 2 snapshot is delivered.
+observation, and caches one result under a single-flight lock. The Phase 1 snapshot itself had no
+CLI/live execution path, writer capability, activation authority, or readiness meaning. Workflow
+semantics and check identity, effective protection and queue configuration, isolated issuer, and
+rollback namespace remained unverifiable at that boundary. The Phase 2 parsers, atomic snapshot,
+workflow semantics, and read-only CLI are delivered and
+approved. Validation-principal identity remains unverifiable; issuer and rollback observations
+remain unsupported. No live run occurred because `GITHUB_TOKEN` is absent.
 
 The GitHub REST ref-delete endpoint provides no expected-SHA CAS precondition. Before hosted
 use, protect the `avo/main-rollback/*` namespace with exclusive ACL/ruleset authority. Cleanup

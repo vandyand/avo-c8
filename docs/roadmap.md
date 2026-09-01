@@ -92,11 +92,18 @@ production authority outside the proposing agent's control.
   authenticated Phase 2 snapshot is Terra-approved at `1d911e3` (30 snapshot/parser review
   tests; 82 combined focused checks), with two-pass mutable-configuration and final main-ref
   fencing, bounded rules pagination, REST/GraphQL cross-binding, SHA-1/SHA-256 binding, and
-  failure caching. App configuration is not validation-principal identity. It is diagnostic-only:
-  workflow semantics and validation-principal identity remain unverifiable; issuer and rollback
-  remain unsupported, with no CLI/live execution, authority, or readiness.
-  There is no CLI/live execution, concrete trust root, authority-bearing adapter, runner,
-  readiness, or hosted mutation. The rollback and activation preparers remain explicitly
+  failure caching. App configuration is not validation-principal identity. The workflow-semantics
+  and env-only diagnostic CLI gate is Terra-approved at `7ded390436010844f6044151c59b05a02c74b810`
+  (69 Terra-focused tests; 125 focused parent tests; Ruff/scoped Pyright/uv lock/diff clean),
+  with pinned PyYAML 6.0.3/YAML 1.2 `on`, bounded fail-closed parsing, static PR/merge_group
+  facts, every checkout `uses` pinned to a lowercase full 40-hex commit, `with.ref` exactly
+  `${{ github.sha }}`, and `persist-credentials=false`, plus env-only sanitized read-only
+  `avoctl c8 preflight`. No live execution occurred because `GITHUB_TOKEN` is absent. It claims
+  no validation identity, issuer, rollback authority, or readiness.
+  Workflow semantics are approved. Validation-principal identity remains unverifiable, while
+  issuer and rollback remain unsupported, with no authority or readiness. There is no live
+  execution, concrete trust root, authority-bearing adapter, runner, readiness, or hosted mutation.
+  The rollback and activation preparers remain explicitly
   non-consumable drafts.
   Live `main` mutation is currently blocked on both required capabilities: the preferred
   merge-queue protocol needs an organization-owned repository with max-one-entry queue and
@@ -151,7 +158,7 @@ approving every ordinary patch.
 | C5 — main rollback authority | complete | Offline acceptance passed at HEAD `e38d0b826f94f3f559fb2e3ef0b26d1d17128c53` with Terra APPROVE and combined 24 passed, covering rollback contracts/journaling, inverse composition, authority verification, aggregate orchestration, terminal cleanup/closure, crash/replay, and adversarial recovery. No hosted/provider/main/deploy mutation occurred. [Result](avo-0047-c5-result.md) |
 | C6 — campaign runner and eligibility ledger | complete | Offline acceptance complete at final code HEAD `e6db424cc671d7a5d63b9b8a7246a316c4867f91`; [result](avo-0047-c6-result.md). Hosted ledger activation still requires blocked C8 prerequisites and a fresh hosted rollback drill. |
 | C7 — deterministic offline gate | complete | Offline acceptance complete at code HEAD `9c70c36074810606692f8c2030b25ce83c10a1e4`; 47 exact frozen case/vector entries passed, replay used `executor_calls=0` and `clock_calls=0`, and `deploy_performed=false`. [Result](avo-0047-c7-result.md). No hosted mutation. |
-| C8 — hosted organization/queue/release gate | blocked | Terra-approved local foundations and Phase 1 snapshot are recorded in the [C8 local-foundations result](avo-0047-c8-local-foundations-result.md). The Phase 2 atomic authenticated snapshot is Terra-approved at `1d911e3` with 30 snapshot/parser review tests and 82 combined focused checks, covering two-pass mutable-configuration/final-main fences, bounded rules pagination, REST/GraphQL cross-binding, SHA-1/SHA-256 binding, failure caching, and configuration-only App checks. Workflow semantics and validation-principal identity remain unverifiable; issuer and rollback remain unsupported. No CLI/live execution, authority, or readiness exists. The next local leaf is safe workflow semantic parsing plus a bounded read-only diagnostic entrypoint. Hosted completion still requires organization-owned required max-one merge queue, a separate isolated issuer (not App 15368), exclusive controller create/delete authority for `avo/main-rollback/*`, a fresh hosted main rollback drill, then ledger activation and 12 consecutive eligible successes with 0 failures/boundary violations. |
+| C8 — hosted organization/queue/release gate | blocked | Terra-approved local foundations and Phase 1 snapshot are recorded in the [C8 local-foundations result](avo-0047-c8-local-foundations-result.md). The Phase 2 atomic authenticated snapshot is Terra-approved at `1d911e3` with 30 snapshot/parser review tests and 82 combined focused checks, covering two-pass mutable-configuration/final-main fences, bounded rules pagination, REST/GraphQL cross-binding, SHA-1/SHA-256 binding, failure caching, and configuration-only App checks. Workflow semantics are approved; validation-principal identity remains unverifiable; issuer and rollback remain unsupported. The read-only CLI exists, but no live run occurred because the token is absent. The next local leaf is authenticated validation-principal diagnostics. Hosted completion still requires organization-owned required max-one merge queue, a separate isolated issuer (not App 15368), exclusive controller create/delete authority for `avo/main-rollback/*`, a fresh hosted main rollback drill, then ledger activation and 12 consecutive eligible successes with 0 failures/boundary violations. |
 
 The roadmap gate was completed first because the operator explicitly authorized it. The green test
 and coverage baseline, controlling repository, public remote, baseline tag, recovery rehearsal, and

@@ -21,18 +21,28 @@ and controller-rooted activation with raw-proof CAS/legacy-compatible ledger sch
 implemented locally. Phase 1 is accepted at `daeff01` through `f38840d`: a single-flight,
 immutable diagnostic snapshot performs five authenticated GETs (repository, main ref, commit,
 workflow blob, final main fence), verifies blob binding, and has 52 focused tests. It does not
-verify workflow semantics/check identity, protection/queue configuration, isolated issuer, or
+verify validation-principal identity, protection/queue configuration, isolated issuer, or
 rollback ACL. The local rollback and activation preparers are explicitly non-consumable drafts.
-There is no CLI/live execution, concrete trust root, authority-bearing adapter, runner, readiness,
+There is no live execution, concrete trust root, authority-bearing adapter, runner, readiness,
 or hosted mutation. See the [C8 local-foundations result](../avo-0047-c8-local-foundations-result.md).
 
 The atomic authenticated Phase 2 snapshot is Terra-approved at `1d911e3` with 30 snapshot/parser
 review tests and 82 combined focused checks: two-pass mutable-configuration and final main-ref
 fences, bounded rules pagination, REST/GraphQL cross-binding, SHA-1/SHA-256 binding, and failure
 caching. App checks are configuration-only, not validation-principal identity or issuer authority.
-Workflow semantics and validation-principal identity remain unverifiable; issuer and rollback
-remain unsupported. The next local leaf is safe workflow semantic parsing plus a bounded read-only
-diagnostic entrypoint. C8 remains blocked; no CLI/live execution, authority, or readiness exists.
+Workflow semantics are approved. Validation-principal identity remains unverifiable; issuer and
+rollback remain unsupported. The read-only CLI exists, but no live run occurred because
+`GITHUB_TOKEN` is absent. The next local leaf is authenticated validation-principal diagnostics;
+C8 remains blocked, with no authority or readiness.
+
+The workflow-semantics and env-only diagnostic CLI gate is Terra-approved at
+`7ded390436010844f6044151c59b05a02c74b810` (69 Terra-focused tests; 125 focused parent tests;
+Ruff/scoped Pyright/uv lock/diff clean). It pins PyYAML 6.0.3/YAML 1.2 `on`, rejects unsafe YAML
+features and unbounded input, validates static PR/merge_group facts and exact lowercase 40-hex
+`github.sha` checkout refs with `persist-credentials=false`, and exposes only a fixed-origin,
+no-redirect, sanitized env-only `avoctl c8 preflight`. No live execution occurred because the
+token is absent; validation identity, issuer/rollback authority, readiness, and hosted mutation
+remain unsupported. C8 remains blocked.
 
 ## Context
 

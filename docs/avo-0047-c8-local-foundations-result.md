@@ -31,21 +31,32 @@ The following local foundations are recorded by the cited commits:
   final `main` ref fence, bounded rules pagination, REST/GraphQL cross-binding, SHA-1/SHA-256
   object binding, and failure caching. App configuration is recorded only as configuration, not
   validation-principal identity or issuer authority.
+- The workflow-semantics and env-only diagnostic CLI gate is Terra-approved at
+  `7ded390436010844f6044151c59b05a02c74b810` (69 Terra-focused tests; 125 focused parent tests;
+  Ruff, scoped Pyright, uv lock, and diff checks clean). It uses pinned PyYAML 6.0.3 with YAML
+  1.2 `on`, bounded parsing, rejects duplicate keys/aliases/anchors/tags/merges/multidocuments,
+  and requires static PR/merge_group checks-requested facts, every checkout `uses` pinned to a
+  lowercase full 40-hex commit, `with.ref` exactly `${{ github.sha }}`, and
+  `persist-credentials=false`.
+- `avoctl c8 preflight` is read-only and accepts `GITHUB_TOKEN` only from the environment, with
+  fixed origin/defaults, no redirects, sanitized JSON/fixed failures, and no persistence or writer
+  options. No App/runtime/check/issuer authority is claimed; no live execution occurred because
+  `GITHUB_TOKEN` is absent in the current shell.
 
 ## Boundary and disposition
 
 The Phase 1 snapshot is authenticated transport and immutable diagnostic evidence only. It does
 not verify workflow semantics, validation check identity, effective protection, queue
 configuration, isolated issuer, or rollback namespace ACLs; those observations remain
-unverifiable. No CLI or live execution, hosted mutation, concrete trust root, authority-bearing
-adapter, or readiness evidence is delivered, and no hosted repository, queue, check, release,
-ledger, or `main` mutation occurred. C8 therefore remains blocked on the external protocol
-prerequisites: organization-owned required max-one merge queue; a separate isolated release
+unverifiable at the Phase 1 boundary. The later read-only CLI exists; no live execution, hosted
+mutation, concrete trust root, authority-bearing adapter, or readiness evidence is delivered, and
+no hosted repository, queue, check, release, ledger, or `main` mutation occurred. C8 therefore
+remains blocked on the external protocol prerequisites: organization-owned required max-one merge
+queue; a separate isolated release
 issuer, not App 15368; exclusive controller create/delete ruleset/ACL authority for
 `avo/main-rollback/*`; a fresh hosted main rollback drill; then frozen ledger activation and 12
 consecutive eligible successes with 0 failures or boundary violations.
 
-Workflow semantics and validation-principal identity remain unverifiable; issuer and rollback
-observations remain unsupported. There is still no CLI/live execution, authority, or readiness.
-The next local leaf is safe workflow semantic parsing plus a bounded read-only diagnostic
-entrypoint. C8 remains blocked externally pending hosting and isolated authority prerequisites.
+Workflow semantics are approved. Validation-principal identity remains unverifiable, and issuer
+and rollback observations remain unsupported. The read-only CLI exists, but no live run occurred
+because `GITHUB_TOKEN` is absent; no authority or readiness exists.
