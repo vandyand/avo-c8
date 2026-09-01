@@ -29,6 +29,7 @@ from avo_correlate.contracts.main_graduation_ledger import (
     MainLedgerEvidencePackage,
     MainLedgerSubmissionEnvelope,
     MainLedgerTerminalOutcome,
+    MainLedgerUnresolvedTailEntry,
     main_ledger_genesis_state,
 )
 from avo_correlate.domain.canonical import canonical_bytes, canonical_digest
@@ -704,6 +705,97 @@ def test_boundary_reset_and_aggregate_reload(tmp_path: Path) -> None:
             **package_probe.model_dump(exclude={"package_digest"}, mode="json"),
             "package_digest": canonical_digest(
                 package_probe.model_dump(exclude={"package_digest"}, mode="json")
+            ),
+        }
+    )
+    journal.record_package(package)
+    restarted = MainGraduationLedgerJournal(tmp_path, _Verifier())
+    loaded = restarted.read_package(activation.activation_digest)
+    assert loaded is not None and loaded[0] == package
+
+
+def test_boundary_package_closes_submitted_unclassified_tail(tmp_path: Path) -> None:
+    journal, activation, store = _journal(tmp_path)
+    submission = _submission(activation, store, 11)
+    journal.record_submission(submission)
+    evidence_artifact = store.put_bytes(
+        canonical_bytes({"kind": "withholding"}),
+        media_type=BOUNDARY_ARTIFACT_MEDIA_TYPE,
+        role=BOUNDARY_ARTIFACT_ROLE,
+        max_bytes=1024 * 1024,
+    )
+    evidence_values = {
+        "activation_digest": activation.activation_digest,
+        "controller_authority": activation.controller_authority,
+        "expected_scheduler_sequence": 11,
+        "current_state_digest": main_ledger_genesis_state(
+            activation.activation_digest, activation.scheduler_sequence_watermark
+        ).state_digest,
+        "violation_kind": "withholding",
+        "submission_digest": submission.submission_digest,
+        "operation_id": submission.operation_id,
+        "envelope_digest": submission.envelope_digest,
+        "content_artifact": submission.content_artifact,
+        "evidence_artifact": evidence_artifact,
+        "detected_at": activation.activated_at,
+    }
+    evidence = _with_digest(
+        MainLedgerBoundaryViolationEvidence, evidence_values, "violation_digest"
+    )
+    prior = main_ledger_genesis_state(
+        activation.activation_digest, activation.scheduler_sequence_watermark
+    )
+    result = _with_digest(
+        MainLedgerAccumulatorState,
+        {
+            **prior.model_dump(exclude={"state_digest"}),
+            "boundary_violations": 1,
+        },
+        "state_digest",
+    )
+    reset = _with_digest(
+        MainLedgerBoundaryResetTransition,
+        {
+            "activation_digest": activation.activation_digest,
+            "prior_state": prior,
+            "prior_state_digest": prior.state_digest,
+            "violation": evidence,
+            "resulting_state": result,
+            "resulting_state_digest": result.state_digest,
+        },
+        "transition_digest",
+    )
+    journal.record_boundary_evidence(evidence)
+    journal.record_boundary_reset(reset)
+    tail = _with_digest(
+        MainLedgerUnresolvedTailEntry,
+        {
+            "scheduler_sequence": 11,
+            "submission_digest": submission.submission_digest,
+            "operation_id": submission.operation_id,
+            "envelope_digest": submission.envelope_digest,
+            "content_artifact": submission.content_artifact,
+        },
+        "entry_digest",
+    )
+    values = {
+        "status": "boundary_reset",
+        "activation": activation,
+        "submissions": [submission],
+        "classifications": [],
+        "outcomes": [],
+        "transitions": [],
+        "unresolved_tail": [tail],
+        "final_state": result,
+        "boundary_evidence": evidence,
+        "terminal_boundary_reset": reset,
+    }
+    probe = MainLedgerEvidencePackage.model_construct(**values, package_digest="sha256:" + "1" * 64)
+    package = MainLedgerEvidencePackage.model_validate(
+        {
+            **values,
+            "package_digest": canonical_digest(
+                probe.model_dump(exclude={"package_digest"}, mode="json")
             ),
         }
     )

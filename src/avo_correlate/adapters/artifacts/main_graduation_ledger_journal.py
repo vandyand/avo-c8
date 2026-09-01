@@ -189,16 +189,21 @@ class MainGraduationLedgerJournal:
                 raise MainGraduationLedgerJournalError(
                     "submission sequence is at or before activation watermark"
                 )
-            data = canonical_bytes(record)
-            reference = self._put("submission", data)
             existing = self._sequence_entry(record.activation_digest, record.scheduler_sequence)
             if existing is not None:
+                data = canonical_bytes(record)
                 old = self._read_entry_submission(existing, activation)
                 if canonical_bytes(old) != data or old.operation_id != record.operation_id:
                     raise MainGraduationLedgerRecordConflictError(
                         "conflicting submission for scheduler sequence"
                     )
                 return self._reference(existing, "submission")
+            if self._boundary_evidence_path(activation).is_file():
+                raise MainGraduationLedgerJournalError(
+                    "submission cannot be appended after boundary evidence"
+                )
+            data = canonical_bytes(record)
+            reference = self._put("submission", data)
             max_sequence = self._max_committed_sequence(activation)
             if record.scheduler_sequence != max_sequence + 1:
                 raise MainGraduationLedgerJournalError("scheduler sequence has a gap")
@@ -270,9 +275,8 @@ class MainGraduationLedgerJournal:
             submission = self._read_entry_submission(entry, activation)
             self._require_exact_classification_binding(record, activation, submission)
             self._verify("classification", record, activation, submission)
-            data = canonical_bytes(record)
-            reference = self._put("classification", data)
             if self._stage_exists(activation, record.scheduler_sequence, "classification"):
+                data = canonical_bytes(record)
                 old = self._read_entry_ref(
                     entry,
                     "classification",
@@ -285,6 +289,12 @@ class MainGraduationLedgerJournal:
                         "conflicting classification replay"
                     )
                 return self._reference(entry, "classification", activation)
+            if self._boundary_evidence_path(activation).is_file():
+                raise MainGraduationLedgerJournalError(
+                    "classification cannot be appended after boundary evidence"
+                )
+            data = canonical_bytes(record)
+            reference = self._put("classification", data)
             return self._create_stage_once(
                 activation, record.scheduler_sequence, "classification", reference, data
             )
@@ -329,9 +339,8 @@ class MainGraduationLedgerJournal:
             classification = self._require_classification(entry, activation, submission)
             self._require_exact_outcome_binding(record, activation, submission, classification)
             self._verify("outcome", record, activation, submission, classification)
-            data = canonical_bytes(record)
-            reference = self._put("outcome", data)
             if self._stage_exists(activation, record.scheduler_sequence, "outcome"):
+                data = canonical_bytes(record)
                 old = self._read_entry_ref(
                     entry,
                     "outcome",
@@ -345,6 +354,12 @@ class MainGraduationLedgerJournal:
                         "conflicting terminal outcome replay"
                     )
                 return self._reference(entry, "outcome", activation)
+            if self._boundary_evidence_path(activation).is_file():
+                raise MainGraduationLedgerJournalError(
+                    "outcome cannot be appended after boundary evidence"
+                )
+            data = canonical_bytes(record)
+            reference = self._put("outcome", data)
             return self._create_stage_once(
                 activation, record.scheduler_sequence, "outcome", reference, data
             )
@@ -404,9 +419,8 @@ class MainGraduationLedgerJournal:
                     "transition predecessor differs from durable chain"
                 )
             self._verify("transition", record, activation, classification, outcome)
-            data = canonical_bytes(record)
-            reference = self._put("transition", data)
             if self._stage_exists(activation, sequence, "transition"):
+                data = canonical_bytes(record)
                 old = self._read_entry_ref(
                     entry,
                     "transition",
@@ -421,6 +435,12 @@ class MainGraduationLedgerJournal:
                         "conflicting accumulator transition replay"
                     )
                 return self._reference(entry, "transition", activation)
+            if self._boundary_evidence_path(activation).is_file():
+                raise MainGraduationLedgerJournalError(
+                    "transition cannot be appended after boundary evidence"
+                )
+            data = canonical_bytes(record)
+            reference = self._put("transition", data)
             return self._create_stage_once(activation, sequence, "transition", reference, data)
 
     record_accumulator_transition = record_transition
@@ -470,6 +490,7 @@ class MainGraduationLedgerJournal:
                 raise MainGraduationLedgerJournalError(
                     "boundary evidence controller authority differs from activation"
                 )
+            self._validate_boundary_observation(activation, record)
             self._verify("boundary", record, activation)
             data = canonical_bytes(record)
             reference = self._put("boundary", data)
@@ -514,7 +535,8 @@ class MainGraduationLedgerJournal:
                 raise MainGraduationLedgerJournalError(
                     "boundary reset evidence differs from durable evidence"
                 )
-            self._require_prior_state_for_boundary(activation, record.prior_state)
+            self._validate_boundary_observation(activation, evidence)
+            self._require_prior_state_for_boundary(activation, record.prior_state, evidence)
             self._verify("boundary-reset", record, activation, evidence)
             data = canonical_bytes(record)
             reference = self._put("boundary-reset", data)
@@ -548,7 +570,8 @@ class MainGraduationLedgerJournal:
                 raise MainGraduationLedgerJournalError(
                     "boundary reset evidence differs from durable evidence"
                 )
-            self._require_prior_state_for_boundary(activation, reset.prior_state)
+            self._validate_boundary_observation(activation, evidence)
+            self._require_prior_state_for_boundary(activation, reset.prior_state, evidence)
             self._verify("boundary-reset", reset, activation, evidence)
             return reset, reference
 
@@ -1163,8 +1186,17 @@ class MainGraduationLedgerJournal:
             )
 
     def _require_prior_state_for_boundary(
-        self, activation: MainLedgerActivation, prior_state: Any
+        self,
+        activation: MainLedgerActivation,
+        prior_state: Any,
+        evidence: MainLedgerBoundaryViolationEvidence | None = None,
     ) -> None:
+        if evidence is not None and prior_state.last_scheduler_sequence != (
+            evidence.expected_scheduler_sequence - 1
+        ):
+            raise MainGraduationLedgerJournalError(
+                "boundary reset predecessor does not end at expected sequence"
+            )
         if prior_state.last_scheduler_sequence == activation.scheduler_sequence_watermark:
             expected = main_ledger_genesis_state(
                 activation.activation_digest, activation.scheduler_sequence_watermark
@@ -1176,6 +1208,111 @@ class MainGraduationLedgerJournal:
                 "boundary reset predecessor differs from durable chain"
             )
 
+    def _validate_boundary_observation(
+        self,
+        activation: MainLedgerActivation,
+        evidence: MainLedgerBoundaryViolationEvidence,
+    ) -> None:
+        """Bind boundary evidence to the current committed prefix and tail.
+
+        A boundary is an observation of the sequence index, rather than a
+        caller-supplied claim about it.  Re-reading every prefix stage here
+        also makes an evidence-before-reset crash recoverable without allowing
+        a later stage to mutate the chain behind the evidence.
+        """
+        entries = self._entries_for(activation)
+        watermark = activation.scheduler_sequence_watermark
+        first = watermark + 1
+        sequences = [entry["scheduler_sequence"] for entry in entries]
+        if sequences != list(range(first, first + len(entries))):
+            raise MainGraduationLedgerJournalError(
+                "committed scheduler sequence has a gap or reordering"
+            )
+        expected = evidence.expected_scheduler_sequence
+        if expected <= watermark or expected > (sequences[-1] + 1 if sequences else first):
+            raise MainGraduationLedgerJournalError(
+                "boundary expected sequence is not the next unresolved sequence"
+            )
+        by_sequence = {entry["scheduler_sequence"]: entry for entry in entries}
+        prefix = [entry for entry in entries if entry["scheduler_sequence"] < expected]
+        if [entry["scheduler_sequence"] for entry in prefix] != list(range(first, expected)):
+            raise MainGraduationLedgerJournalError(
+                "boundary processed prefix is not contiguous"
+            )
+
+        state = main_ledger_genesis_state(
+            activation.activation_digest, activation.scheduler_sequence_watermark
+        )
+        for entry in prefix:
+            submission = self._read_entry_submission(entry, activation)
+            classification = self._require_classification(entry, activation, submission)
+            outcome = (
+                self._require_outcome(entry, activation, submission, classification)
+                if classification.classification == "eligible"
+                else None
+            )
+            transition = self._read_entry_ref(
+                entry,
+                "transition",
+                MainLedgerAccumulatorTransition,
+                activation,
+                submission,
+                classification,
+                outcome,
+            )
+            if transition.prior_state != state:
+                raise MainGraduationLedgerJournalError(
+                    "boundary processed prefix predecessor differs from durable chain"
+                )
+            state = transition.resulting_state
+        if evidence.current_state_digest != state.state_digest:
+            raise MainGraduationLedgerJournalError(
+                "boundary evidence state differs from durable processed prefix"
+            )
+
+        durable = by_sequence.get(expected)
+        identities = (
+            evidence.submission_digest,
+            evidence.operation_id,
+            evidence.envelope_digest,
+            evidence.content_artifact,
+        )
+        if durable is None:
+            # This is the only valid missing-envelope/starvation shape: the
+            # boundary is exactly the next sequence and there is no later
+            # durable sequence (the contiguous index check proves that).
+            if any(item is not None for item in identities):
+                raise MainGraduationLedgerJournalError(
+                    "missing-envelope boundary cannot carry submission identity"
+                )
+            return
+        submission = self._read_entry_submission(durable, activation)
+        expected_identities = (
+            submission.submission_digest,
+            submission.operation_id,
+            submission.envelope_digest,
+            submission.content_artifact,
+        )
+        if identities != expected_identities:
+            raise MainGraduationLedgerJournalError(
+                "boundary evidence does not exactly bind first unresolved envelope"
+            )
+        # Once the unresolved sequence is observed, no later stage may be
+        # considered part of the boundary package.  Durable envelopes may be
+        # present in the tail, but they must remain wholly unresolved.
+        for entry in entries:
+            if entry["scheduler_sequence"] < expected:
+                continue
+            sequence = entry["scheduler_sequence"]
+            if any(self._stage_exists(activation, sequence, kind) for kind in (
+                "classification",
+                "outcome",
+                "transition",
+            )):
+                raise MainGraduationLedgerJournalError(
+                    "boundary has a classified or transitioned unresolved sequence"
+                )
+
     def _require_boundary_evidence(
         self, activation: MainLedgerActivation, violation_digest: str
     ) -> MainLedgerBoundaryViolationEvidence:
@@ -1183,6 +1320,11 @@ class MainGraduationLedgerJournal:
         if loaded is None or loaded[0].violation_digest != violation_digest:
             raise MainGraduationLedgerJournalError("boundary evidence is not durably recorded")
         return loaded[0]
+
+    def _boundary_evidence_path(self, activation: MainLedgerActivation) -> Path:
+        return self._indexes / "boundary" / (
+            f"{activation.activation_digest.removeprefix('sha256:')}.json"
+        )
 
     @staticmethod
     def _require_exact_classification_binding(
@@ -1246,72 +1388,38 @@ class MainGraduationLedgerJournal:
             raise MainGraduationLedgerJournalError(
                 "package activation differs from durable activation"
             )
-        if len(package.submissions) != len(package.classifications) or len(
-            package.transitions
-        ) != len(package.submissions):
-            raise MainGraduationLedgerJournalError("package does not close every durable sequence")
-        by_sequence = {
-            entry["scheduler_sequence"]: entry for entry in self._entries_for(activation)
+        entries = self._entries_for(activation)
+        watermark = activation.scheduler_sequence_watermark
+        first = watermark + 1
+        durable_sequences = [entry["scheduler_sequence"] for entry in entries]
+        if durable_sequences != list(range(first, first + len(entries))):
+            raise MainGraduationLedgerJournalError(
+                "package sequence index has a gap, overlap, or reordering"
+            )
+        by_sequence = {entry["scheduler_sequence"]: entry for entry in entries}
+        package_submissions = {
+            item.scheduler_sequence: item for item in package.submissions
         }
-        if len(package.submissions) != len(by_sequence) or {
-            item.scheduler_sequence for item in package.submissions
-        } != set(by_sequence):
-            raise MainGraduationLedgerJournalError("package does not close every durable sequence")
-        for submission, classification in zip(
-            package.submissions, package.classifications, strict=True
-        ):
-            entry = by_sequence.get(submission.scheduler_sequence)
+        if len(package_submissions) != len(package.submissions):
+            raise MainGraduationLedgerJournalError("package contains duplicate submissions")
+        for sequence, submission in package_submissions.items():
+            entry = by_sequence.get(sequence)
             if entry is None:
                 raise MainGraduationLedgerJournalError(
                     "package references a missing durable submission"
                 )
             durable_submission = self._read_entry_submission(entry, activation)
+            self._validate_record_artifacts(submission)
             if durable_submission != submission:
                 raise MainGraduationLedgerJournalError(
                     "package submission differs from durable record"
                 )
-            if (
-                submission.repository_digest != activation.repository_digest
-                or submission.target_ref != activation.target_ref
-            ):
-                raise MainGraduationLedgerJournalError(
-                    "package submission target differs from durable activation"
-                )
-            durable_classification = self._require_classification(
-                entry, activation, durable_submission
-            )
-            if durable_classification != classification:
-                raise MainGraduationLedgerJournalError(
-                    "package classification differs from durable record"
-                )
+
         outcomes = {item.scheduler_sequence: item for item in package.outcomes}
         transitions = {item.classification.scheduler_sequence: item for item in package.transitions}
-        for submission in package.submissions:
-            entry = by_sequence[submission.scheduler_sequence]
-            classification = self._require_classification(entry, activation, submission)
-            if classification.classification == "eligible":
-                durable_outcome = self._require_outcome(
-                    entry, activation, submission, classification
-                )
-                if outcomes.get(submission.scheduler_sequence) != durable_outcome:
-                    raise MainGraduationLedgerJournalError(
-                        "package outcome differs from durable record"
-                    )
-            elif submission.scheduler_sequence in outcomes:
-                raise MainGraduationLedgerJournalError("excluded package submission has an outcome")
-            durable_transition = self._read_entry_ref(
-                entry,
-                "transition",
-                MainLedgerAccumulatorTransition,
-                activation,
-                submission,
-                classification,
-                outcomes.get(submission.scheduler_sequence),
-            )
-            if transitions.get(submission.scheduler_sequence) != durable_transition:
-                raise MainGraduationLedgerJournalError(
-                    "package transition differs from durable record"
-                )
+        if len(outcomes) != len(package.outcomes) or len(transitions) != len(package.transitions):
+            raise MainGraduationLedgerJournalError("package contains duplicate stage records")
+
         if package.status == "boundary_reset":
             if package.boundary_evidence is None or package.terminal_boundary_reset is None:
                 raise MainGraduationLedgerJournalError(
@@ -1328,6 +1436,193 @@ class MainGraduationLedgerJournal:
             if durable_reset is None or durable_reset[0] != package.terminal_boundary_reset:
                 raise MainGraduationLedgerJournalError(
                     "package boundary reset differs from durable record"
+                )
+            evidence = durable_evidence
+            self._validate_boundary_observation(activation, evidence)
+            expected = evidence.expected_scheduler_sequence
+            prefix_sequences = list(range(first, expected))
+            durable_tail = [sequence for sequence in durable_sequences if sequence >= expected]
+
+            # ``submissions`` is the durable envelope inventory for entries
+            # represented by identity-only tail records.  A tail envelope can
+            # instead carry the envelope itself exactly once.
+            if [sequence for sequence in package_submissions if sequence < expected] != (
+                prefix_sequences
+            ):
+                raise MainGraduationLedgerJournalError(
+                    "package processed submissions are not a contiguous prefix"
+                )
+            tail_by_sequence = {
+                item.scheduler_sequence: item for item in package.unresolved_tail
+            }
+            if len(tail_by_sequence) != len(package.unresolved_tail):
+                raise MainGraduationLedgerJournalError("package unresolved tail overlaps")
+            if durable_tail:
+                if list(tail_by_sequence) != durable_tail:
+                    raise MainGraduationLedgerJournalError(
+                        "package unresolved tail does not represent every durable sequence"
+                    )
+                for sequence in durable_tail:
+                    entry = by_sequence[sequence]
+                    durable_submission = self._read_entry_submission(entry, activation)
+                    tail_entry = tail_by_sequence[sequence]
+                    if tail_entry.envelope is not None:
+                        if sequence in package_submissions or tail_entry.envelope != (
+                            durable_submission
+                        ):
+                            raise MainGraduationLedgerJournalError(
+                                "unresolved tail envelope differs from durable envelope"
+                            )
+                        self._validate_record_artifacts(tail_entry.envelope)
+                        self._verify("submission", tail_entry.envelope, activation)
+                    elif tail_entry.has_envelope_identity:
+                        if sequence not in package_submissions:
+                            raise MainGraduationLedgerJournalError(
+                                "unresolved tail identity has no package envelope"
+                            )
+                        identity = (
+                            durable_submission.submission_digest,
+                            durable_submission.operation_id,
+                            durable_submission.envelope_digest,
+                            durable_submission.content_artifact,
+                        )
+                        supplied = (
+                            tail_entry.submission_digest,
+                            tail_entry.operation_id,
+                            tail_entry.envelope_digest,
+                            tail_entry.content_artifact,
+                        )
+                        if supplied != identity:
+                            raise MainGraduationLedgerJournalError(
+                                "unresolved tail identity differs from durable envelope"
+                            )
+                    else:
+                        raise MainGraduationLedgerJournalError(
+                            "durable unresolved sequence has no envelope binding"
+                        )
+                    if any(
+                        self._stage_exists(activation, sequence, kind)
+                        for kind in ("classification", "outcome", "transition")
+                    ):
+                        raise MainGraduationLedgerJournalError(
+                            "package contains a stage after the first unresolved sequence"
+                        )
+            else:
+                # Missing-envelope starvation is valid only at exactly the
+                # next sequence after the durable prefix, with no later index.
+                if expected != first + len(entries):
+                    raise MainGraduationLedgerJournalError(
+                        "missing-envelope boundary is not at the next sequence"
+                    )
+                if package.unresolved_tail:
+                    if len(package.unresolved_tail) != 1 or (
+                        package.unresolved_tail[0].scheduler_sequence != expected
+                    ):
+                        raise MainGraduationLedgerJournalError(
+                            "missing-envelope tail is not the exact next sequence"
+                        )
+                    if package.unresolved_tail[0].has_envelope_identity or (
+                        package.unresolved_tail[0].envelope is not None
+                    ):
+                        raise MainGraduationLedgerJournalError(
+                            "missing-envelope starvation carries an envelope identity"
+                        )
+            prefix_submissions = [package_submissions[sequence] for sequence in prefix_sequences]
+            normal_final_state = (
+                package.transitions[-1].resulting_state
+                if package.transitions
+                else main_ledger_genesis_state(
+                    activation.activation_digest, activation.scheduler_sequence_watermark
+                )
+            )
+            if package.terminal_boundary_reset.prior_state != normal_final_state:
+                raise MainGraduationLedgerJournalError(
+                    "boundary reset predecessor differs from processed prefix"
+                )
+            if package.final_state != package.terminal_boundary_reset.resulting_state:
+                raise MainGraduationLedgerJournalError(
+                    "boundary package final state differs from durable reset"
+                )
+            if package.final_state.threshold_complete:
+                raise MainGraduationLedgerJournalError(
+                    "boundary-reset package cannot complete threshold"
+                )
+        else:
+            if package.unresolved_tail:
+                raise MainGraduationLedgerJournalError(
+                    "threshold-complete package contains unresolved tail"
+                )
+            if list(package_submissions) != durable_sequences:
+                raise MainGraduationLedgerJournalError(
+                    "threshold package does not represent every durable submission"
+                )
+            prefix_submissions = [package_submissions[sequence] for sequence in durable_sequences]
+
+        if len(package.classifications) != len(prefix_submissions) or len(
+            package.transitions
+        ) != len(prefix_submissions):
+            raise MainGraduationLedgerJournalError(
+                "package does not close every processed durable sequence"
+            )
+        for submission, classification in zip(
+            prefix_submissions, package.classifications, strict=True
+        ):
+            entry = by_sequence[submission.scheduler_sequence]
+            durable_classification = self._require_classification(
+                entry, activation, submission
+            )
+            if durable_classification != classification:
+                raise MainGraduationLedgerJournalError(
+                    "package classification differs from durable record"
+                )
+            if classification.scheduler_sequence in outcomes:
+                if classification.classification != "eligible":
+                    raise MainGraduationLedgerJournalError(
+                        "excluded package submission has an outcome"
+                    )
+                durable_outcome = self._require_outcome(
+                    entry, activation, submission, classification
+                )
+                if outcomes[classification.scheduler_sequence] != durable_outcome:
+                    raise MainGraduationLedgerJournalError(
+                        "package outcome differs from durable record"
+                    )
+            elif classification.classification == "eligible":
+                raise MainGraduationLedgerJournalError(
+                    "eligible package submission has no outcome"
+                )
+            durable_transition = self._read_entry_ref(
+                entry,
+                "transition",
+                MainLedgerAccumulatorTransition,
+                activation,
+                submission,
+                classification,
+                outcomes.get(classification.scheduler_sequence),
+            )
+            if transitions.get(classification.scheduler_sequence) != durable_transition:
+                raise MainGraduationLedgerJournalError(
+                    "package transition differs from durable record"
+                )
+        if set(outcomes) != {
+            item.scheduler_sequence
+            for item in package.classifications
+            if item.classification == "eligible"
+        }:
+            raise MainGraduationLedgerJournalError("package outcome coverage differs")
+        if package.status == "threshold_complete":
+            normal_final_state = (
+                package.transitions[-1].resulting_state
+                if package.transitions
+                else main_ledger_genesis_state(
+                    activation.activation_digest, activation.scheduler_sequence_watermark
+                )
+            )
+            if package.final_state != normal_final_state or not (
+                package.final_state.threshold_complete
+            ):
+                raise MainGraduationLedgerJournalError(
+                    "threshold package final state does not close the transition chain"
                 )
 
     def _verify(self, kind: str, record: Any, *dependencies: Any) -> None:
