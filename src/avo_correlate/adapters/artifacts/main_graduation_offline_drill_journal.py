@@ -552,31 +552,94 @@ class MainGraduationOfflineDrillJournal:
         matches: list[tuple[MainGraduationOfflineDrillResult, ArtifactRef]] = []
         if not root.is_dir():
             return None
-        for index in root.glob("*/*/*.json"):
+        # Result indexes are rooted at ``result/<authority-token>`` and use
+        # the report token as their filename.  The tokens are deliberately
+        # shortened for Windows path length, so identities must always come
+        # from the canonical indexed records below; a token is never a digest.
+        for index in sorted(root.glob("*/*.json")):
             if not index.is_file() or index.is_symlink():
                 continue
             try:
-                raw = index.read_bytes()
-                payload = _strict_loads(raw)
-                if not isinstance(payload, dict):
-                    continue
                 loaded = self._read_indexed(
                     "result", index, MainGraduationOfflineDrillResult
                 )
                 if loaded is None or loaded[0].operation_id != operation_id:
                     continue
-                authority_digest = index.parent.parent.name
-                report_digest = index.parent.name
+                result, _ = loaded
+                authority_digest, report_digest = self._discover_result_identities(result)
+                expected_index = self._result_index(
+                    operation_id, authority_digest, report_digest
+                )
+                if index != expected_index:
+                    raise MainGraduationOfflineDrillJournalError(
+                        "result index identity mismatch"
+                    )
                 verified = self.read_result(operation_id, authority_digest, report_digest)
-                if verified is not None:
-                    matches.append(verified)
+                if verified is None:
+                    raise MainGraduationOfflineDrillJournalError(
+                        "completed result index has no durable result"
+                    )
+                matches.append(verified)
             except Exception as exc:
+                if isinstance(exc, MainGraduationOfflineDrillJournalError):
+                    raise
                 raise MainGraduationOfflineDrillJournalError(
                     "completed result closure is unverifiable"
                 ) from exc
         if len(matches) > 1:
             raise MainGraduationOfflineDrillJournalError("multiple completed C7 results")
         return matches[0] if matches else None
+
+    def _discover_result_identities(
+        self, result: MainGraduationOfflineDrillResult
+    ) -> tuple[str, str]:
+        """Resolve full authority/report identities from durable index records."""
+        authority_matches: list[str] = []
+        authority_root = self._indexes / "authority"
+        if authority_root.is_dir():
+            for index in sorted(authority_root.glob("*.json")):
+                if not index.is_file() or index.is_symlink():
+                    continue
+                loaded = self._read_indexed(
+                    "authority", index, MainGraduationOfflineExecutionAuthority
+                )
+                if loaded is None:
+                    continue
+                authority, artifact = loaded
+                if (
+                    authority.operation_id == result.operation_id
+                    and artifact.digest == result.execution_authority_digest
+                ):
+                    authority_matches.append(authority.authority_digest)
+        if len(authority_matches) != 1:
+            raise MainGraduationOfflineDrillJournalError(
+                "completed result authority identity is ambiguous"
+            )
+        authority_digest = authority_matches[0]
+
+        report_matches: list[str] = []
+        report_root = self._indexes / "report"
+        if report_root.is_dir():
+            for index in sorted(report_root.glob("*/*.json")):
+                if not index.is_file() or index.is_symlink():
+                    continue
+                loaded = self._read_indexed(
+                    "report", index, MainGraduationOfflineExecutionReport
+                )
+                if loaded is None:
+                    continue
+                report, artifact = loaded
+                if (
+                    report.operation_id == result.operation_id
+                    and report.authority_digest == authority_digest
+                    and artifact.digest == result.execution_report_digest
+                ):
+                    report_matches.append(report.report_digest)
+        if len(report_matches) != 1:
+            raise MainGraduationOfflineDrillJournalError(
+                "completed result report identity is ambiguous"
+            )
+        return authority_digest, report_matches[0]
 
     def _load_complete_cases(
         self,

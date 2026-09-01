@@ -552,6 +552,7 @@ def test_authority_report_plan_and_full_result_reload_exactly(tmp_path: Path) ->
     assert restarted.read_result(
         plan.operation_id, authority.authority_digest, report.report_digest
     ) == (result, result_ref)
+    assert restarted.read_completed_result(plan.operation_id) == (result, result_ref)
 
 
 def test_report_rereads_raw_junit_and_rejects_tamper(tmp_path: Path) -> None:
