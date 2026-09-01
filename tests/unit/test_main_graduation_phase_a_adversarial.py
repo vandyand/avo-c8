@@ -1320,6 +1320,58 @@ def test_ambiguous_restart_heals_stale_resolved_fence_before_reservation_repair(
     )
 
 
+def test_ambiguous_restart_replays_closed_resolution_without_active_reservation(
+    tmp_path: Path,
+) -> None:
+    """Closed resolved history remains an idempotent intent replay."""
+    journal = _journal(tmp_path)
+    _disable_phase_prerequisites(journal)
+    intent = _intent()
+    journal.record_mutation_intent(intent)
+    receipt = _receipt(intent)
+    journal.record_mutation_receipt(receipt)
+    fence = _fence(receipt)
+    journal.record_unresolved_mutation_fence(fence)
+    journal.record_mutation_fence_resolution(_resolution(fence))
+
+    closed = journal._target_fence_closed_path(fence)  # pyright: ignore[reportPrivateUsage]
+    assert closed.is_dir()
+    assert journal._target_reservation_record_path(closed).is_file()  # pyright: ignore[reportPrivateUsage]
+
+    restarted = _journal(tmp_path)
+    _disable_phase_prerequisites(restarted)
+    restarted.record_mutation_intent(intent)
+    assert not restarted._target_fence_path(intent).exists()  # pyright: ignore[reportPrivateUsage]
+    assert restarted._target_reservation_record_path(closed).is_file()  # pyright: ignore[reportPrivateUsage]
+
+    next_intent = _intent(OP2, key="refs/heads/avo/candidate/op2")
+    restarted.record_mutation_intent(next_intent)
+    next_active = restarted._target_fence_path(next_intent)  # pyright: ignore[reportPrivateUsage]
+    assert next_active.is_dir()
+
+
+def test_ambiguous_restart_rejects_tampered_closed_resolution_history(
+    tmp_path: Path,
+) -> None:
+    journal = _journal(tmp_path)
+    _disable_phase_prerequisites(journal)
+    intent = _intent()
+    journal.record_mutation_intent(intent)
+    receipt = _receipt(intent)
+    journal.record_mutation_receipt(receipt)
+    fence = _fence(receipt)
+    journal.record_unresolved_mutation_fence(fence)
+    journal.record_mutation_fence_resolution(_resolution(fence))
+    closed = journal._target_fence_closed_path(fence)  # pyright: ignore[reportPrivateUsage]
+    closed_record = journal._target_fence_record_path(closed)  # pyright: ignore[reportPrivateUsage]
+    closed_record.write_bytes(b"tampered")
+
+    restarted = _journal(tmp_path)
+    _disable_phase_prerequisites(restarted)
+    with pytest.raises(MainGraduationJournalError):
+        restarted.record_mutation_intent(intent)
+
+
 @pytest.mark.parametrize("mode", ["missing-fence", "tampered-reservation", "foreign-reservation"])
 def test_ambiguous_restart_reservation_repair_fails_closed_without_exact_fence(
     tmp_path: Path, mode: str

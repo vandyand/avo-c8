@@ -1206,22 +1206,107 @@ class MainGraduationJournal:
         """
 
         path = self._target_fence_path(intent)
-        if not path.is_dir():
-            raise MainGraduationJournalError(
-                "ambiguous mutation receipt has no durable target reservation"
+        expected_scope = main_target_scope_digest(
+            intent.repository_digest, intent.target_ref
+        )
+        record_path: Path
+        if path.is_dir():
+            record_path = self._target_fence_record_path(path)
+            if not record_path.is_file():
+                # A reservation-only directory has no independent proof that
+                # the provider boundary was fenced.  Do not mint a lock from
+                # the caller's intent after the receipt has become ambiguous.
+                raise MainGraduationJournalError(
+                    "ambiguous mutation receipt has no verified active target fence"
+                )
+            fence_path = path
+        else:
+            # Resolution publication and active-slot closure are separate
+            # durable steps.  The immutable closed-history index is therefore
+            # the recovery source when a later completion revalidates an
+            # ambiguous intent after the active pointer was closed.
+            closed_root = self._indexes / "target-unresolved-fence-closed"
+            candidates: list[tuple[Path, MainUnresolvedMutationFence]] = []
+            if closed_root.is_dir():
+                for candidate in sorted(closed_root.iterdir(), key=lambda item: item.name):
+                    if not candidate.is_dir():
+                        raise MainGraduationJournalError(
+                            "closed target mutation fence history is malformed"
+                        )
+                    candidate_record = self._target_fence_record_path(candidate)
+                    if not candidate_record.is_file():
+                        raise MainGraduationJournalError(
+                            "closed target mutation fence record is missing"
+                        )
+                    try:
+                        raw = candidate_record.read_bytes()
+                        envelope = _TargetFenceEnvelope.model_validate(
+                            json.loads(raw.decode("utf-8"), object_pairs_hook=_strict_pairs)
+                        )
+                        if canonical_bytes(envelope) != raw:
+                            raise ValueError("closed target mutation fence index is noncanonical")
+                    except (
+                        OSError,
+                        ValueError,
+                        TypeError,
+                        UnicodeError,
+                        json.JSONDecodeError,
+                    ) as exc:
+                        raise MainGraduationJournalError(
+                            "closed target mutation fence index is malformed"
+                        ) from exc
+                    # Valid history for another target is unrelated.  A
+                    # matching-scope record must, however, be fully verified.
+                    if envelope.target_scope_digest != expected_scope:
+                        continue
+                    envelope = self._read_target_fence_envelope(
+                        candidate,
+                        MainBound(
+                            repository_digest=intent.repository_digest,
+                            target_ref=intent.target_ref,
+                        ),
+                    )
+                    if candidate.name != envelope.fence_digest.removeprefix("sha256:"):
+                        raise MainGraduationRecordConflictError(
+                            "closed target mutation fence path differs"
+                        )
+                    prior = self._read("unresolved-mutation-fence", envelope.fence_digest)
+                    if prior is None:
+                        raise MainGraduationJournalError(
+                            "closed target mutation fence artifact is missing"
+                        )
+                    candidates.append((candidate, cast(MainUnresolvedMutationFence, prior[0])))
+            matches = [
+                item
+                for item in candidates
+                if item[1].operation_id == intent.operation_id
+                and item[1].intent_digest == intent.intent_digest
+                and item[1].repository_digest == intent.repository_digest
+                and item[1].target_ref == intent.target_ref
+            ]
+            if not matches:
+                raise MainGraduationJournalError(
+                    "ambiguous mutation receipt has no durable target reservation"
+                )
+            if len(matches) != 1:
+                raise MainGraduationRecordConflictError(
+                    "multiple closed target mutation fences match intent"
+                )
+            fence_path, fence = matches[0]
+            resolution = self._read_fence_resolution_by_fence(fence.fence_digest)
+            if resolution is None:
+                raise MainGraduationJournalError(
+                    "closed target mutation fence lacks durable resolution"
+                )
+            self._verify_fence_authority(
+                resolution[0], self._source_receipt(resolution[0])
             )
-        record_path = self._target_fence_record_path(path)
-        reservation_path = self._target_reservation_record_path(path)
-        if not record_path.is_file():
-            # A reservation-only directory has no independent proof that the
-            # provider boundary was fenced.  Do not mint a lock from the
-            # caller's intent after the receipt has become ambiguous.
-            raise MainGraduationJournalError(
-                "ambiguous mutation receipt has no verified active target fence"
-            )
+            self._close_target_fence_if_resolved(resolution[0])
+            return
 
+        reservation_path = self._target_reservation_record_path(fence_path)
         fence_envelope = self._read_target_fence_envelope(
-            path,
+            fence_path,
             MainBound(repository_digest=intent.repository_digest, target_ref=intent.target_ref),
         )
         fence_prior = self._read("unresolved-mutation-fence", fence_envelope.fence_digest)
@@ -1234,9 +1319,7 @@ class MainGraduationJournal:
             or fence.repository_digest != intent.repository_digest
             or fence.target_ref != intent.target_ref
         ):
-            raise MainGraduationRecordConflictError(
-                "ambiguous mutation target fence differs"
-            )
+            raise MainGraduationRecordConflictError("ambiguous mutation target fence differs")
 
         # Resolution publication and active-slot closure are separate durable
         # steps.  A crash between them leaves record.json pointing at a
