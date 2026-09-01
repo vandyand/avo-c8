@@ -88,20 +88,33 @@ class OfflineDrillObservation:
 class PinnedC7AuthorityVerifier:
     """Independent verifier pinned to an externally supplied authority digest."""
 
-    def __init__(self, authority_digest: str, authority_ref: str | None = None) -> None:
+    def __init__(
+        self,
+        authority_digest: str,
+        authority_ref: str | None = None,
+        *,
+        controller_authority_digest: str | None = None,
+        controller_authority_ref: str | None = None,
+    ) -> None:
         if not authority_digest.startswith("sha256:"):
             raise ValueError("authority digest is required")
+        if authority_ref is None or not authority_ref.startswith("sha256:"):
+            raise ValueError("authority artifact digest is required")
+        if (
+            controller_authority_digest is None
+            or not controller_authority_digest.startswith("sha256:")
+            or not controller_authority_ref
+        ):
+            raise ValueError("controller authority pin is required")
         self.authority_digest = authority_digest
         self.authority_ref = authority_ref
+        self.controller_authority_digest = controller_authority_digest
+        self.controller_authority_ref = controller_authority_ref
 
     def verify_execution_authority(
         self, authority: MainGraduationOfflineExecutionAuthority, ref: ArtifactRef
     ) -> bool:
-        if not self._authority(authority):
-            return False
-        if self.authority_ref is None:
-            self.authority_ref = ref.digest
-        return ref.digest == self.authority_ref
+        return self._authority(authority) and ref.digest == self.authority_ref
 
     def verify_execution_report(
         self,
@@ -172,7 +185,11 @@ class PinnedC7AuthorityVerifier:
         )
 
     def _authority(self, authority: MainGraduationOfflineExecutionAuthority) -> bool:
-        return authority.authority_digest == self.authority_digest
+        return (
+            authority.authority_digest == self.authority_digest
+            and authority.controller_authority_digest == self.controller_authority_digest
+            and authority.controller_authority_ref == self.controller_authority_ref
+        )
 
 
 class MainGraduationOfflineDrillService:

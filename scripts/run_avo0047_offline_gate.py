@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -18,15 +18,12 @@ from avo_correlate.application.main_graduation_offline_pytest_executor import He
 from avo_correlate.contracts.main_graduation_offline_drill import (
     MainGraduationOfflineExecutionAuthority,
 )
-from avo_correlate.domain.canonical import canonical_bytes
+from avo_correlate.domain.canonical import canonical_bytes, file_digest
 
 
 class _AuthorityClock:
-    def __init__(self, value: datetime) -> None:
-        self.value = value
-
     def now(self) -> datetime:
-        return self.value
+        return datetime.now(UTC)
 
 
 def _reject_conflicting_root(root: Path) -> None:
@@ -53,35 +50,57 @@ def _strict_object(raw: bytes) -> dict[str, Any]:
     return value
 
 
-def _load_authority(path: Path, expected_digest: str) -> MainGraduationOfflineExecutionAuthority:
-    if not expected_digest.startswith("sha256:"):
+def _load_authority(
+    path: Path, expected_artifact_digest: str
+) -> MainGraduationOfflineExecutionAuthority:
+    if not expected_artifact_digest.startswith("sha256:"):
         raise RuntimeError("c7_authority_digest_mismatch")
     try:
-        authority = MainGraduationOfflineExecutionAuthority.model_validate(
-            _strict_object(path.read_bytes())
-        )
+        if not path.is_file() or path.is_symlink():
+            raise ValueError("authority file is not a regular file")
+        raw = path.read_bytes()
+        if file_digest(path) != expected_artifact_digest:
+            raise ValueError("authority artifact digest mismatch")
+        authority = MainGraduationOfflineExecutionAuthority.model_validate(_strict_object(raw))
     except Exception as exc:
         raise RuntimeError("c7_authority_digest_mismatch") from exc
-    if authority.authority_digest != expected_digest:
-        raise RuntimeError("c7_authority_digest_mismatch")
     return authority
 
 
 def run(
     root: Path,
     authority_file: Path | None = None,
-    expected_authority_digest: str | None = None,
+    expected_authority_artifact_digest: str | None = None,
     workspace: Path | None = None,
     state_root: Path | None = None,
+    *,
+    expected_controller_authority_digest: str | None = None,
+    expected_controller_authority_ref: str | None = None,
 ) -> dict[str, Any]:
     """Execute only with an explicit controller authority and workspace."""
     target_root = state_root or root
     _reject_conflicting_root(target_root)
-    if authority_file is None or expected_authority_digest is None or workspace is None:
+    if (
+        authority_file is None
+        or expected_authority_artifact_digest is None
+        or workspace is None
+        or expected_controller_authority_digest is None
+        or expected_controller_authority_ref is None
+    ):
         raise RuntimeError("c7_authority_executor_unavailable")
-    authority = _load_authority(authority_file, expected_authority_digest)
-    clock = _AuthorityClock(authority.authorized_at)
-    verifier = PinnedC7AuthorityVerifier(authority.authority_digest)
+    authority = _load_authority(authority_file, expected_authority_artifact_digest)
+    if (
+        authority.controller_authority_digest != expected_controller_authority_digest
+        or authority.controller_authority_ref != expected_controller_authority_ref
+    ):
+        raise RuntimeError("c7_controller_authority_mismatch")
+    clock = _AuthorityClock()
+    verifier = PinnedC7AuthorityVerifier(
+        authority.authority_digest,
+        expected_authority_artifact_digest,
+        controller_authority_digest=expected_controller_authority_digest,
+        controller_authority_ref=expected_controller_authority_ref,
+    )
     store_root = target_root / "artifacts"
     executor = HermeticPytestExecutor(
         workspace, FilesystemArtifactStore(store_root, clock=clock.now), clock=clock.now
@@ -108,7 +127,9 @@ def run(
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--authority-file", type=Path)
-    parser.add_argument("--expected-authority-digest")
+    parser.add_argument("--expected-authority-artifact-digest")
+    parser.add_argument("--expected-controller-authority-digest")
+    parser.add_argument("--expected-controller-authority-ref")
     parser.add_argument("--workspace", type=Path)
     parser.add_argument("--state-root", type=Path)
     parser.add_argument("--root", type=Path, help=argparse.SUPPRESS)
@@ -120,9 +141,11 @@ def main() -> int:
         output = run(
             state_root,
             args.authority_file,
-            args.expected_authority_digest,
+            args.expected_authority_artifact_digest,
             args.workspace,
             state_root,
+            expected_controller_authority_digest=args.expected_controller_authority_digest,
+            expected_controller_authority_ref=args.expected_controller_authority_ref,
         )
     except (RuntimeError, OSError, ValueError) as exc:
         print(str(exc))

@@ -1,18 +1,28 @@
+# pyright: reportPrivateUsage=false
 """Adversarial checks for the independent C7 workspace identity boundary."""
 
 from __future__ import annotations
 
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from avo_correlate.application.main_graduation_offline_drill_service import (
+    PinnedC7AuthorityVerifier,
+)
 from avo_correlate.application.main_graduation_offline_identity import (
     FROZEN_OFFLINE_EXECUTION_ARGV,
     C7WorkspaceIdentity,
     C7WorkspaceIdentityError,
     C7WorkspaceIdentityVerifier,
+)
+from avo_correlate.application.main_graduation_offline_pytest_executor import (
+    OfflinePytestExecutionError,
+    _node_identity,
+    _pytest_node_id,
 )
 from avo_correlate.contracts.main_graduation_offline_drill import (
     FROZEN_OFFLINE_EXECUTION_NODE_IDS,
@@ -100,6 +110,29 @@ def test_identity_verifier_rejects_any_identity_mismatch(
     authority = _authority(lockfile_digest="sha256:" + "9" * 64)
     with pytest.raises(C7WorkspaceIdentityError, match="lockfile_digest"):
         verifier.verify(authority)
+
+
+def test_real_pytest_junit_shape_requires_exact_repository_module() -> None:
+    frozen = FROZEN_OFFLINE_EXECUTION_NODE_IDS[0]
+    testcase = ET.Element(
+        "testcase",
+        {
+            "classname": f"tests.unit.{frozen.split('::', 1)[0][:-3]}",
+            "name": frozen.split("::", 1)[1],
+        },
+    )
+    assert _node_identity(testcase, frozen) == frozen
+    assert _pytest_node_id(frozen).startswith("tests/unit/")
+    testcase.set("classname", "tests.other." + frozen.split("::", 1)[0][:-3])
+    with pytest.raises(OfflinePytestExecutionError, match="identity"):
+        _node_identity(testcase, frozen)
+
+
+def test_controller_and_artifact_pins_are_required_externally() -> None:
+    with pytest.raises(ValueError, match="artifact digest"):
+        PinnedC7AuthorityVerifier("sha256:" + "a" * 64)
+    with pytest.raises(ValueError, match="controller authority pin"):
+        PinnedC7AuthorityVerifier("sha256:" + "a" * 64, "sha256:" + "b" * 64)
 
 
 def _completed(stdout: str) -> Any:

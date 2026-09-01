@@ -116,9 +116,11 @@ class HermeticPytestExecutor:
             rendered = [item.replace("{junitxml}", f"--junitxml={report_path}") for item in argv]
             # The authority bounds the command shape; the frozen node list is
             # appended by this executor so callers cannot substitute a test.
-            rendered.extend(node.node_id for node in authority.nodes)
+            rendered.extend(_pytest_node_id(node.node_id) for node in authority.nodes)
             self.calls += 1
+            self._check_expiry(authority)
             exit_code = self.runner(rendered, self.workspace, report_path)
+            self._check_expiry(authority)
             if exit_code != 0:
                 raise OfflinePytestExecutionError("pytest process did not exit zero")
             try:
@@ -157,6 +159,10 @@ class HermeticPytestExecutor:
         )
         return MainGraduationOfflineExecutionReport.model_validate(values)
 
+    def _check_expiry(self, authority: MainGraduationOfflineExecutionAuthority) -> None:
+        if self.clock() > authority.expires_at:
+            raise OfflinePytestExecutionError("execution authority expired")
+
     def _parse_junit(
         self,
         raw: bytes,
@@ -172,7 +178,7 @@ class HermeticPytestExecutor:
             raise OfflinePytestExecutionError("JUnit testcase count differs from authority")
         observations: list[MainGraduationOfflineNodeObservation] = []
         for testcase, node in zip(tests, authority.nodes, strict=True):
-            identity = _node_identity(testcase)
+            identity = _node_identity(testcase, node.node_id)
             if identity != node.node_id:
                 raise OfflinePytestExecutionError("JUnit node identity differs from authority")
             status = testcase.attrib.get("status", "passed").lower()
@@ -198,20 +204,31 @@ class HermeticPytestExecutor:
         return observations
 
 
-def _node_identity(testcase: ET.Element) -> str:
+def _node_identity(testcase: ET.Element, expected_node_id: str) -> str:
     classname = testcase.attrib.get("classname", "")
     name = testcase.attrib.get("name", "")
     if not classname or not name:
         raise OfflinePytestExecutionError("JUnit testcase identity is incomplete")
-    direct = f"{classname}::{name}"
-    # pytest's junitxml writer commonly emits classname as a dotted module
-    # name while the authority uses the repository-relative node id.
-    if direct in FROZEN_OFFLINE_EXECUTION_NODE_IDS:
-        return direct
-    dotted = f"{classname.replace('.', '/')}::{name}"
-    if dotted in FROZEN_OFFLINE_EXECUTION_NODE_IDS:
-        return dotted
-    raise OfflinePytestExecutionError("JUnit testcase identity differs from authority")
+    path, separator, expected_name = expected_node_id.partition("::")
+    if not separator or not path.endswith(".py") or not expected_name:
+        raise OfflinePytestExecutionError("authority node identity is malformed")
+    expected_classname = f"tests.unit.{path[:-3].replace('/', '.')}"
+    if classname != expected_classname or name != expected_name:
+        raise OfflinePytestExecutionError("JUnit testcase identity differs from authority")
+    return expected_node_id
+
+
+def _pytest_node_id(node_id: str) -> str:
+    path, separator, name = node_id.partition("::")
+    if (
+        not separator
+        or not path.endswith(".py")
+        or "/" in path
+        or "\\" in path
+        or not name
+    ):
+        raise OfflinePytestExecutionError("frozen node identity is malformed")
+    return f"tests/unit/{path}::{name}"
 
 
 __all__ = ["HermeticPytestExecutor", "OfflinePytestExecutionError", "ProcessRunner"]
