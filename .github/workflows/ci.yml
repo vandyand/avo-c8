@@ -2,11 +2,15 @@ name: ci
 
 on:
   pull_request:
+  merge_group:
+    types: [checks_requested]
   push:
     branches: [main]
-  workflow_dispatch:
   schedule:
     - cron: "23 5 * * 1"
+
+permissions:
+  contents: read
 
 jobs:
   validate:
@@ -19,8 +23,11 @@ jobs:
       AVO_REFERENCE_DEVELOPMENT_METADATA_FILE: .avo-runtime/ci-development-metadata.json
       AVO_REFERENCE_ADMISSION_METADATA_FILE: .avo-runtime/ci-admission-metadata.json
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
         with:
           enable-cache: true
       - run: uv sync --all-groups --all-extras --frozen
@@ -54,7 +61,7 @@ jobs:
         run: git diff --exit-code -- schemas
 
   windows-wsl-parity:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'schedule'
     runs-on: [self-hosted, Windows, X64, wsl2, docker]
     env:
       AVO_WSL_PROJECT_PATH: ${{ vars.AVO_WSL_PROJECT_PATH }}
@@ -62,7 +69,10 @@ jobs:
       AVO_REFERENCE_ADMISSION_METADATA_FILE: ${{ vars.AVO_WSL_PROJECT_PATH }}/.avo-runtime/ci-admission-metadata.json
       WSLENV: "AVO_REFERENCE_DEVELOPMENT_METADATA_FILE:AVO_REFERENCE_ADMISSION_METADATA_FILE"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
       - name: Sync canonical WSL environment
         shell: pwsh
         run: >-
