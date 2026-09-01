@@ -7,6 +7,15 @@ from avo_correlate.application.main_graduation_ledger_service import (
     SubmissionContentResolver,
     TrustedClock,
 )
+from avo_correlate.application.main_graduation_offline_drill_service import (
+    DeterministicOfflineDrillHarness,
+    MainGraduationOfflineDrillError,
+    MainGraduationOfflineDrillRun,
+    MainGraduationOfflineDrillService,
+    OfflineDrillCaseExecutor,
+    OfflineDrillClock,
+    OfflineDrillObservation,
+)
 from avo_correlate.application.main_rollback_authority import (
     MainRollbackAuthority,
     MainRollbackAuthorityError,
@@ -22,8 +31,12 @@ from avo_correlate.application.main_rollback_coordinator import (
 from avo_correlate.application.rollback_bundle_authority import RollbackBundleAuthority
 
 __all__ = [
+    "DeterministicOfflineDrillHarness",
     "MainGraduationClassifier",
     "MainGraduationLedgerService",
+    "MainGraduationOfflineDrillError",
+    "MainGraduationOfflineDrillRun",
+    "MainGraduationOfflineDrillService",
     "MainLedgerStatus",
     "MainRollbackAuthority",
     "MainRollbackAuthorityError",
@@ -32,6 +45,9 @@ __all__ = [
     "MainRollbackCoordinator",
     "MainRollbackCoordinatorError",
     "MainRollbackCurrentAuthority",
+    "OfflineDrillCaseExecutor",
+    "OfflineDrillClock",
+    "OfflineDrillObservation",
     "RollbackBundleAuthority",
     "RollbackResult",
     "SubmissionContentResolver",
