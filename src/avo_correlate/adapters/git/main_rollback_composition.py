@@ -115,6 +115,10 @@ class MainRollbackCompositionAdapter:
                 )
             if package.repository_digest != self.repository_digest:
                 raise MainRollbackCompositionError("rollback repository differs from adapter")
+            if package.plan.policy_epoch != self._composition.policy_epoch:
+                raise MainRollbackCompositionError(
+                    "source completion policy epoch differs from rollback authority"
+                )
 
             current = self._composition.fresh_main_base()
             self._require_current_main(package, current)
@@ -173,7 +177,7 @@ class MainRollbackCompositionAdapter:
                 "current_main_parent_commit": base_commit,
                 "inverse_changed_paths": changed_paths,
                 "inverse_tree": inverse_tree,
-                "policy_epoch": package.plan.policy_epoch,
+                "policy_epoch": self._composition.policy_epoch,
                 "deploy_performed": False,
             }
             probe = MainInverseDeltaArtifact.model_construct(

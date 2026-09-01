@@ -31,13 +31,18 @@ class _Reader:
 
 
 def _adapter(
-    root: Path, journal: object, reader: _Reader
+    root: Path,
+    journal: object,
+    reader: _Reader,
+    *,
+    policy_epoch: str | None = None,
 ) -> MainRollbackCompositionAdapter:
     return MainRollbackCompositionAdapter(
         root / "checkout",
         journal,  # type: ignore[arg-type]
         repository_digest=REPOSITORY,
         base_reader=reader,
+        policy_epoch=policy_epoch or journal._policy_epoch,  # type: ignore[attr-defined]
     )
 
 
@@ -132,4 +137,20 @@ def test_inverse_rejects_advanced_main_before_candidate_retention(tmp_path: Path
             completion_package_digest=canonical_digest(package),
         )
     assert git(checkout, "rev-parse", "refs/heads/main") == advanced
+    assert not (checkout / ".git" / "refs" / "avo" / "main-rollback").exists()
+
+
+def test_inverse_rejects_historical_policy_epoch(tmp_path: Path) -> None:
+    journal, checkout, provider, package = _ready(tmp_path)
+    with pytest.raises(MainRollbackCompositionError, match="policy epoch"):
+        _adapter(
+            tmp_path,
+            journal,
+            _Reader(checkout, provider.main_commit, provider.main_tree),
+            policy_epoch="sha256:" + "e" * 64,
+        ).compose(
+            rollback_operation_id=ROLLBACK_OPERATION,
+            source_operation_id=MAIN_OPERATION,
+            completion_package_digest=canonical_digest(package),
+        )
     assert not (checkout / ".git" / "refs" / "avo" / "main-rollback").exists()
