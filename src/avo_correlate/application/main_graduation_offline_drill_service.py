@@ -19,6 +19,7 @@ from avo_correlate.contracts.base import ArtifactRef, Sha256Digest
 from avo_correlate.contracts.main_graduation_offline_drill import (
     FROZEN_OFFLINE_DRILL_CASE_IDS,
     FROZEN_OFFLINE_DRILL_VECTOR_IDS,
+    OFFLINE_EVIDENCE_ROLE_MEDIA,
     MainGraduationOfflineDrillCaseResult,
     MainGraduationOfflineDrillCaseSpec,
     MainGraduationOfflineDrillPlan,
@@ -155,12 +156,18 @@ class PinnedC7AuthorityVerifier:
         report: MainGraduationOfflineExecutionReport,
         reloaded_native_evidence: tuple[MainGraduationOfflineEvidenceRef, ...],
     ) -> bool:
+        execution_refs = self._execution_evidence_digests(reloaded_native_evidence)
+        if execution_refs is None:
+            return False
+        authority_ref_digest, report_ref_digest = execution_refs
         kinds = {item.kind for item in reloaded_native_evidence}
         return (
             self._authority(authority)
             and case_result.root_operation_id == plan.operation_id
             and case_result.plan_digest == plan.plan_digest
-            and case_result.execution_report_digest == report.report_digest
+            and authority_ref_digest == self.authority_ref
+            and case_result.execution_authority_digest == authority_ref_digest
+            and case_result.execution_report_digest == report_ref_digest
             and case_result.junit_xml_digest == report.junit_xml_artifact.digest
             and {
                 MainGraduationOfflineEvidenceKind.EXECUTION_AUTHORITY,
@@ -176,15 +183,78 @@ class PinnedC7AuthorityVerifier:
         report: MainGraduationOfflineExecutionReport,
         cases: tuple[MainGraduationOfflineDrillCaseResult, ...],
     ) -> bool:
+        execution_refs = {
+            self._case_execution_evidence_digests(case) for case in cases
+        }
+        if len(execution_refs) != 1:
+            return False
+        execution_ref = next(iter(execution_refs))
+        if execution_ref is None:
+            return False
+        authority_ref_digest, report_ref_digest = execution_ref
         return (
             self._authority(authority)
             and result.operation_id == plan.operation_id
             and result.plan_digest == plan.plan_digest
             and bool(result.execution_authority_digest)
-            and result.execution_report_digest == report.report_digest
+            and authority_ref_digest == self.authority_ref
+            and result.execution_authority_digest == authority_ref_digest
+            and result.execution_report_digest == report_ref_digest
             and result.junit_xml_digest == report.junit_xml_artifact.digest
             and len(cases) == 47
         )
+
+    @staticmethod
+    def _execution_evidence_digests(
+        evidence: tuple[MainGraduationOfflineEvidenceRef, ...],
+    ) -> tuple[str, str] | None:
+        """Return the unique authority/report artifact identities in evidence.
+
+        ``report.report_digest`` is the semantic digest of the report record;
+        case and aggregate manifests carry the content-addressed artifact
+        digest instead.  Keep this check independent of journal validation so
+        the pinned verifier remains fail-closed when called directly.
+        """
+        seen: set[str] = set()
+        found: dict[MainGraduationOfflineEvidenceKind, str] = {}
+        required = {
+            MainGraduationOfflineEvidenceKind.EXECUTION_AUTHORITY,
+            MainGraduationOfflineEvidenceKind.EXECUTION_REPORT,
+        }
+        for item in evidence:
+            digest = item.artifact.digest
+            if digest in seen:
+                return None
+            seen.add(digest)
+            if item.kind not in required:
+                continue
+            if item.kind in found:
+                return None
+            role, media_type = OFFLINE_EVIDENCE_ROLE_MEDIA[item.kind]
+            if item.artifact.role != role or item.artifact.media_type != media_type:
+                return None
+            found[item.kind] = digest
+        if set(found) != required:
+            return None
+        return (
+            found[MainGraduationOfflineEvidenceKind.EXECUTION_AUTHORITY],
+            found[MainGraduationOfflineEvidenceKind.EXECUTION_REPORT],
+        )
+
+    @classmethod
+    def _case_execution_evidence_digests(
+        cls, case: MainGraduationOfflineDrillCaseResult
+    ) -> tuple[str, str] | None:
+        refs = cls._execution_evidence_digests(case.native_evidence_refs)
+        if refs is None:
+            return None
+        authority_ref_digest, report_ref_digest = refs
+        if (
+            case.execution_authority_digest != authority_ref_digest
+            or case.execution_report_digest != report_ref_digest
+        ):
+            return None
+        return refs
 
     def _authority(self, authority: MainGraduationOfflineExecutionAuthority) -> bool:
         return (
