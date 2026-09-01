@@ -15,7 +15,7 @@ single-host, trusted-team boundary. It does not authorize deployment, production
 repository transfer, branch-protection mutation, or direct ref writes.
 
 C4–C7 completion is offline coordinator/recovery/ledger/gate evidence only. C7 passed all 47
-exact fault-matrix cases; replay returned the exact same result with `executor_calls=0` and
+exact frozen case/vector entries; replay returned the exact same result with `executor_calls=0` and
 `clock_calls=0`, and `deploy_performed=false`. See the [durable C7 result](avo-0047-c7-result.md).
 No provider or `main` mutation is authorized by this status. C8 remains blocked pending
 organization-hosting/merge-queue capability and isolated release-hold authority.

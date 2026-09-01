@@ -74,7 +74,7 @@ production authority outside the proposing agent's control.
   no P0/P1 findings. The [durable C6 result](avo-0047-c6-result.md) records the exact scope,
   invariants, remediations, and no-live boundary. C6 does not establish hosted/live readiness.
   C7 deterministic offline gate is complete at code HEAD `9c70c36074810606692f8c2030b25ce83c10a1e4`:
-  all 47 exact fault-matrix cases passed, replay returned the exact same result with
+  all 47 exact frozen case/vector entries passed, replay returned the exact same result with
   `executor_calls=0` and `clock_calls=0`, and `deploy_performed=false`. The [durable C7
   result](avo-0047-c7-result.md) records the immutable operation and artifact identities,
   two truthful failed-closed dry attempts that exposed datetime-canonicalization and
@@ -132,7 +132,7 @@ approving every ordinary patch.
 | C4 — coordinator and recovery | complete | Final offline coordinator/recovery acceptance passed at HEAD `82ace056cf9f0453b43c71845179c437914a041b` with Terra approval: 358 passed, 0 failed, filesystem recovery and replay covered, Ruff/scoped production Pyright/schema parity/roadmap validation green. No hosted or live mutation occurred. [Result](avo-0047-c4-result.md) |
 | C5 — main rollback authority | complete | Offline acceptance passed at HEAD `e38d0b826f94f3f559fb2e3ef0b26d1d17128c53` with Terra APPROVE and combined 24 passed, covering rollback contracts/journaling, inverse composition, authority verification, aggregate orchestration, terminal cleanup/closure, crash/replay, and adversarial recovery. No hosted/provider/main/deploy mutation occurred. [Result](avo-0047-c5-result.md) |
 | C6 — campaign runner and eligibility ledger | complete | Offline acceptance complete at final code HEAD `e6db424cc671d7a5d63b9b8a7246a316c4867f91`; [result](avo-0047-c6-result.md). Hosted ledger activation still requires blocked C8 prerequisites and a fresh hosted rollback drill. |
-| C7 — deterministic offline gate | complete | Offline acceptance complete at code HEAD `9c70c36074810606692f8c2030b25ce83c10a1e4`; 47 exact cases passed, replay used `executor_calls=0` and `clock_calls=0`, and `deploy_performed=false`. [Result](avo-0047-c7-result.md). No hosted mutation. |
+| C7 — deterministic offline gate | complete | Offline acceptance complete at code HEAD `9c70c36074810606692f8c2030b25ce83c10a1e4`; 47 exact frozen case/vector entries passed, replay used `executor_calls=0` and `clock_calls=0`, and `deploy_performed=false`. [Result](avo-0047-c7-result.md). No hosted mutation. |
 | C8 — hosted organization/queue/release gate | blocked | Requires explicit organization-hosting/max-one merge-queue capability and isolated admission/hold issuer authority; no live `main` mutation is authorized. |
 
 The roadmap gate was completed first because the operator explicitly authorized it. The green test
