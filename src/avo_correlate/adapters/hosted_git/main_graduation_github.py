@@ -52,6 +52,7 @@ from avo_correlate.application.c4_capabilities import (
     ReleaseIssueResult,
     ReleaseObservationRequest,
     ReleaseObservationResult,
+    candidate_ref_for_operation,
 )
 from avo_correlate.contracts.main_graduation import MainQueueConfigurationObservation
 from avo_correlate.contracts.main_graduation_phase_a import main_stage_nonce
@@ -60,6 +61,7 @@ from avo_correlate.domain.canonical import canonical_digest
 _OBJECT = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _CANDIDATE = re.compile(r"^refs/heads/avo/candidate/[0-9a-f]{64}$")
+_ROLLBACK_CANDIDATE = re.compile(r"^refs/heads/avo/main-rollback/[0-9a-f]{64}$")
 _URL = re.compile(r"^https://github\.com/([^/]+)/([^/]+)/pull/([1-9][0-9]*)$")
 _REPOSITORY_COMPONENT = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$")
 
@@ -107,6 +109,16 @@ class GitHubMainGraduationError(RuntimeError):
 
 class GitHubMainGraduationRejected(GitHubMainGraduationError):
     """An authoritative precondition or 4xx rejection."""
+
+
+def _operation_candidate(request: Any) -> str:
+    """Derive the candidate ref from the signed operation discriminator."""
+    return candidate_ref_for_operation(request.operation_id, request.operation_kind)
+
+
+def _valid_candidate_ref(ref: str, operation_kind: str) -> bool:
+    pattern = _ROLLBACK_CANDIDATE if operation_kind == "rollback" else _CANDIDATE
+    return pattern.fullmatch(ref) is not None
 
 
 class GitHubMainGraduationAmbiguous(GitHubMainGraduationError):
@@ -508,7 +520,7 @@ class GitHubMainGraduationAdapter:
         request = self._validate_request(
             request, CandidatePublicationRequest, self.repository_digest
         )
-        if not _CANDIDATE.fullmatch(request.candidate_ref):
+        if not _valid_candidate_ref(request.candidate_ref, request.operation_kind):
             raise ValueError("candidate ref is not an exact operation ref")
         # Reconcile the exact operation ref before attempting creation.  A
         # non-404 response is never treated as absence and therefore cannot
@@ -824,7 +836,7 @@ class GitHubMainGraduationAdapter:
             request.pull_request_number,
             candidate_ref=request.candidate_ref
             if hasattr(request, "candidate_ref")
-            else "refs/heads/avo/candidate/" + request.operation_id.removeprefix("sha256:"),
+            else _operation_candidate(request),
             head_commit=request.pull_request_head,
             head_tree=request.pull_request_tree,
             base_commit=request.base_commit,
@@ -862,8 +874,12 @@ class GitHubMainGraduationAdapter:
             _str(base, "ref", "pull request base"),
             _str(head, "ref", "pull request head"),
         )
-        if base_ref not in {"main", "refs/heads/main"} or not _CANDIDATE.fullmatch(
+        normalized_head_ref = (
             head_ref if head_ref.startswith("refs/") else "refs/heads/" + head_ref
+        )
+        if base_ref not in {"main", "refs/heads/main"} or not (
+            _CANDIDATE.fullmatch(normalized_head_ref)
+            or _ROLLBACK_CANDIDATE.fullmatch(normalized_head_ref)
         ):
             raise _Precondition("pull request ref is outside exact target")
         base_sha, head_sha = (
@@ -1131,8 +1147,7 @@ class GitHubMainGraduationAdapter:
         parsed = self._authoritative_pr(
             "preparation",
             request.pull_request_number,
-            candidate_ref="refs/heads/avo/candidate/"
-            + request.operation_id.removeprefix("sha256:"),
+            candidate_ref=_operation_candidate(request),
             head_commit=request.pull_request_head,
             head_tree=request.pull_request_tree,
             base_commit=request.base_commit,
@@ -1672,8 +1687,7 @@ class GitHubMainGraduationAdapter:
         self._authoritative_pr(
             "admission",
             request.pull_request_number,
-            candidate_ref="refs/heads/avo/candidate/"
-            + request.operation_id.removeprefix("sha256:"),
+            candidate_ref=_operation_candidate(request),
             head_commit=request.pull_request_head,
             head_tree=request.pull_request_tree,
             base_commit=request.base_commit,

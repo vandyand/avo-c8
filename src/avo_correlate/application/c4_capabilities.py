@@ -34,7 +34,7 @@ _QUEUE = frozenset({"admission_check", "queue_enqueue", "merge_group_hold", "rel
 _ISSUER = frozenset({"admission_check", "merge_group_hold", "release_transition"})
 
 
-def _candidate(op: str, operation_kind: str = "graduation") -> str:
+def candidate_ref_for_operation(op: str, operation_kind: str = "graduation") -> str:
     prefix = "main-rollback" if operation_kind == "rollback" else "candidate"
     return f"refs/heads/avo/{prefix}/{op.removeprefix('sha256:')}"
 
@@ -196,7 +196,9 @@ class CandidatePublicationRequest(StageRequest):
 
     @model_validator(mode="after")
     def candidate(self) -> Self:
-        if self.candidate_ref != _candidate(self.operation_id, self.operation_kind):
+        if self.candidate_ref != candidate_ref_for_operation(
+            self.operation_id, self.operation_kind
+        ):
             raise ValueError("candidate ref is not operation-derived")
         return self
 
@@ -212,7 +214,9 @@ class PullRequestCreateRequest(StageRequest):
 
     @model_validator(mode="after")
     def pr(self) -> Self:
-        if self.candidate_ref != _candidate(self.operation_id, self.operation_kind):
+        if self.candidate_ref != candidate_ref_for_operation(
+            self.operation_id, self.operation_kind
+        ):
             raise ValueError("pull request candidate ref is not operation-derived")
         if self.candidate_commit == self.base_commit or self.candidate_tree == self.base_tree:
             raise ValueError("pull request head must differ from base")
@@ -232,7 +236,8 @@ class PullRequestReconcileRequest(StageRequest):
     @model_validator(mode="after")
     def reconcile(self) -> Self:
         if (
-            self.candidate_ref != _candidate(self.operation_id, self.operation_kind)
+            self.candidate_ref
+            != candidate_ref_for_operation(self.operation_id, self.operation_kind)
             or self.head_commit == self.base_commit
             or self.head_tree == self.base_tree
         ):
@@ -252,7 +257,9 @@ class PullRequestLookupRequest(StageRequest):
 
     @model_validator(mode="after")
     def lookup(self) -> Self:
-        if self.candidate_ref != _candidate(self.operation_id, self.operation_kind):
+        if self.candidate_ref != candidate_ref_for_operation(
+            self.operation_id, self.operation_kind
+        ):
             raise ValueError("pull request lookup ref is not operation-derived")
         if self.candidate_commit == self.base_commit or self.candidate_tree == self.base_tree:
             raise ValueError("pull request lookup head must differ from base")
@@ -449,7 +456,9 @@ class CandidatePublicationResult(StageMutationResult):
 
     @model_validator(mode="after")
     def candidate(self) -> Self:
-        if self.candidate_ref != _candidate(self.operation_id, self.operation_kind):
+        if self.candidate_ref != candidate_ref_for_operation(
+            self.operation_id, self.operation_kind
+        ):
             raise ValueError("candidate result ref is not operation-derived")
         return self
 
@@ -473,7 +482,9 @@ class PullRequestCreateResult(StageMutationResult):
 
     @model_validator(mode="after")
     def pull_request(self) -> Self:
-        if self.candidate_ref != _candidate(self.operation_id, self.operation_kind):
+        if self.candidate_ref != candidate_ref_for_operation(
+            self.operation_id, self.operation_kind
+        ):
             raise ValueError("pull request result ref is not operation-derived")
         if self.candidate_commit == self.base_commit or self.candidate_tree == self.base_tree:
             raise ValueError("pull request result head must differ from base")
@@ -528,7 +539,9 @@ class PullRequestObservationRequest(StageObservationRequest):
 
     @model_validator(mode="after")
     def pull_request(self) -> Self:
-        if self.candidate_ref != _candidate(self.operation_id, self.operation_kind):
+        if self.candidate_ref != candidate_ref_for_operation(
+            self.operation_id, self.operation_kind
+        ):
             raise ValueError("pull request observation ref is not operation-derived")
         if self.head_commit == self.base_commit or self.head_tree == self.base_tree:
             raise ValueError("pull request observation head must differ from base")

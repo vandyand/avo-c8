@@ -28,6 +28,7 @@ from avo_correlate.adapters.hosted_git.github import (
     JsonValue,
     github_repository_digest,
 )
+from avo_correlate.application.c4_capabilities import candidate_ref_for_operation
 from avo_correlate.contracts.main_graduation import (
     MainCheckObservation,
     MainMergeGroupChecks,
@@ -46,6 +47,7 @@ from avo_correlate.domain.canonical import canonical_digest
 _GIT_OBJECT = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _CANDIDATE_HEAD = re.compile(r"^(?:refs/heads/)?avo/candidate/[0-9a-f]{64}$")
+_ROLLBACK_HEAD = re.compile(r"^(?:refs/heads/)?avo/main-rollback/[0-9a-f]{64}$")
 _REPOSITORY_COMPONENT = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?$")
 
 # GitHub exposes merge queues through GraphQL.  There is no supported REST
@@ -593,6 +595,7 @@ class ProtectedMainProvider:
         expected_head_ref: str | None = None,
         expected_head_commit: str | None = None,
         expected_url: str | None = None,
+        operation_kind: Literal["graduation", "rollback"] = "graduation",
     ) -> MainPullRequestObservation:
         if isinstance(number, bool) or number <= 0:
             raise ProtectedMainProviderError("pull request number must be positive")
@@ -606,7 +609,12 @@ class ProtectedMainProvider:
         base_commit = _git(_str(base, "sha", "pull request base"), "pull request base SHA")
         head_commit = _git(_str(head, "sha", "pull request head"), "pull request head SHA")
         head_ref = _str(head, "ref", "pull request head")
-        if not _CANDIDATE_HEAD.fullmatch(head_ref):
+        namespace_ok = (
+            _CANDIDATE_HEAD.fullmatch(head_ref) is not None
+            if operation_kind == "graduation"
+            else _ROLLBACK_HEAD.fullmatch(head_ref) is not None
+        )
+        if not namespace_ok:
             raise ProtectedMainProviderError("pull request head is outside candidate namespace")
         _, base_tree, _ = self._read_commit(base_commit, "pull request base commit")
         _, head_tree, _ = self._read_commit(head_commit, "pull request head commit")
@@ -656,6 +664,7 @@ class ProtectedMainProvider:
         *,
         expected_head_commit: str,
         expected_base_commit: str,
+        operation_kind: Literal["graduation", "rollback"] = "graduation",
     ) -> MainPullRequestObservation:
         """Resolve the unique PR for an operation-derived candidate branch.
 
@@ -667,7 +676,7 @@ class ProtectedMainProvider:
 
         if not _DIGEST.fullmatch(operation_id):
             raise ProtectedMainProviderError("operation identity is malformed")
-        candidate_ref = "refs/heads/avo/candidate/" + operation_id.removeprefix("sha256:")
+        candidate_ref = candidate_ref_for_operation(operation_id, operation_kind)
         head_commit = _git(expected_head_commit, "expected pull request head")
         base_commit = _git(expected_base_commit, "expected pull request base")
         items: list[JsonObject] = []
@@ -722,6 +731,7 @@ class ProtectedMainProvider:
             expected_base_commit=base_commit,
             expected_head_ref=candidate_ref,
             expected_head_commit=head_commit,
+            operation_kind=operation_kind,
         )
 
     find_pull_request = lookup_pull_request
