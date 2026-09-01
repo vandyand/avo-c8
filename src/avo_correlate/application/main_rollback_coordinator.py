@@ -1551,6 +1551,13 @@ class MainRollbackCoordinator:
             and observation_value is None
         ):
             return receipt, observation_value, None
+        # Terminal evidence is append-only and content-addressed.  A replay
+        # must adopt the durable terminal record instead of rebuilding it with
+        # a new observation timestamp, which would conflict at the journal
+        # index even though cleanup already completed.
+        terminal_prior = self.journal.read_rollback_cleanup_terminal(authority.operation_id)
+        if terminal_prior is not None:
+            return receipt, observation_value, terminal_prior[0]
         terminal = _digest_record(
             MainRollbackCleanupTerminalEvidence,
             {
