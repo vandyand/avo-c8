@@ -4128,6 +4128,12 @@ class MainGraduationJournal:
             raise MainGraduationJournalError(
                 "rollback post-state requires durable attempt authority and result"
             )
+        if not isinstance(attempt_prior[0], MainRollbackAttemptAuthority) or not isinstance(
+            result_prior[0], MainRollbackResultReceipt
+        ):
+            raise MainGraduationJournalError(
+                "rollback post-state dependencies have unexpected record types"
+            )
         attempt = cast(MainRollbackAttemptAuthority, attempt_prior[0])
         result = cast(MainRollbackResultReceipt, result_prior[0])
         if (
@@ -4156,6 +4162,12 @@ class MainGraduationJournal:
             raise MainGraduationJournalError(
                 "rollback cleanup terminal evidence requires durable intent and receipt"
             )
+        if not isinstance(intent_prior[0], MainRollbackCleanupIntent) or not isinstance(
+            receipt_prior[0], MainRollbackCleanupReceipt
+        ):
+            raise MainGraduationJournalError(
+                "rollback cleanup dependencies have unexpected record types"
+            )
         intent = cast(MainRollbackCleanupIntent, intent_prior[0])
         receipt = cast(MainRollbackCleanupReceipt, receipt_prior[0])
         if (
@@ -4181,6 +4193,10 @@ class MainGraduationJournal:
             if observation_prior is None:
                 raise MainGraduationJournalError(
                     "ambiguous cleanup requires durable terminal cleanup observation"
+                )
+            if not isinstance(observation_prior[0], MainRollbackCleanupObservation):
+                raise MainGraduationJournalError(
+                    "rollback cleanup observation has unexpected record type"
                 )
             observation = cast(MainRollbackCleanupObservation, observation_prior[0])
             if (
@@ -4333,13 +4349,18 @@ class MainGraduationJournal:
             or observation.pull_request_url != intent.pull_request_url
             or observation.repository_digest != intent.repository_digest
             or observation.target_ref != intent.target_ref
-            or observation.provider_identity != intent.provider_identity
-            or observation.provider_api_version != intent.provider_api_version
             or observation.observed_at < receipt.observed_at
             or receipt.outcome == "invalid"
             or (
                 receipt.outcome in {"applied", "already_applied"}
                 and observation.outcome not in {"absent", "already_absent"}
+            )
+            or (
+                receipt.outcome in {"applied", "already_applied"}
+                and (
+                    observation.provider_identity != intent.provider_identity
+                    or observation.provider_api_version != intent.provider_api_version
+                )
             )
         ):
             raise MainGraduationJournalError("rollback cleanup observation binding differs")

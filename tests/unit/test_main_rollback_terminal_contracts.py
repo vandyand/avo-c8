@@ -9,8 +9,10 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from avo_correlate.adapters.artifacts.main_graduation_journal import (
+    MainGraduationJournal,
     MainGraduationJournalError,
 )
 from avo_correlate.contracts.main_graduation import (
@@ -20,7 +22,7 @@ from avo_correlate.contracts.main_graduation import (
     MainRollbackPostStateObservation,
     main_rollback_operation_id,
 )
-from avo_correlate.domain.canonical import canonical_digest
+from avo_correlate.domain.canonical import canonical_bytes, canonical_digest
 from tests.unit.test_main_rollback_lifecycle_contracts import (
     NOW,
     RB,
@@ -30,6 +32,7 @@ from tests.unit.test_main_rollback_lifecycle_contracts import (
     _cleanup_observation,
     _cleanup_receipt,
     _journal_with_records,
+    _ref,
     _rollback_fixture,
     _signed,
 )
@@ -217,3 +220,216 @@ def test_rollback_completion_requires_full_authority_closure() -> None:
     assert required.issubset(MainRollbackCompletionPackage.model_fields)
     for name in required:
         assert MainRollbackCompletionPackage.model_fields[name].is_required()
+
+
+def test_terminal_contracts_reject_abandoned_v1_wires_and_round_trip_v2() -> None:
+    source, inverse, intent, auth, _lease, result = _rollback_fixture()
+    attempt = _attempt(source, inverse, intent, auth)
+    post = _post_state(result, attempt)
+    post_wire = post.model_dump(mode="json")
+    assert post_wire["schema_version"] == 2
+    with pytest.raises(ValidationError, match="schema_version"):
+        MainRollbackPostStateObservation.model_validate(
+            {**post_wire, "schema_version": 1}
+        )
+    assert canonical_bytes(
+        MainRollbackPostStateObservation.model_validate_json(canonical_bytes(post))
+    ) == canonical_bytes(post)
+
+    cleanup = _cleanup_intent(intent, auth, result)
+    receipt = _cleanup_receipt(cleanup)
+    terminal = _signed(
+        MainRollbackCleanupTerminalEvidence,
+        {
+            "operation_id": RB,
+            "repository_digest": R,
+            "target_ref": "refs/heads/main",
+            "cleanup_intent_digest": cleanup.intent_digest,
+            "cleanup_receipt_digest": receipt.receipt_digest,
+            "candidate_ref": cleanup.candidate_ref,
+            "candidate_commit": cleanup.candidate_commit,
+            "pull_request_number": cleanup.pull_request_number,
+            "pull_request_url": cleanup.pull_request_url,
+            "outcome": "already_absent",
+            "candidate_ref_absent": True,
+            "pull_request_state": "absent",
+            "cleanup_observation_digest": None,
+            "provider_identity": cleanup.provider_identity,
+            "provider_api_version": cleanup.provider_api_version,
+            "observed_at": NOW + timedelta(minutes=3),
+        },
+        "evidence_digest",
+    )
+    terminal_wire = terminal.model_dump(mode="json")
+    assert terminal_wire["schema_version"] == 2
+    with pytest.raises(ValidationError, match="schema_version"):
+        MainRollbackCleanupTerminalEvidence.model_validate(
+            {**terminal_wire, "schema_version": 1}
+        )
+    assert canonical_bytes(
+        MainRollbackCleanupTerminalEvidence.model_validate_json(canonical_bytes(terminal))
+    ) == canonical_bytes(terminal)
+
+    assert MainRollbackCompletionPackage.model_fields["schema_version"].default == 2
+    with pytest.raises(ValidationError, match="schema_version"):
+        MainRollbackCompletionPackage.model_validate({"schema_version": 1})
+
+
+def test_post_state_filesystem_record_restart_and_cas_tamper(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, inverse, intent, auth, _lease, result = _rollback_fixture()
+    attempt = _attempt(source, inverse, intent, auth)
+    observation = _post_state(result, attempt)
+    authority = _Authority()
+    dependencies = {
+        "rollback-attempt-authority": attempt,
+        "rollback-result": result,
+    }
+    journal = MainGraduationJournal(
+        tmp_path, policy_epoch=D, rollback_authority_verifier=authority
+    )
+    journal._read = lambda kind, key: (  # type: ignore[method-assign]
+        dependencies[kind], _ref()
+    ) if kind in dependencies else journal._read_impl(kind, key)
+    reference = journal.record_rollback_post_state_observation(observation)
+    replay = journal.record_rollback_post_state_observation(observation)
+    assert replay == reference
+
+    restarted = MainGraduationJournal(
+        tmp_path, policy_epoch=D, rollback_authority_verifier=authority
+    )
+    original = restarted._read_impl
+
+    def read(kind: str, key: str) -> Any:
+        if kind == "rollback-post-state-observation":
+            return original(kind, key)
+        if kind in dependencies:
+            return dependencies[kind], _ref()
+        return original(kind, key)
+
+    monkeypatch.setattr(restarted, "_read", read)
+    loaded = restarted.read_rollback_post_state_observation(RB)
+    assert loaded is not None and loaded[0] == observation and loaded[1] == reference
+    assert authority.calls.count("post-state") == 3
+
+    restarted.delete_artifact(reference.digest)
+    with pytest.raises(MainGraduationJournalError):
+        restarted.read_rollback_post_state_observation(RB)
+
+
+def test_ambiguous_cleanup_terminal_filesystem_restart_and_observer_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _source, _inverse, intent, auth, _lease, result = _rollback_fixture()
+    cleanup = _cleanup_intent(intent, auth, result)
+    receipt_values = _cleanup_receipt(cleanup).model_dump(mode="json")
+    receipt_values.update({"outcome": "ambiguous", "receipt_digest": D})
+    receipt = _signed(type(_cleanup_receipt(cleanup)), receipt_values, "receipt_digest")
+    observation_values = _cleanup_observation(cleanup, receipt).model_dump(mode="json")
+    observation_values.update(
+        {
+            "provider_identity": "independent-cleanup-observer",
+            "observation_digest": D,
+        }
+    )
+    observation = _signed(
+        type(_cleanup_observation(cleanup, receipt)),
+        observation_values,
+        "observation_digest",
+    )
+    terminal = _signed(
+        MainRollbackCleanupTerminalEvidence,
+        {
+            "operation_id": RB,
+            "repository_digest": R,
+            "target_ref": "refs/heads/main",
+            "cleanup_intent_digest": cleanup.intent_digest,
+            "cleanup_receipt_digest": receipt.receipt_digest,
+            "candidate_ref": cleanup.candidate_ref,
+            "candidate_commit": cleanup.candidate_commit,
+            "pull_request_number": cleanup.pull_request_number,
+            "pull_request_url": cleanup.pull_request_url,
+            "outcome": "absent",
+            "candidate_ref_absent": True,
+            "pull_request_state": "closed",
+            "cleanup_observation_digest": observation.observation_digest,
+            "provider_identity": observation.provider_identity,
+            "provider_api_version": observation.provider_api_version,
+            "observed_at": NOW + timedelta(minutes=7),
+        },
+        "evidence_digest",
+    )
+    dependencies = {
+        "rollback-cleanup-intent": cleanup,
+        "rollback-cleanup-receipt": receipt,
+        "rollback-cleanup-observation": observation,
+    }
+    authority = _Authority()
+    journal = MainGraduationJournal(
+        tmp_path, policy_epoch=D, rollback_authority_verifier=authority
+    )
+    journal._read = lambda kind, key: (  # type: ignore[method-assign]
+        dependencies[kind], _ref()
+    ) if kind in dependencies else journal._read_impl(kind, key)
+    observation_ref = journal.record_rollback_cleanup_observation(observation)
+    terminal_ref = journal.record_rollback_cleanup_terminal(terminal)
+    assert journal.record_rollback_cleanup_terminal(terminal) == terminal_ref
+
+    restarted = MainGraduationJournal(
+        tmp_path, policy_epoch=D, rollback_authority_verifier=authority
+    )
+    original = restarted._read_impl
+
+    def read(kind: str, key: str) -> Any:
+        if kind in {"rollback-cleanup-terminal", "rollback-cleanup-observation"}:
+            return original(kind, key)
+        if kind in dependencies:
+            return dependencies[kind], _ref()
+        return original(kind, key)
+
+    monkeypatch.setattr(restarted, "_read", read)
+    loaded = restarted.read_rollback_cleanup_terminal(RB)
+    assert loaded is not None and loaded[0] == terminal and loaded[1] == terminal_ref
+    assert observation_ref.digest != terminal_ref.digest
+    assert "cleanup-observation" in authority.calls
+    assert authority.calls.count("cleanup-terminal") == 3
+
+    missing_observation = MainGraduationJournal(
+        tmp_path, policy_epoch=D, rollback_authority_verifier=authority
+    )
+    missing_original = missing_observation._read_impl
+
+    def read_missing(kind: str, key: str) -> Any:
+        if kind == "rollback-cleanup-terminal":
+            return missing_original(kind, key)
+        if kind == "rollback-cleanup-observation":
+            return None
+        if kind in dependencies:
+            return dependencies[kind], _ref()
+        return missing_original(kind, key)
+
+    monkeypatch.setattr(missing_observation, "_read", read_missing)
+    with pytest.raises(MainGraduationJournalError):
+        missing_observation.read_rollback_cleanup_terminal(RB)
+
+    mismatched = terminal.model_copy(
+        update={"cleanup_observation_digest": "sha256:" + "8" * 64}
+    )
+    mismatched = _signed(
+        MainRollbackCleanupTerminalEvidence,
+        mismatched.model_dump(mode="json"),
+        "evidence_digest",
+    )
+    with pytest.raises(MainGraduationJournalError, match="observation binding"):
+        restarted._require_rollback_cleanup_terminal(mismatched)  # type: ignore[attr-defined]
+
+    present = terminal.model_copy(update={"pull_request_state": "open"})
+    with pytest.raises(ValidationError, match="pull_request_state"):
+        MainRollbackCleanupTerminalEvidence.model_validate(
+            present.model_dump(mode="json")
+        )
+
+    restarted.delete_artifact(observation_ref.digest)
+    with pytest.raises(MainGraduationJournalError):
+        restarted.read_rollback_cleanup_terminal(RB)

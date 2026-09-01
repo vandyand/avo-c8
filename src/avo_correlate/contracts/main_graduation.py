@@ -2022,7 +2022,7 @@ MainRollbackAttemptManifest = MainRollbackAttemptAuthority
 class MainRollbackPostStateObservation(MainBound):
     """Authenticated read-after-write state for the final protected result."""
 
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     operation_id: Sha256Digest
     source_operation_id: Sha256Digest
     attempt_manifest_digest: Sha256Digest
@@ -2064,7 +2064,7 @@ class MainRollbackPostStateObservation(MainBound):
 class MainRollbackCleanupTerminalEvidence(MainBound):
     """Terminal proof that rollback candidate resources are absent."""
 
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     operation_id: Sha256Digest
     cleanup_intent_digest: Sha256Digest
     cleanup_receipt_digest: Sha256Digest
@@ -2106,7 +2106,7 @@ MainRollbackTerminalCleanupEvidence = MainRollbackCleanupTerminalEvidence
 class MainRollbackCompletionPackage(MainBound):
     """Content-addressed terminal closure for one rollback attempt."""
 
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     operation_id: Sha256Digest
     attempt_authority: MainRollbackAttemptAuthority = Field(
         validation_alias=AliasChoices("attempt_authority", "attempt_manifest", "attempt")
