@@ -21,6 +21,13 @@ ACL, authority, or readiness. Local rollback and activation preparers are explic
 non-consumable drafts. No CLI/live execution, concrete trust root, live adapter, runner, or
 hosted mutation occurred.
 
+The atomic authenticated Phase 2 snapshot is Terra-approved at `1d911e3` with 30 snapshot/parser
+review tests and 82 combined focused checks. It uses two-pass mutable-configuration and final
+main-ref fences, bounded rules pagination, REST/GraphQL cross-binding, SHA-1/SHA-256 binding, and
+failure caching. App checks are configuration-only, not validation-principal identity or issuer
+authority. Workflow semantics and validation-principal identity remain unverifiable; issuer and
+rollback observations remain unsupported.
+
 This runbook operationalizes [ADR 0011](adr/0011-protected-main-graduation.md) and the
 [implementation plan](avo-0047-main-graduation-plan.md). It is limited to the declared
 single-host, trusted-team boundary. It does not authorize deployment, production effects,

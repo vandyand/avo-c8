@@ -88,9 +88,13 @@ production authority outside the proposing agent's control.
   workflow data with a final main fence, verifies blob binding, and passed 52 focused tests.
   The pure Phase 2 parser gate is Terra-approved at `e154726` with 19 parser tests and 71
   combined focused checks, covering bounded raw effective/resolved rulesets, conditions and rule
-  multisets, strict required contexts/App configuration, and bounded queue parsing. It is parser-
-  only, with no transport integration, live/CLI execution, authority, or readiness. Workflow
-  semantics/check identity and protection/queue/issuer/rollback ACL remain unverifiable.
+  multisets, strict required contexts/App configuration, and bounded queue parsing. The atomic
+  authenticated Phase 2 snapshot is Terra-approved at `1d911e3` (30 snapshot/parser review
+  tests; 82 combined focused checks), with two-pass mutable-configuration and final main-ref
+  fencing, bounded rules pagination, REST/GraphQL cross-binding, SHA-1/SHA-256 binding, and
+  failure caching. App configuration is not validation-principal identity. It is diagnostic-only:
+  workflow semantics and validation-principal identity remain unverifiable; issuer and rollback
+  remain unsupported, with no CLI/live execution, authority, or readiness.
   There is no CLI/live execution, concrete trust root, authority-bearing adapter, runner,
   readiness, or hosted mutation. The rollback and activation preparers remain explicitly
   non-consumable drafts.
@@ -147,7 +151,7 @@ approving every ordinary patch.
 | C5 — main rollback authority | complete | Offline acceptance passed at HEAD `e38d0b826f94f3f559fb2e3ef0b26d1d17128c53` with Terra APPROVE and combined 24 passed, covering rollback contracts/journaling, inverse composition, authority verification, aggregate orchestration, terminal cleanup/closure, crash/replay, and adversarial recovery. No hosted/provider/main/deploy mutation occurred. [Result](avo-0047-c5-result.md) |
 | C6 — campaign runner and eligibility ledger | complete | Offline acceptance complete at final code HEAD `e6db424cc671d7a5d63b9b8a7246a316c4867f91`; [result](avo-0047-c6-result.md). Hosted ledger activation still requires blocked C8 prerequisites and a fresh hosted rollback drill. |
 | C7 — deterministic offline gate | complete | Offline acceptance complete at code HEAD `9c70c36074810606692f8c2030b25ce83c10a1e4`; 47 exact frozen case/vector entries passed, replay used `executor_calls=0` and `clock_calls=0`, and `deploy_performed=false`. [Result](avo-0047-c7-result.md). No hosted mutation. |
-| C8 — hosted organization/queue/release gate | blocked | Terra-approved local Wave 1/2 foundations and the Phase 1 diagnostic snapshot are recorded in the [C8 local-foundations result](avo-0047-c8-local-foundations-result.md): exact-SHA/clean-WSL CI checks, non-consumable rollback/activation drafts, bounded pinned/no-redirect transport, five authenticated GETs with final main fence, blob binding, single-flight caching, and 52 focused tests. The pure Phase 2 parser gate is approved but not integrated; workflow semantics/check identity and protection/queue/issuer/rollback ACL remain unverifiable; no CLI/live execution, concrete trust root, authority-bearing adapter, runner, readiness, or hosted mutation exists. The next local leaf is atomic authenticated Phase 2 snapshot composition. Hosted completion still requires organization-owned required max-one merge queue, a separate isolated issuer (not App 15368), exclusive controller create/delete authority for `avo/main-rollback/*`, a fresh hosted main rollback drill, then ledger activation and 12 consecutive eligible successes with 0 failures/boundary violations. |
+| C8 — hosted organization/queue/release gate | blocked | Terra-approved local foundations and Phase 1 snapshot are recorded in the [C8 local-foundations result](avo-0047-c8-local-foundations-result.md). The Phase 2 atomic authenticated snapshot is Terra-approved at `1d911e3` with 30 snapshot/parser review tests and 82 combined focused checks, covering two-pass mutable-configuration/final-main fences, bounded rules pagination, REST/GraphQL cross-binding, SHA-1/SHA-256 binding, failure caching, and configuration-only App checks. Workflow semantics and validation-principal identity remain unverifiable; issuer and rollback remain unsupported. No CLI/live execution, authority, or readiness exists. The next local leaf is safe workflow semantic parsing plus a bounded read-only diagnostic entrypoint. Hosted completion still requires organization-owned required max-one merge queue, a separate isolated issuer (not App 15368), exclusive controller create/delete authority for `avo/main-rollback/*`, a fresh hosted main rollback drill, then ledger activation and 12 consecutive eligible successes with 0 failures/boundary violations. |
 
 The roadmap gate was completed first because the operator explicitly authorized it. The green test
 and coverage baseline, controlling repository, public remote, baseline tag, recovery rehearsal, and

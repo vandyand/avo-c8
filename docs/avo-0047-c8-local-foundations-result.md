@@ -26,6 +26,11 @@ The following local foundations are recorded by the cited commits:
   conditions/rule multisets, strict required-context/App configuration, and bounded merge-queue
   parsing. It is parser-only: no transport integration, live or CLI execution, authority, or
   readiness evidence is provided.
+- The atomic authenticated Phase 2 snapshot is Terra-approved at `1d911e3` (30 snapshot/parser
+  review tests; 82 combined focused checks). It performs a two-pass mutable-configuration fence,
+  final `main` ref fence, bounded rules pagination, REST/GraphQL cross-binding, SHA-1/SHA-256
+  object binding, and failure caching. App configuration is recorded only as configuration, not
+  validation-principal identity or issuer authority.
 
 ## Boundary and disposition
 
@@ -40,5 +45,7 @@ issuer, not App 15368; exclusive controller create/delete ruleset/ACL authority 
 `avo/main-rollback/*`; a fresh hosted main rollback drill; then frozen ledger activation and 12
 consecutive eligible successes with 0 failures or boundary violations.
 
-The next local leaf is atomic authenticated Phase 2 snapshot composition. C8 remains blocked
-externally pending hosting and isolated authority prerequisites.
+Workflow semantics and validation-principal identity remain unverifiable; issuer and rollback
+observations remain unsupported. There is still no CLI/live execution, authority, or readiness.
+The next local leaf is safe workflow semantic parsing plus a bounded read-only diagnostic
+entrypoint. C8 remains blocked externally pending hosting and isolated authority prerequisites.

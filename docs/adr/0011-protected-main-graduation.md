@@ -26,6 +26,14 @@ rollback ACL. The local rollback and activation preparers are explicitly non-con
 There is no CLI/live execution, concrete trust root, authority-bearing adapter, runner, readiness,
 or hosted mutation. See the [C8 local-foundations result](../avo-0047-c8-local-foundations-result.md).
 
+The atomic authenticated Phase 2 snapshot is Terra-approved at `1d911e3` with 30 snapshot/parser
+review tests and 82 combined focused checks: two-pass mutable-configuration and final main-ref
+fences, bounded rules pagination, REST/GraphQL cross-binding, SHA-1/SHA-256 binding, and failure
+caching. App checks are configuration-only, not validation-principal identity or issuer authority.
+Workflow semantics and validation-principal identity remain unverifiable; issuer and rollback
+remain unsupported. The next local leaf is safe workflow semantic parsing plus a bounded read-only
+diagnostic entrypoint. C8 remains blocked; no CLI/live execution, authority, or readiness exists.
+
 ## Context
 
 AVO-004.5 established a protected, PR-native promotion lifecycle for the `integration`

@@ -13,6 +13,14 @@ from .c8_phase2 import (
     parse_required_checks,
     parse_rules,
 )
+from .c8_preflight_snapshot import (
+    C8GitHubPreflightSnapshot,
+    C8HostedPreflightSnapshot,
+    C8PreflightSnapshotAdapter,
+    C8PreflightSnapshotUnverifiable,
+    GitHubC8PreflightAdapter,
+    GitHubC8PreflightSnapshot,
+)
 from .c8_snapshot import C8GitHubSnapshotAdapter, C8SnapshotUnverifiable, GitHubC8SnapshotAdapter
 from .campaign import GitHubCampaignProvider
 from .github import (
@@ -45,11 +53,17 @@ from .protected_main import (
 )
 
 __all__ = [
+    "C8GitHubPreflightSnapshot",
     "C8GitHubSnapshotAdapter",
+    "C8HostedPreflightSnapshot",
     "C8Phase2Blocked",
     "C8Phase2Unverifiable",
+    "C8PreflightSnapshotAdapter",
+    "C8PreflightSnapshotUnverifiable",
     "C8SnapshotUnverifiable",
     "EffectiveMainRules",
+    "GitHubC8PreflightAdapter",
+    "GitHubC8PreflightSnapshot",
     "GitHubC8SnapshotAdapter",
     "GitHubCampaignProvider",
     "GitHubEvidenceSnapshot",
