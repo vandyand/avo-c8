@@ -305,10 +305,13 @@ def test_provider_reconciliation_attestation_and_rollback_guards() -> None:
 
     inverse_values = {
         "operation_id": D,
+        "source_operation_id": D2,
         "repository_digest": R,
         "completion_package_digest": D2,
+        "original_delta_digest": D,
         "current_main_commit": HEAD,
         "current_main_tree": TREE,
+        "current_main_parent_commit": BASE,
         "inverse_changed_paths": ["src/feature.py"],
         "inverse_tree": BASE,
         "policy_epoch": D,
@@ -328,17 +331,26 @@ def test_provider_reconciliation_attestation_and_rollback_guards() -> None:
 
     rollback_values = {
         "operation_id": D,
+        "source_operation_id": D2,
         "repository_digest": R,
         "completion_package_digest": D2,
+        "original_delta_digest": D,
         "current_main_commit": HEAD,
         "current_main_tree": TREE,
+        "current_main_parent_commit": BASE,
         "inverse_delta_digest": D,
         "inverse_delta_artifact_digest": D2,
         "inverse_tree": BASE,
         "lease_identity": "lease",
         "lease_digest": D,
+        "lease_epoch_digest": D,
         "policy_epoch": D,
+        "controller_config_digest": D,
+        "release_issuer_identity": "issuer",
+        "release_issuer_app_id": 9001,
+        "issuer_isolation_digest": D,
         "authorized_at": NOW,
+        "expires_at": NOW + timedelta(minutes=1),
     }
     rollback_probe = MainRollbackAuthorization.model_construct(
         **rollback_values, authorization_digest=D
@@ -355,20 +367,26 @@ def test_provider_reconciliation_attestation_and_rollback_guards() -> None:
 
     rollback_intent_values = {
         "operation_id": D,
+        "source_operation_id": D2,
         "repository_digest": R,
         "completion_package_digest": D2,
+        "original_delta_digest": D,
         "inverse_delta_digest": D,
         "inverse_delta_artifact_digest": D2,
-        "base_commit": BASE,
+        "base_commit": HEAD,
         "base_tree": TREE,
         "current_main_commit": HEAD,
         "current_main_tree": TREE,
         "candidate_commit": HEAD,
         "candidate_tree": TREE,
+        "current_main_parent_commit": BASE,
+        "candidate_parent_commit": HEAD,
+        "candidate_ref": "refs/heads/avo/main-rollback/" + D[7:],
         "inverse_tree": BASE,
         "lease_identity": "lease",
         "lease_digest": D,
         "policy_epoch": D,
+        "authorization_digest": D,
         "recorded_at": NOW,
     }
     intent_probe = MainRollbackIntent.model_construct(**rollback_intent_values, intent_digest=D)

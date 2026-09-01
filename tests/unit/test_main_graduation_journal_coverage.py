@@ -1279,10 +1279,13 @@ def test_remaining_contract_validators_and_aliases() -> None:
         )
     inverse_values = {
         "operation_id": D,
+        "source_operation_id": "sha256:" + "2" * 64,
         "repository_digest": R,
         "completion_package_digest": D,
+        "original_delta_digest": D,
         "current_main_commit": HEAD,
         "current_main_tree": TREE,
+        "current_main_parent_commit": BASE,
         "inverse_changed_paths": ["src/feature.py"],
         "inverse_tree": TREE,
         "policy_epoch": D,

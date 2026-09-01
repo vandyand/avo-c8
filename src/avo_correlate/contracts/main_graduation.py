@@ -66,6 +66,10 @@ def _main_candidate_ref(operation_id: str) -> str:
     return f"refs/heads/avo/candidate/{operation_id.removeprefix('sha256:')}"
 
 
+def _main_rollback_candidate_ref(operation_id: str) -> str:
+    return f"refs/heads/avo/main-rollback/{operation_id.removeprefix('sha256:')}"
+
+
 def _main_retention_ref(operation_id: str) -> str:
     return f"refs/avo/main-composition/{operation_id.removeprefix('sha256:')}"
 
@@ -1617,11 +1621,16 @@ class MainCompletionPackage(MainBound):
 class MainInverseDeltaArtifact(MainBound):
     """Typed inverse of a completed main result; opaque rollback digests are forbidden."""
 
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     operation_id: Sha256Digest
+    # Rollback has its own operation identity.  This is the graduation
+    # operation whose immutable completion package supplies the source facts.
+    source_operation_id: Sha256Digest
     completion_package_digest: Sha256Digest
+    original_delta_digest: Sha256Digest
     current_main_commit: GitObject
     current_main_tree: GitObject
+    current_main_parent_commit: GitObject
     inverse_changed_paths: list[NonEmptyString] = Field(min_length=1)
     inverse_tree: GitObject
     policy_epoch: Sha256Digest
@@ -1632,6 +1641,8 @@ class MainInverseDeltaArtifact(MainBound):
 
     @model_validator(mode="after")
     def validate_inverse_delta(self) -> MainInverseDeltaArtifact:
+        if self.source_operation_id == self.operation_id:
+            raise ValueError("rollback operation must differ from source graduation operation")
         expected = canonical_digest(self.model_dump(exclude={"inverse_delta_digest"}, mode="json"))
         if self.inverse_delta_digest != expected:
             raise ValueError("inverse delta digest mismatch")
@@ -1639,26 +1650,42 @@ class MainInverseDeltaArtifact(MainBound):
 
 
 class MainRollbackAuthorization(MainBound):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     operation_id: Sha256Digest
+    source_operation_id: Sha256Digest
     completion_package_digest: Sha256Digest
+    original_delta_digest: Sha256Digest
     current_main_commit: GitObject
     current_main_tree: GitObject
+    current_main_parent_commit: GitObject
     inverse_delta_digest: Sha256Digest
     inverse_delta_artifact_digest: Sha256Digest
     inverse_tree: GitObject
     lease_identity: NonEmptyString
     lease_digest: Sha256Digest
+    lease_epoch_digest: Sha256Digest
     policy_epoch: Sha256Digest
+    controller_config_digest: Sha256Digest
+    release_issuer_identity: NonEmptyString
+    release_issuer_app_id: StrictInt = Field(gt=0)
+    issuer_isolation_digest: Sha256Digest
     authorization_digest: Sha256Digest
     authorized: Literal[True] = True
     deploy_performed: Literal[False] = False
+    expires_at: datetime
     authorized_at: datetime
 
+    _aware_expires_at = field_validator("expires_at")(_aware)
     _aware_authorized_at = field_validator("authorized_at")(_aware)
 
     @model_validator(mode="after")
     def validate_rollback_authorization(self) -> MainRollbackAuthorization:
+        if self.source_operation_id == self.operation_id:
+            raise ValueError("rollback operation must differ from source graduation operation")
+        if self.expires_at <= self.authorized_at:
+            raise ValueError("rollback authorization must expire after authorization")
+        if self.release_issuer_app_id == 15368:
+            raise ValueError("validation App 15368 cannot be the rollback issuer")
         if self.authorization_digest != canonical_digest(
             self.model_dump(exclude={"authorization_digest"}, mode="json")
         ):
@@ -1667,21 +1694,27 @@ class MainRollbackAuthorization(MainBound):
 
 
 class MainRollbackIntent(MainBound):
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     operation_id: Sha256Digest
+    source_operation_id: Sha256Digest
     completion_package_digest: Sha256Digest
+    original_delta_digest: Sha256Digest
     inverse_delta_digest: Sha256Digest
     inverse_delta_artifact_digest: Sha256Digest
     base_commit: GitObject
     base_tree: GitObject
     current_main_commit: GitObject
     current_main_tree: GitObject
+    current_main_parent_commit: GitObject
     candidate_commit: GitObject
     candidate_tree: GitObject
+    candidate_parent_commit: GitObject
+    candidate_ref: NonEmptyString
     inverse_tree: GitObject
     lease_identity: NonEmptyString
     lease_digest: Sha256Digest
     policy_epoch: Sha256Digest
+    authorization_digest: Sha256Digest
     intent_digest: Sha256Digest
     recorded_at: datetime
 
@@ -1689,6 +1722,20 @@ class MainRollbackIntent(MainBound):
 
     @model_validator(mode="after")
     def validate_rollback_intent(self) -> MainRollbackIntent:
+        if self.source_operation_id == self.operation_id:
+            raise ValueError("rollback operation must differ from source graduation operation")
+        if self.base_commit != self.current_main_commit:
+            raise ValueError("rollback candidate base must equal current main commit")
+        if self.base_tree != self.current_main_tree:
+            raise ValueError("rollback candidate base must equal current main tree")
+        if self.candidate_parent_commit != self.base_commit:
+            raise ValueError("rollback candidate parent must equal current main commit")
+        if self.candidate_commit == self.candidate_parent_commit:
+            raise ValueError("rollback candidate must be a new commit")
+        if self.candidate_tree != self.inverse_tree:
+            raise ValueError("rollback candidate tree must equal inverse tree")
+        if self.candidate_ref != _main_rollback_candidate_ref(self.operation_id):
+            raise ValueError("rollback candidate ref is outside controller namespace")
         if self.intent_digest != canonical_digest(
             self.model_dump(exclude={"intent_digest"}, mode="json")
         ):

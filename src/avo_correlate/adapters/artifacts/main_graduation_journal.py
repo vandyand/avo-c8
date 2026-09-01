@@ -467,6 +467,8 @@ class MainGraduationJournal:
                 )
             elif kind == "reconciliation":
                 self._require_reconciliation(cast(MainReconciliation, checked))
+            elif kind == "inverse-delta":
+                self._require_inverse_source(cast(MainInverseDeltaArtifact, checked))
             elif kind == "rollback-authorization":
                 self._require_rollback_intent(cast(MainRollbackAuthorization, checked))
             elif kind == "rollback-intent":
@@ -662,6 +664,8 @@ class MainGraduationJournal:
                 )
             elif kind == "reconciliation":
                 self._require_reconciliation(cast(MainReconciliation, record))
+            elif kind == "inverse-delta":
+                self._require_inverse_source(cast(MainInverseDeltaArtifact, record))
             elif kind == "rollback-authorization":
                 self._require_rollback_intent(cast(MainRollbackAuthorization, record))
             elif kind == "rollback-intent":
@@ -3218,11 +3222,18 @@ class MainGraduationJournal:
             raise MainGraduationJournalError("rollback authorization requires durable intent")
         intent = cast(MainRollbackIntent, prior[0])
         self._require_inverse_delta(intent)
-        if intent.completion_package_digest != authorization.completion_package_digest:
+        if (
+            authorization.source_operation_id == authorization.operation_id
+            or intent.source_operation_id != authorization.source_operation_id
+            or intent.completion_package_digest != authorization.completion_package_digest
+            or intent.original_delta_digest != authorization.original_delta_digest
+            or intent.authorization_digest != authorization.authorization_digest
+        ):
             raise MainGraduationJournalError("rollback package differs from intent")
         if (
             intent.current_main_commit != authorization.current_main_commit
             or intent.current_main_tree != authorization.current_main_tree
+            or intent.current_main_parent_commit != authorization.current_main_parent_commit
             or intent.base_commit != authorization.current_main_commit
             or intent.inverse_delta_digest != authorization.inverse_delta_digest
             or intent.inverse_delta_artifact_digest != authorization.inverse_delta_artifact_digest
@@ -3230,40 +3241,110 @@ class MainGraduationJournal:
             or intent.policy_epoch != authorization.policy_epoch
             or intent.repository_digest != authorization.repository_digest
             or intent.target_ref != authorization.target_ref
+            or intent.lease_identity != authorization.lease_identity
+            or intent.lease_digest != authorization.lease_digest
+            or not (
+                authorization.authorized_at
+                <= intent.recorded_at
+                < authorization.expires_at
+            )
         ):
             raise MainGraduationJournalError("rollback intent binding differs from authorization")
         if intent.base_commit != authorization.current_main_commit:
             raise MainGraduationJournalError("rollback intent is not current-tip bound")
+
+        source_prior = self._read("completion", authorization.source_operation_id)
+        if source_prior is None:
+            raise MainGraduationJournalError(
+                "rollback authorization requires durable source completion"
+            )
+        completion = cast(MainCompletionPackage, source_prior[0])
         if (
-            intent.lease_identity != authorization.lease_identity
-            or intent.lease_digest != authorization.lease_digest
+            authorization.completion_package_digest != canonical_digest(completion)
+            or authorization.current_main_commit != completion.reconciliation.main_commit
+            or authorization.current_main_tree != completion.reconciliation.main_tree
+            or authorization.current_main_parent_commit
+            != completion.reconciliation.main_parents[0]
+            or authorization.current_main_parent_commit != completion.composition.base_commit
+            or authorization.original_delta_digest != completion.delta.delta_digest
+            or authorization.policy_epoch != completion.plan.policy_epoch
+            or authorization.controller_config_digest
+            != completion.release_issuer_binding.controller_config_digest
+            or authorization.release_issuer_identity
+            != completion.release_authorization.release_issuer_identity
+            or authorization.release_issuer_identity != completion.release_issuer_binding.issuer_id
+            or authorization.release_issuer_app_id
+            != completion.release_authorization.release_issuer_app_id
+            or authorization.release_issuer_app_id != completion.release_issuer_binding.app_id
+            or authorization.issuer_isolation_digest
+            != completion.release_authorization.issuer_isolation_digest
+            or authorization.issuer_isolation_digest
+            != completion.release_issuer_binding.isolation_digest
         ):
-            raise MainGraduationJournalError("rollback lease differs from authorization")
+            raise MainGraduationJournalError("rollback authorization source binding differs")
 
     def _require_inverse_delta(self, intent: MainRollbackIntent) -> None:
         prior = self._read("inverse-delta", intent.operation_id)
         if prior is None:
             raise MainGraduationJournalError("rollback intent requires durable inverse delta")
         inverse = cast(MainInverseDeltaArtifact, prior[0])
-        completion_prior = self._read("completion", intent.operation_id)
+        self._require_inverse_source(inverse)
+        completion_prior = self._read("completion", intent.source_operation_id)
         if completion_prior is None:
             raise MainGraduationJournalError("rollback inverse requires durable completion")
         completion = cast(MainCompletionPackage, completion_prior[0])
         if (
             intent.inverse_delta_artifact_digest != canonical_digest(inverse)
             or intent.inverse_delta_digest != inverse.inverse_delta_digest
+            or intent.source_operation_id != inverse.source_operation_id
             or intent.completion_package_digest != inverse.completion_package_digest
             or inverse.completion_package_digest != canonical_digest(completion)
+            or intent.original_delta_digest != inverse.original_delta_digest
+            or intent.original_delta_digest != completion.delta.delta_digest
             or intent.current_main_commit != inverse.current_main_commit
             or intent.current_main_tree != inverse.current_main_tree
+            or intent.current_main_parent_commit != inverse.current_main_parent_commit
             or inverse.current_main_commit != completion.reconciliation.main_commit
             or inverse.current_main_tree != completion.reconciliation.main_tree
+            or inverse.current_main_parent_commit != completion.reconciliation.main_parents[0]
+            or inverse.current_main_parent_commit != completion.composition.base_commit
+            or inverse.inverse_changed_paths != completion.delta.changed_paths
+            or inverse.inverse_tree != completion.composition.base_tree
             or intent.inverse_tree != inverse.inverse_tree
             or intent.policy_epoch != inverse.policy_epoch
+            or intent.policy_epoch != completion.plan.policy_epoch
             or intent.repository_digest != inverse.repository_digest
             or intent.target_ref != inverse.target_ref
             or inverse.repository_digest != completion.repository_digest
             or inverse.target_ref != completion.target_ref
+        ):
+            raise MainGraduationJournalError("rollback inverse delta binding differs")
+
+    def _require_inverse_source(self, inverse: MainInverseDeltaArtifact) -> None:
+        """Require an inverse to name and match one exact completed source."""
+        if inverse.source_operation_id == inverse.operation_id:
+            raise MainGraduationJournalError(
+                "rollback operation must differ from source operation"
+            )
+        source_prior = self._read("completion", inverse.source_operation_id)
+        if source_prior is None:
+            raise MainGraduationJournalError(
+                "rollback inverse requires durable source completion"
+            )
+        completion = cast(MainCompletionPackage, source_prior[0])
+        if (
+            inverse.completion_package_digest != canonical_digest(completion)
+            or inverse.original_delta_digest != completion.delta.delta_digest
+            or inverse.current_main_commit != completion.reconciliation.main_commit
+            or inverse.current_main_tree != completion.reconciliation.main_tree
+            or inverse.current_main_parent_commit
+            != completion.reconciliation.main_parents[0]
+            or inverse.current_main_parent_commit != completion.composition.base_commit
+            or inverse.inverse_changed_paths != completion.delta.changed_paths
+            or inverse.inverse_tree != completion.composition.base_tree
+            or inverse.repository_digest != completion.repository_digest
+            or inverse.target_ref != completion.target_ref
+            or inverse.policy_epoch != completion.plan.policy_epoch
         ):
             raise MainGraduationJournalError("rollback inverse delta binding differs")
 

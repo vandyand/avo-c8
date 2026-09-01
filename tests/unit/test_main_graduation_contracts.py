@@ -317,10 +317,13 @@ def test_intent_requires_content_addressed_main_lease_evidence(tmp_path: Path) -
 def test_inverse_delta_digest_is_canonical() -> None:
     values = {
         "operation_id": DIGEST,
+        "source_operation_id": "sha256:" + "2" * 64,
         "repository_digest": DIGEST,
         "completion_package_digest": "sha256:" + "2" * 64,
+        "original_delta_digest": DIGEST,
         "current_main_commit": HEAD,
         "current_main_tree": TREE,
+        "current_main_parent_commit": BASE,
         "inverse_changed_paths": ["src/feature.py"],
         "inverse_tree": BASE,
         "policy_epoch": DIGEST,

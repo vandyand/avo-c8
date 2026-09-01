@@ -1,0 +1,104 @@
+{
+  "additionalProperties": false,
+  "description": "Typed inverse of a completed main result; opaque rollback digests are forbidden.",
+  "properties": {
+    "completion_package_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Completion Package Digest",
+      "type": "string"
+    },
+    "current_main_commit": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Current Main Commit",
+      "type": "string"
+    },
+    "current_main_parent_commit": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Current Main Parent Commit",
+      "type": "string"
+    },
+    "current_main_tree": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Current Main Tree",
+      "type": "string"
+    },
+    "deploy_performed": {
+      "const": false,
+      "default": false,
+      "title": "Deploy Performed",
+      "type": "boolean"
+    },
+    "inverse_changed_paths": {
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Inverse Changed Paths",
+      "type": "array"
+    },
+    "inverse_delta_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Inverse Delta Digest",
+      "type": "string"
+    },
+    "inverse_tree": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Inverse Tree",
+      "type": "string"
+    },
+    "operation_id": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Operation Id",
+      "type": "string"
+    },
+    "original_delta_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Original Delta Digest",
+      "type": "string"
+    },
+    "policy_epoch": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Policy Epoch",
+      "type": "string"
+    },
+    "repository_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Repository Digest",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 2,
+      "default": 2,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "source_operation_id": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Source Operation Id",
+      "type": "string"
+    },
+    "target_ref": {
+      "const": "refs/heads/main",
+      "default": "refs/heads/main",
+      "title": "Target Ref",
+      "type": "string"
+    }
+  },
+  "required": [
+    "repository_digest",
+    "operation_id",
+    "source_operation_id",
+    "completion_package_digest",
+    "original_delta_digest",
+    "current_main_commit",
+    "current_main_tree",
+    "current_main_parent_commit",
+    "inverse_changed_paths",
+    "inverse_tree",
+    "policy_epoch",
+    "inverse_delta_digest"
+  ],
+  "title": "MainInverseDeltaArtifact",
+  "type": "object"
+}
