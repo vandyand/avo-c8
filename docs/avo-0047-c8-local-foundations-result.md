@@ -21,6 +21,11 @@ The following local foundations are recorded by the cited commits:
   `main` ref, pointed-to commit, pinned workflow blob, and final `main` ref fence. It binds the
   responses canonically, verifies the workflow's Git blob identity, and caches the result for
   replay. The Phase 1 focused suite contains 52 passing tests through `f38840d`.
+- The pure Phase 2 parser gate is Terra-approved at `e154726`, with 19 parser tests and 71
+  combined focused checks. Its bounded scope is raw effective plus resolved rulesets and
+  conditions/rule multisets, strict required-context/App configuration, and bounded merge-queue
+  parsing. It is parser-only: no transport integration, live or CLI execution, authority, or
+  readiness evidence is provided.
 
 ## Boundary and disposition
 
@@ -35,4 +40,5 @@ issuer, not App 15368; exclusive controller create/delete ruleset/ACL authority 
 `avo/main-rollback/*`; a fresh hosted main rollback drill; then frozen ledger activation and 12
 consecutive eligible successes with 0 failures or boundary violations.
 
-The next local leaf is tested Phase 2 protection/queue parsers and atomic snapshot composition.
+The next local leaf is atomic authenticated Phase 2 snapshot composition. C8 remains blocked
+externally pending hosting and isolated authority prerequisites.

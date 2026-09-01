@@ -40,7 +40,9 @@ then final `main` ref fence), verifies the Git blob binding, binds all responses
 observation, and caches one result under a single-flight lock. It has no CLI/live execution path,
 writer capability, activation authority, or readiness meaning. Workflow semantics and check
 identity, effective protection and queue configuration, isolated issuer, and rollback namespace
-ACL remain unverifiable until the tested Phase 2 parsers and atomic snapshot are delivered.
+The Phase 2 parsers are delivered and approved but not integrated; workflow semantics/check
+identity and protection/queue/issuer/rollback ACL remain unverifiable until the atomic
+authenticated Phase 2 snapshot is delivered.
 
 The GitHub REST ref-delete endpoint provides no expected-SHA CAS precondition. Before hosted
 use, protect the `avo/main-rollback/*` namespace with exclusive ACL/ruleset authority. Cleanup
