@@ -919,9 +919,18 @@ class MainGraduationJournal:
 
     @staticmethod
     def _rollback_child_values(package: MainRollbackCompletionPackage) -> dict[str, StrictModel]:
-        return {
+        values: dict[str, StrictModel] = {
             "main-rollback-attempt-authority": package.attempt_authority,
             "main-rollback-source-completion": package.source_completion,
+            "main-rollback-preparation-authorization": package.rollback_preparation_authorization,
+            "main-rollback-lease-evidence-record": package.lease_evidence_record,
+            "main-rollback-queue-admission": package.admission_observation,
+            "main-rollback-release-hold": package.hold_observation,
+            "main-rollback-release-authorization": package.release_authorization,
+            "main-rollback-release-claim": package.release_claim,
+            "main-rollback-claimed-release-transition": package.claimed_transition_receipt,
+            "main-rollback-mutation-intent": package.release_transition_intent,
+            "main-rollback-mutation-receipt": package.release_transition_mutation_receipt,
             "main-rollback-inverse-delta": package.inverse_delta,
             "main-rollback-authorization": package.rollback_authorization,
             "main-rollback-intent": package.rollback_intent,
@@ -931,6 +940,13 @@ class MainGraduationJournal:
             "main-rollback-cleanup-receipt": package.cleanup_receipt,
             "main-rollback-cleanup-terminal": package.cleanup_terminal,
         }
+        if package.cleanup_observation is not None:
+            values["main-rollback-cleanup-observation"] = package.cleanup_observation
+        if package.release_transition_fence_resolution is not None:
+            values["main-rollback-mutation-fence-resolution"] = (
+                package.release_transition_fence_resolution
+            )
+        return values
 
     def _materialize_rollback_children(self, package: MainRollbackCompletionPackage) -> None:
         self._verify_rollback_completion_prerequisites(package)
@@ -998,6 +1014,24 @@ class MainGraduationJournal:
         self, package: MainRollbackCompletionPackage
     ) -> None:
         self._require_exact("completion", package.source_completion)
+        self._require_exact(
+            "rollback-preparation-authorization",
+            package.rollback_preparation_authorization,
+        )
+        self._require_phase_exact("lease-evidence-record", package.lease_evidence_record)
+        self._require_exact("queue-admission", package.admission_observation)
+        self._require_exact("release-hold", package.hold_observation)
+        self._require_exact("release-authorization", package.release_authorization)
+        self._require_phase_exact("release-claim", package.release_claim)
+        self._require_phase_exact(
+            "claimed-release-transition", package.claimed_transition_receipt
+        )
+        self._require_phase_exact("mutation-intent", package.release_transition_intent)
+        self._require_phase_exact("mutation-receipt", package.release_transition_mutation_receipt)
+        if package.release_transition_fence_resolution is not None:
+            self._require_phase_exact(
+                "mutation-fence-resolution", package.release_transition_fence_resolution
+            )
         self._require_exact("inverse-delta", package.inverse_delta)
         self._require_exact("rollback-authorization", package.rollback_authorization)
         self._require_exact("rollback-intent", package.rollback_intent)
@@ -1006,6 +1040,8 @@ class MainGraduationJournal:
         self._require_exact("rollback-post-state-observation", package.post_state)
         self._require_exact("rollback-cleanup-intent", package.cleanup_intent)
         self._require_exact("rollback-cleanup-receipt", package.cleanup_receipt)
+        if package.cleanup_observation is not None:
+            self._require_exact("rollback-cleanup-observation", package.cleanup_observation)
         self._require_exact("rollback-cleanup-terminal", package.cleanup_terminal)
 
     # ------------------------------------------------------------------
@@ -4103,9 +4139,6 @@ class MainGraduationJournal:
             or observation.result_commit != result.result_commit
             or observation.result_tree != result.result_tree
             or observation.result_parents != result.result_parents
-            or observation.provider_identity != result.provider_identity
-            or observation.provider_api_version != result.provider_api_version
-            or observation.response_digest != result.response_digest
             or observation.observed_at < result.observed_at
             or result.outcome not in {"applied", "already_applied"}
             or observation.repository_digest != attempt.repository_digest
@@ -4132,14 +4165,46 @@ class MainGraduationJournal:
             or evidence.candidate_commit != intent.candidate_commit
             or evidence.pull_request_number != intent.pull_request_number
             or evidence.pull_request_url != intent.pull_request_url
-            or evidence.provider_identity != intent.provider_identity
-            or evidence.provider_api_version != intent.provider_api_version
             or evidence.repository_digest != intent.repository_digest
             or evidence.target_ref != intent.target_ref
             or evidence.observed_at < receipt.observed_at
-            or receipt.outcome not in {"applied", "already_applied"}
+            or receipt.outcome
+            not in {"applied", "already_applied", "ambiguous", "reconciliation_required"}
+            or evidence.candidate_ref_absent is not True
+            or evidence.pull_request_state not in {"absent", "closed"}
         ):
             raise MainGraduationJournalError("rollback cleanup terminal binding differs")
+        if receipt.outcome in {"ambiguous", "reconciliation_required"}:
+            observation_prior = self._read(
+                "rollback-cleanup-observation", evidence.operation_id
+            )
+            if observation_prior is None:
+                raise MainGraduationJournalError(
+                    "ambiguous cleanup requires durable terminal cleanup observation"
+                )
+            observation = cast(MainRollbackCleanupObservation, observation_prior[0])
+            if (
+                evidence.cleanup_observation_digest != observation.observation_digest
+                or observation.outcome not in {"absent", "already_absent"}
+                or observation.intent_digest != intent.intent_digest
+                or observation.receipt_digest != receipt.receipt_digest
+                or observation.candidate_ref != intent.candidate_ref
+                or observation.candidate_commit != intent.candidate_commit
+                or observation.pull_request_number != intent.pull_request_number
+                or observation.pull_request_url != intent.pull_request_url
+            ):
+                raise MainGraduationJournalError(
+                    "ambiguous cleanup terminal observation binding differs"
+                )
+        elif evidence.cleanup_observation_digest is not None:
+            raise MainGraduationJournalError(
+                "direct cleanup terminal evidence cannot bind an observation"
+            )
+        elif (
+            evidence.provider_identity != intent.provider_identity
+            or evidence.provider_api_version != intent.provider_api_version
+        ):
+            raise MainGraduationJournalError("direct cleanup terminal provider binding differs")
         self._verify_rollback_cleanup_terminal_authority(evidence, intent, receipt)
 
     def _require_rollback_result(self, result: MainRollbackResultReceipt) -> None:

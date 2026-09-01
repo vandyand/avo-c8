@@ -39,19 +39,19 @@
       "title": "Observed At",
       "type": "string"
     },
+    "observer_api_version": {
+      "minLength": 1,
+      "title": "Observer Api Version",
+      "type": "string"
+    },
+    "observer_identity": {
+      "minLength": 1,
+      "title": "Observer Identity",
+      "type": "string"
+    },
     "operation_id": {
       "pattern": "^sha256:[0-9a-f]{64}$",
       "title": "Operation Id",
-      "type": "string"
-    },
-    "provider_api_version": {
-      "minLength": 1,
-      "title": "Provider Api Version",
-      "type": "string"
-    },
-    "provider_identity": {
-      "minLength": 1,
-      "title": "Provider Identity",
       "type": "string"
     },
     "repository_digest": {
@@ -116,8 +116,8 @@
     "result_commit",
     "result_tree",
     "result_parents",
-    "provider_identity",
-    "provider_api_version",
+    "observer_identity",
+    "observer_api_version",
     "response_digest",
     "observed_at",
     "observation_digest"

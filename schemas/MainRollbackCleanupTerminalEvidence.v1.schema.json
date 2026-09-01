@@ -12,10 +12,28 @@
       "title": "Candidate Ref",
       "type": "string"
     },
+    "candidate_ref_absent": {
+      "const": true,
+      "title": "Candidate Ref Absent",
+      "type": "boolean"
+    },
     "cleanup_intent_digest": {
       "pattern": "^sha256:[0-9a-f]{64}$",
       "title": "Cleanup Intent Digest",
       "type": "string"
+    },
+    "cleanup_observation_digest": {
+      "anyOf": [
+        {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Cleanup Observation Digest"
     },
     "cleanup_receipt_digest": {
       "pattern": "^sha256:[0-9a-f]{64}$",
@@ -66,6 +84,14 @@
       "title": "Pull Request Number",
       "type": "integer"
     },
+    "pull_request_state": {
+      "enum": [
+        "absent",
+        "closed"
+      ],
+      "title": "Pull Request State",
+      "type": "string"
+    },
     "pull_request_url": {
       "minLength": 1,
       "title": "Pull Request Url",
@@ -105,6 +131,8 @@
     "pull_request_number",
     "pull_request_url",
     "outcome",
+    "candidate_ref_absent",
+    "pull_request_state",
     "provider_identity",
     "provider_api_version",
     "observed_at",

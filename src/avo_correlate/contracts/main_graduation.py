@@ -2032,8 +2032,12 @@ class MainRollbackPostStateObservation(MainBound):
     result_commit: GitObject
     result_tree: GitObject
     result_parents: list[GitObject]
-    provider_identity: NonEmptyString
-    provider_api_version: NonEmptyString
+    observer_identity: NonEmptyString = Field(
+        validation_alias=AliasChoices("observer_identity", "provider_identity")
+    )
+    observer_api_version: NonEmptyString = Field(
+        validation_alias=AliasChoices("observer_api_version", "provider_api_version")
+    )
     response_digest: Sha256Digest
     observed_at: datetime
     authoritative: Literal[True] = True
@@ -2069,6 +2073,9 @@ class MainRollbackCleanupTerminalEvidence(MainBound):
     pull_request_number: StrictInt = Field(gt=0)
     pull_request_url: NonEmptyString
     outcome: Literal["absent", "already_absent"]
+    candidate_ref_absent: Literal[True]
+    pull_request_state: Literal["absent", "closed"]
+    cleanup_observation_digest: Sha256Digest | None = None
     provider_identity: NonEmptyString
     provider_api_version: NonEmptyString
     observed_at: datetime
@@ -2109,6 +2116,20 @@ class MainRollbackCompletionPackage(MainBound):
             "source_completion", "source_completion_package", "source_package"
         )
     )
+    rollback_preparation_authorization: MainRollbackPreparationAuthorization = Field(
+        validation_alias=AliasChoices(
+            "rollback_preparation_authorization", "preparation_authorization"
+        )
+    )
+    lease_evidence_record: MainLeaseEvidenceRecord
+    admission_observation: MainQueueAdmissionObservation
+    hold_observation: MainReleaseHoldObservation
+    release_authorization: MainReleaseAuthorization
+    release_claim: MainReleaseClaim
+    claimed_transition_receipt: MainClaimedReleaseTransitionReceipt
+    release_transition_intent: MainMutationIntent
+    release_transition_mutation_receipt: MainMutationReceipt
+    release_transition_fence_resolution: MainMutationFenceResolution | None
     inverse_delta: MainInverseDeltaArtifact
     rollback_authorization: MainRollbackAuthorization = Field(
         validation_alias=AliasChoices("rollback_authorization", "authorization")
@@ -2124,9 +2145,10 @@ class MainRollbackCompletionPackage(MainBound):
     )
     cleanup_intent: MainRollbackCleanupIntent
     cleanup_receipt: MainRollbackCleanupReceipt
+    cleanup_observation: MainRollbackCleanupObservation | None
     cleanup_terminal: MainRollbackCleanupTerminalEvidence = Field(
         validation_alias=AliasChoices(
-            "cleanup_terminal", "cleanup_terminal_evidence", "cleanup_observation"
+            "cleanup_terminal", "cleanup_terminal_evidence"
         )
     )
     artifacts: list[ArtifactRef] = Field(min_length=1)
@@ -2139,6 +2161,15 @@ class MainRollbackCompletionPackage(MainBound):
     def validate_rollback_completion(self) -> MainRollbackCompletionPackage:
         records = (
             self.attempt_authority,
+            self.rollback_preparation_authorization,
+            self.lease_evidence_record,
+            self.admission_observation,
+            self.hold_observation,
+            self.release_authorization,
+            self.release_claim,
+            self.claimed_transition_receipt,
+            self.release_transition_intent,
+            self.release_transition_mutation_receipt,
             self.inverse_delta,
             self.rollback_authorization,
             self.rollback_intent,
@@ -2146,6 +2177,7 @@ class MainRollbackCompletionPackage(MainBound):
             self.post_state,
             self.cleanup_intent,
             self.cleanup_receipt,
+            *(() if self.cleanup_observation is None else (self.cleanup_observation,)),
             self.cleanup_terminal,
         )
         if any(
@@ -2169,6 +2201,19 @@ class MainRollbackCompletionPackage(MainBound):
             or self.rollback_authorization.completion_package_digest != canonical_digest(source)
             or self.rollback_intent.source_operation_id != source.operation_id
             or self.rollback_intent.completion_package_digest != canonical_digest(source)
+            or self.rollback_preparation_authorization.operation_id != self.operation_id
+            or self.rollback_preparation_authorization.rollback_intent_digest
+            != self.rollback_intent.intent_digest
+            or self.rollback_preparation_authorization.rollback_authorization_digest
+            != self.rollback_authorization.authorization_digest
+            or self.lease_evidence_record.operation_id != self.operation_id
+            or self.admission_observation.operation_id != self.operation_id
+            or self.hold_observation.operation_id != self.operation_id
+            or self.release_authorization.operation_id != self.operation_id
+            or self.release_claim.operation_id != self.operation_id
+            or self.claimed_transition_receipt.operation_id != self.operation_id
+            or self.release_transition_intent.operation_id != self.operation_id
+            or self.release_transition_mutation_receipt.operation_id != self.operation_id
         ):
             raise ValueError("rollback completion source binding differs")
         if self.cleanup_intent.result_receipt_digest != self.rollback_result.receipt_digest:
@@ -2183,17 +2228,42 @@ class MainRollbackCompletionPackage(MainBound):
             or self.cleanup_receipt.intent_digest != self.cleanup_intent.intent_digest
             or self.cleanup_receipt.authorization_digest
             != self.cleanup_intent.authorization_digest
+            or self.cleanup_receipt.outcome
+            not in {"applied", "already_applied", "ambiguous", "reconciliation_required"}
+            or self.cleanup_terminal.candidate_ref_absent is not True
+            or self.cleanup_terminal.pull_request_state not in {"absent", "closed"}
             or self.cleanup_terminal.cleanup_intent_digest != self.cleanup_intent.intent_digest
             or self.cleanup_terminal.cleanup_receipt_digest != self.cleanup_receipt.receipt_digest
             or self.cleanup_terminal.outcome not in {"absent", "already_absent"}
         ):
             raise ValueError("rollback completion terminal evidence is incomplete")
+        if self.cleanup_receipt.outcome in {"ambiguous", "reconciliation_required"}:
+            if self.cleanup_terminal.cleanup_observation_digest is None:
+                raise ValueError("ambiguous cleanup requires terminal observation evidence")
+            if (
+                self.cleanup_observation is None
+                or self.cleanup_observation.observation_digest
+                != self.cleanup_terminal.cleanup_observation_digest
+                or self.cleanup_observation.outcome not in {"absent", "already_absent"}
+            ):
+                raise ValueError("ambiguous cleanup requires exact absent observation")
+        elif self.cleanup_terminal.cleanup_observation_digest is not None:
+            raise ValueError("direct cleanup terminal evidence cannot bind an observation")
         roles = [item.role for item in self.artifacts]
         if len(roles) != len(set(roles)):
             raise ValueError("rollback completion artifact roles must be unique")
         required_roles = {
             "main-rollback-attempt-authority",
             "main-rollback-source-completion",
+            "main-rollback-preparation-authorization",
+            "main-rollback-lease-evidence-record",
+            "main-rollback-queue-admission",
+            "main-rollback-release-hold",
+            "main-rollback-release-authorization",
+            "main-rollback-release-claim",
+            "main-rollback-claimed-release-transition",
+            "main-rollback-mutation-intent",
+            "main-rollback-mutation-receipt",
             "main-rollback-inverse-delta",
             "main-rollback-authorization",
             "main-rollback-intent",
@@ -2203,12 +2273,93 @@ class MainRollbackCompletionPackage(MainBound):
             "main-rollback-cleanup-receipt",
             "main-rollback-cleanup-terminal",
         }
+        if self.cleanup_observation is not None:
+            required_roles.add("main-rollback-cleanup-observation")
+        if self.release_transition_fence_resolution is not None:
+            required_roles.add("main-rollback-mutation-fence-resolution")
         if set(roles) != required_roles:
             raise ValueError("rollback completion artifact closure is incomplete")
         if self.completion_digest != canonical_digest(
             self.model_dump(exclude={"completion_digest"}, mode="json")
         ):
             raise ValueError("rollback completion digest mismatch")
+        prep = self.rollback_preparation_authorization
+        auth = self.rollback_authorization
+        release_auth = self.release_authorization
+        admission = self.admission_observation
+        hold = self.hold_observation
+        lease = self.lease_evidence_record
+        claim = self.release_claim
+        claimed = self.claimed_transition_receipt
+        mutation_intent = self.release_transition_intent
+        mutation = self.release_transition_mutation_receipt
+        if (
+            prep.repository_digest != self.repository_digest
+            or prep.package_digest != self.rollback_intent.completion_package_digest
+            or prep.composition_digest != self.rollback_intent.inverse_delta_artifact_digest
+            or prep.base_commit != self.rollback_intent.base_commit
+            or prep.base_tree != self.rollback_intent.base_tree
+            or prep.candidate_commit != self.rollback_intent.candidate_commit
+            or prep.candidate_tree != self.rollback_intent.candidate_tree
+            or prep.candidate_ref != self.rollback_intent.candidate_ref
+            or prep.lease_identity != self.rollback_intent.lease_identity
+            or prep.lease_digest != self.rollback_intent.lease_digest
+            or prep.lease_epoch_digest != self.rollback_intent.lease_epoch_digest
+            or prep.policy_epoch != auth.policy_epoch
+            or lease.owner != auth.lease_identity
+            or lease.lease_digest != auth.lease_digest
+            or lease.lease_epoch_digest != auth.lease_epoch_digest
+            or lease.policy_epoch != auth.policy_epoch
+            or admission.preparation_authorization_digest != prep.authorization_digest
+            or admission.package_digest != prep.package_digest
+            or admission.composition_digest != prep.composition_digest
+            or hold.pull_request_number != admission.pull_request_number
+            or hold.queue_generation_digest != release_auth.queue_generation_digest
+            or hold.group_sha != release_auth.group_sha
+            or release_auth.preparation_authorization_digest != prep.authorization_digest
+            or release_auth.admission_observation_digest != canonical_digest(admission)
+            or release_auth.hold_observation_digest != canonical_digest(hold)
+            or release_auth.package_digest != prep.package_digest
+            or release_auth.composition_digest != prep.composition_digest
+            or claim.authorization_digest != release_auth.authorization_digest
+            or claim.hold_observation_digest != canonical_digest(hold)
+            or claim.lease_digest != lease.lease_digest
+            or claim.lease_epoch_digest != lease.lease_epoch_digest
+            or claimed.release_authorization_digest != release_auth.authorization_digest
+            or claimed.claim_digest != claim.claim_digest
+            or claimed.mutation_receipt_digest != mutation.receipt_digest
+            or mutation_intent.preparation_authorization_digest != prep.authorization_digest
+            or mutation_intent.release_authorization_digest != release_auth.authorization_digest
+            or mutation_intent.release_claim_digest != claim.claim_digest
+            or mutation.intent_digest != mutation_intent.intent_digest
+            or mutation.release_authorization_digest != release_auth.authorization_digest
+            or mutation.release_claim_digest != claim.claim_digest
+        ):
+            raise ValueError("rollback completion authority-stage binding differs")
+        if not (
+            prep.authorized_at
+            <= admission.observed_at
+            <= hold.observed_at
+            <= release_auth.authorized_at
+            <= claim.claimed_at
+            <= mutation_intent.recorded_at
+            <= mutation.observed_at
+            <= claimed.observed_at
+            <= self.post_state.observed_at
+            <= self.cleanup_intent.recorded_at
+            <= self.cleanup_receipt.observed_at
+            <= self.cleanup_terminal.observed_at
+        ):
+            raise ValueError("rollback completion authority chronology differs")
+        resolution = self.release_transition_fence_resolution
+        if resolution is not None and (
+            resolution.operation_id != self.operation_id
+            or resolution.intent_digest != mutation_intent.intent_digest
+            or resolution.resolved_receipt_digest != mutation.receipt_digest
+            or resolution.repository_digest != self.repository_digest
+            or resolution.target_ref != self.target_ref
+        ):
+            raise ValueError("rollback completion fence resolution binding differs")
         return self
 
 

@@ -4347,6 +4347,116 @@
       "title": "MainRollbackCleanupIntent",
       "type": "object"
     },
+    "MainRollbackCleanupObservation": {
+      "additionalProperties": false,
+      "description": "Read-only provider observation resolving cleanup idempotency/ambiguity.",
+      "properties": {
+        "candidate_commit": {
+          "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+          "title": "Candidate Commit",
+          "type": "string"
+        },
+        "candidate_ref": {
+          "minLength": 1,
+          "title": "Candidate Ref",
+          "type": "string"
+        },
+        "deploy_performed": {
+          "const": false,
+          "default": false,
+          "title": "Deploy Performed",
+          "type": "boolean"
+        },
+        "intent_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Intent Digest",
+          "type": "string"
+        },
+        "observation_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Observation Digest",
+          "type": "string"
+        },
+        "observed_at": {
+          "format": "date-time",
+          "title": "Observed At",
+          "type": "string"
+        },
+        "operation_id": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Operation Id",
+          "type": "string"
+        },
+        "outcome": {
+          "enum": [
+            "absent",
+            "already_absent",
+            "present"
+          ],
+          "title": "Outcome",
+          "type": "string"
+        },
+        "provider_api_version": {
+          "minLength": 1,
+          "title": "Provider Api Version",
+          "type": "string"
+        },
+        "provider_identity": {
+          "minLength": 1,
+          "title": "Provider Identity",
+          "type": "string"
+        },
+        "pull_request_number": {
+          "exclusiveMinimum": 0,
+          "title": "Pull Request Number",
+          "type": "integer"
+        },
+        "pull_request_url": {
+          "minLength": 1,
+          "title": "Pull Request Url",
+          "type": "string"
+        },
+        "receipt_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Receipt Digest",
+          "type": "string"
+        },
+        "repository_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Repository Digest",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "target_ref": {
+          "const": "refs/heads/main",
+          "default": "refs/heads/main",
+          "title": "Target Ref",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository_digest",
+        "operation_id",
+        "intent_digest",
+        "receipt_digest",
+        "candidate_ref",
+        "candidate_commit",
+        "pull_request_number",
+        "pull_request_url",
+        "outcome",
+        "provider_identity",
+        "provider_api_version",
+        "observed_at",
+        "observation_digest"
+      ],
+      "title": "MainRollbackCleanupObservation",
+      "type": "object"
+    },
     "MainRollbackCleanupReceipt": {
       "additionalProperties": false,
       "description": "Create-once provider receipt for rollback candidate cleanup.",
@@ -4472,10 +4582,28 @@
           "title": "Candidate Ref",
           "type": "string"
         },
+        "candidate_ref_absent": {
+          "const": true,
+          "title": "Candidate Ref Absent",
+          "type": "boolean"
+        },
         "cleanup_intent_digest": {
           "pattern": "^sha256:[0-9a-f]{64}$",
           "title": "Cleanup Intent Digest",
           "type": "string"
+        },
+        "cleanup_observation_digest": {
+          "anyOf": [
+            {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cleanup Observation Digest"
         },
         "cleanup_receipt_digest": {
           "pattern": "^sha256:[0-9a-f]{64}$",
@@ -4526,6 +4654,14 @@
           "title": "Pull Request Number",
           "type": "integer"
         },
+        "pull_request_state": {
+          "enum": [
+            "absent",
+            "closed"
+          ],
+          "title": "Pull Request State",
+          "type": "string"
+        },
         "pull_request_url": {
           "minLength": 1,
           "title": "Pull Request Url",
@@ -4565,6 +4701,8 @@
         "pull_request_number",
         "pull_request_url",
         "outcome",
+        "candidate_ref_absent",
+        "pull_request_state",
         "provider_identity",
         "provider_api_version",
         "observed_at",
@@ -4779,19 +4917,19 @@
           "title": "Observed At",
           "type": "string"
         },
+        "observer_api_version": {
+          "minLength": 1,
+          "title": "Observer Api Version",
+          "type": "string"
+        },
+        "observer_identity": {
+          "minLength": 1,
+          "title": "Observer Identity",
+          "type": "string"
+        },
         "operation_id": {
           "pattern": "^sha256:[0-9a-f]{64}$",
           "title": "Operation Id",
-          "type": "string"
-        },
-        "provider_api_version": {
-          "minLength": 1,
-          "title": "Provider Api Version",
-          "type": "string"
-        },
-        "provider_identity": {
-          "minLength": 1,
-          "title": "Provider Identity",
           "type": "string"
         },
         "repository_digest": {
@@ -4856,13 +4994,155 @@
         "result_commit",
         "result_tree",
         "result_parents",
-        "provider_identity",
-        "provider_api_version",
+        "observer_identity",
+        "observer_api_version",
         "response_digest",
         "observed_at",
         "observation_digest"
       ],
       "title": "MainRollbackPostStateObservation",
+      "type": "object"
+    },
+    "MainRollbackPreparationAuthorization": {
+      "additionalProperties": false,
+      "description": "Reversible rollback preparation, distinct from historical graduation wires.",
+      "properties": {
+        "authorization_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Authorization Digest",
+          "type": "string"
+        },
+        "authorized": {
+          "const": true,
+          "default": true,
+          "title": "Authorized",
+          "type": "boolean"
+        },
+        "authorized_at": {
+          "format": "date-time",
+          "title": "Authorized At",
+          "type": "string"
+        },
+        "base_commit": {
+          "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+          "title": "Base Commit",
+          "type": "string"
+        },
+        "base_tree": {
+          "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+          "title": "Base Tree",
+          "type": "string"
+        },
+        "candidate_commit": {
+          "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+          "title": "Candidate Commit",
+          "type": "string"
+        },
+        "candidate_ref": {
+          "minLength": 1,
+          "title": "Candidate Ref",
+          "type": "string"
+        },
+        "candidate_tree": {
+          "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+          "title": "Candidate Tree",
+          "type": "string"
+        },
+        "composition_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Composition Digest",
+          "type": "string"
+        },
+        "deploy_performed": {
+          "const": false,
+          "default": false,
+          "title": "Deploy Performed",
+          "type": "boolean"
+        },
+        "lease_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Lease Digest",
+          "type": "string"
+        },
+        "lease_epoch_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Lease Epoch Digest",
+          "type": "string"
+        },
+        "lease_identity": {
+          "minLength": 1,
+          "title": "Lease Identity",
+          "type": "string"
+        },
+        "operation_id": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Operation Id",
+          "type": "string"
+        },
+        "package_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Package Digest",
+          "type": "string"
+        },
+        "policy_epoch": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Policy Epoch",
+          "type": "string"
+        },
+        "repository_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Repository Digest",
+          "type": "string"
+        },
+        "rollback_authorization_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Rollback Authorization Digest",
+          "type": "string"
+        },
+        "rollback_intent_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Rollback Intent Digest",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "scope": {
+          "const": "rollback_candidate_publication_pr_preparation_queue_admission",
+          "default": "rollback_candidate_publication_pr_preparation_queue_admission",
+          "title": "Scope",
+          "type": "string"
+        },
+        "target_ref": {
+          "const": "refs/heads/main",
+          "default": "refs/heads/main",
+          "title": "Target Ref",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository_digest",
+        "operation_id",
+        "rollback_authorization_digest",
+        "rollback_intent_digest",
+        "package_digest",
+        "composition_digest",
+        "base_commit",
+        "base_tree",
+        "candidate_commit",
+        "candidate_tree",
+        "candidate_ref",
+        "lease_identity",
+        "lease_digest",
+        "lease_epoch_digest",
+        "policy_epoch",
+        "authorization_digest",
+        "authorized_at"
+      ],
+      "title": "MainRollbackPreparationAuthorization",
       "type": "object"
     },
     "MainRollbackResultReceipt": {
@@ -5145,6 +5425,9 @@
   "additionalProperties": false,
   "description": "Content-addressed terminal closure for one rollback attempt.",
   "properties": {
+    "admission_observation": {
+      "$ref": "#/$defs/MainQueueAdmissionObservation"
+    },
     "artifacts": {
       "items": {
         "$ref": "#/$defs/ArtifactRef"
@@ -5156,8 +5439,21 @@
     "attempt_authority": {
       "$ref": "#/$defs/MainRollbackAttemptAuthority"
     },
+    "claimed_transition_receipt": {
+      "$ref": "#/$defs/MainClaimedReleaseTransitionReceipt"
+    },
     "cleanup_intent": {
       "$ref": "#/$defs/MainRollbackCleanupIntent"
+    },
+    "cleanup_observation": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/MainRollbackCleanupObservation"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "cleanup_receipt": {
       "$ref": "#/$defs/MainRollbackCleanupReceipt"
@@ -5176,8 +5472,14 @@
       "title": "Deploy Performed",
       "type": "boolean"
     },
+    "hold_observation": {
+      "$ref": "#/$defs/MainReleaseHoldObservation"
+    },
     "inverse_delta": {
       "$ref": "#/$defs/MainInverseDeltaArtifact"
+    },
+    "lease_evidence_record": {
+      "$ref": "#/$defs/MainLeaseEvidenceRecord"
     },
     "operation_id": {
       "pattern": "^sha256:[0-9a-f]{64}$",
@@ -5186,6 +5488,28 @@
     },
     "post_state": {
       "$ref": "#/$defs/MainRollbackPostStateObservation"
+    },
+    "release_authorization": {
+      "$ref": "#/$defs/MainReleaseAuthorization"
+    },
+    "release_claim": {
+      "$ref": "#/$defs/MainReleaseClaim"
+    },
+    "release_transition_fence_resolution": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/MainMutationFenceResolution"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "release_transition_intent": {
+      "$ref": "#/$defs/MainMutationIntent"
+    },
+    "release_transition_mutation_receipt": {
+      "$ref": "#/$defs/MainMutationReceipt"
     },
     "repository_digest": {
       "pattern": "^sha256:[0-9a-f]{64}$",
@@ -5197,6 +5521,9 @@
     },
     "rollback_intent": {
       "$ref": "#/$defs/MainRollbackIntent"
+    },
+    "rollback_preparation_authorization": {
+      "$ref": "#/$defs/MainRollbackPreparationAuthorization"
     },
     "rollback_result": {
       "$ref": "#/$defs/MainRollbackResultReceipt"
@@ -5222,6 +5549,16 @@
     "operation_id",
     "attempt_authority",
     "source_completion",
+    "rollback_preparation_authorization",
+    "lease_evidence_record",
+    "admission_observation",
+    "hold_observation",
+    "release_authorization",
+    "release_claim",
+    "claimed_transition_receipt",
+    "release_transition_intent",
+    "release_transition_mutation_receipt",
+    "release_transition_fence_resolution",
     "inverse_delta",
     "rollback_authorization",
     "rollback_intent",
@@ -5229,6 +5566,7 @@
     "post_state",
     "cleanup_intent",
     "cleanup_receipt",
+    "cleanup_observation",
     "cleanup_terminal",
     "artifacts",
     "completion_digest"
