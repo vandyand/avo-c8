@@ -30,6 +30,7 @@ from pydantic import (
 )
 
 from avo_correlate.contracts.base import (
+    ArtifactRef,
     NonEmptyString,
     Sha256Digest,
     StrictModel,
@@ -40,6 +41,17 @@ from avo_correlate.domain.canonical import canonical_digest
 
 LedgerPath = Annotated[str, StringConstraints(min_length=1)]
 LedgerOutcome = Literal["success", "failure", "quarantine", "reconciliation", "reset"]
+
+CONTENT_ARTIFACT_ROLE = "scheduler-submission-content"
+CONTENT_ARTIFACT_MEDIA_TYPE = "application/vnd.avo.scheduler-submission+json"
+EXCLUSION_ARTIFACT_ROLE = "ledger-classification-exclusion-evidence"
+EXCLUSION_ARTIFACT_MEDIA_TYPE = "application/vnd.avo.ledger-exclusion-evidence+json"
+TERMINAL_ARTIFACT_ROLE = "ledger-terminal-evidence"
+TERMINAL_ARTIFACT_MEDIA_TYPE = "application/vnd.avo.ledger-terminal-evidence+json"
+BOUNDARY_ARTIFACT_ROLE = "ledger-boundary-violation-evidence"
+BOUNDARY_ARTIFACT_MEDIA_TYPE = "application/vnd.avo.ledger-boundary-violation+json"
+PACKAGE_ARTIFACT_ROLE = "integration-campaign-package"
+PACKAGE_ARTIFACT_MEDIA_TYPE = "application/vnd.avo.integration-campaign+json"
 
 
 def _aware(value: datetime) -> datetime:
@@ -247,6 +259,7 @@ class MainLedgerSubmissionEnvelope(StrictModel):
     source_identity: NonEmptyString
     submission_identity: NonEmptyString
     submission_digest: Sha256Digest
+    content_artifact: ArtifactRef
     operation_id: Sha256Digest
     recorded_at: datetime
     content_inspected: Literal[False] = False
@@ -257,6 +270,16 @@ class MainLedgerSubmissionEnvelope(StrictModel):
 
     @model_validator(mode="after")
     def validate_envelope(self) -> MainLedgerSubmissionEnvelope:
+        if self.submission_digest != self.content_artifact.digest:
+            raise ValueError("submission digest differs from content artifact")
+        if self.content_artifact.role != CONTENT_ARTIFACT_ROLE:
+            raise ValueError("submission content artifact has the wrong role")
+        if self.content_artifact.media_type != CONTENT_ARTIFACT_MEDIA_TYPE:
+            raise ValueError("submission content artifact has the wrong media type")
+        if self.content_artifact.size_bytes <= 0:
+            raise ValueError("submission content artifact cannot be empty")
+        if self.content_artifact.created_at > self.recorded_at:
+            raise ValueError("submission content artifact postdates its envelope")
         expected_operation = canonical_digest(
             {
                 "domain": "avo.main.ledger.submission.v2",
@@ -298,6 +321,7 @@ class MainLedgerClassificationEvidence(StrictModel):
     issuer_domain: Literal["controller-policy"] = "controller-policy"
     exclusion_reason: Literal["empty", "nonordinary"] | None = None
     independent_exclusion_evidence_digest: Sha256Digest | None = None
+    independent_exclusion_evidence: ArtifactRef | None = None
     classification_digest: Sha256Digest
     deploy_performed: Literal[False] = False
 
@@ -330,11 +354,21 @@ class MainLedgerClassificationEvidence(StrictModel):
             if (
                 self.exclusion_reason != expected_reason
                 or self.independent_exclusion_evidence_digest is None
+                or self.independent_exclusion_evidence is None
             ):
                 raise ValueError("exclusions require independent controller evidence")
+            evidence = self.independent_exclusion_evidence
+            if (
+                evidence.digest != self.independent_exclusion_evidence_digest
+                or evidence.role != EXCLUSION_ARTIFACT_ROLE
+                or evidence.media_type != EXCLUSION_ARTIFACT_MEDIA_TYPE
+                or evidence.size_bytes <= 0
+            ):
+                raise ValueError("exclusion evidence artifact binding is invalid")
         elif (
             self.exclusion_reason is not None
             or self.independent_exclusion_evidence_digest is not None
+            or self.independent_exclusion_evidence is not None
         ):
             raise ValueError("eligible classification cannot carry exclusion evidence")
         if self.classification_digest != canonical_digest(
@@ -358,7 +392,9 @@ class MainLedgerTerminalOutcome(StrictModel):
     outcome: LedgerOutcome
     evidence_kind: LedgerOutcome
     terminal_evidence_digest: Sha256Digest
+    terminal_evidence: ArtifactRef
     package_digest: Sha256Digest | None = None
+    package_artifact: ArtifactRef | None = None
     package_binding_digest: Sha256Digest | None = None
     boundary_violation: StrictBool = False
     boundary_violation_evidence_digest: Sha256Digest | None = None
@@ -375,6 +411,16 @@ class MainLedgerTerminalOutcome(StrictModel):
             raise ValueError("terminal outcome discriminator differs from evidence kind")
         if self.classification.classification != "eligible":
             raise ValueError("terminal outcome requires an eligible classification")
+        if self.activation_digest != self.classification.activation_digest:
+            raise ValueError("terminal outcome activation differs from classification")
+        if self.terminal_evidence.digest != self.terminal_evidence_digest:
+            raise ValueError("terminal evidence digest differs from artifact")
+        if (
+            self.terminal_evidence.role != TERMINAL_ARTIFACT_ROLE
+            or self.terminal_evidence.media_type != TERMINAL_ARTIFACT_MEDIA_TYPE
+            or self.terminal_evidence.size_bytes <= 0
+        ):
+            raise ValueError("terminal evidence artifact binding is invalid")
         if self.classification_digest != self.classification.classification_digest:
             raise ValueError("terminal outcome classification digest mismatch")
         if (
@@ -397,7 +443,17 @@ class MainLedgerTerminalOutcome(StrictModel):
             raise ValueError("successful outcome requires a canonical package")
         if (self.package_digest is None) != (self.package_binding_digest is None):
             raise ValueError("package digest and package binding must be supplied together")
+        if (self.package_digest is None) != (self.package_artifact is None):
+            raise ValueError("package digest and package artifact must be supplied together")
         if self.package_digest is not None:
+            assert self.package_artifact is not None
+            if (
+                self.package_artifact.digest != self.package_digest
+                or self.package_artifact.role != PACKAGE_ARTIFACT_ROLE
+                or self.package_artifact.media_type != PACKAGE_ARTIFACT_MEDIA_TYPE
+                or self.package_artifact.size_bytes <= 0
+            ):
+                raise ValueError("package artifact binding is invalid")
             expected_package_binding = canonical_digest(
                 {
                     "activation_digest": self.activation_digest,
@@ -441,6 +497,93 @@ class MainLedgerAccumulatorState(StrictModel):
             self.model_dump(exclude={"state_digest"}, mode="json")
         ):
             raise ValueError("accumulator state digest mismatch")
+        return self
+
+
+class MainLedgerBoundaryViolationEvidence(StrictModel):
+    """Controller-owned, out-of-band proof that an activation must terminate."""
+
+    schema_version: Literal[2] = 2
+    activation_digest: Sha256Digest
+    controller_authority: MainLedgerControllerAuthority
+    expected_scheduler_sequence: StrictInt = Field(gt=0)
+    current_state_digest: Sha256Digest
+    violation_kind: Literal[
+        "starvation",
+        "withholding",
+        "silent_exclusion",
+        "scheduler_gap",
+        "operator_intervention",
+    ]
+    evidence_artifact: ArtifactRef
+    detected_at: datetime
+    violation_digest: Sha256Digest
+
+    _aware_detected_at = field_validator("detected_at")(_aware)
+
+    @model_validator(mode="after")
+    def validate_violation(self) -> MainLedgerBoundaryViolationEvidence:
+        authority = self.controller_authority
+        if not authority.authorized_at <= self.detected_at <= authority.expires_at:
+            raise ValueError("boundary evidence is outside controller authority window")
+        if self.expected_scheduler_sequence <= 0:
+            raise ValueError("boundary evidence expected sequence must be positive")
+        evidence = self.evidence_artifact
+        if (
+            evidence.role != BOUNDARY_ARTIFACT_ROLE
+            or evidence.media_type != BOUNDARY_ARTIFACT_MEDIA_TYPE
+            or evidence.size_bytes <= 0
+            or evidence.created_at > self.detected_at
+        ):
+            raise ValueError("boundary evidence artifact binding is invalid")
+        if self.violation_digest != canonical_digest(
+            self.model_dump(exclude={"violation_digest"}, mode="json")
+        ):
+            raise ValueError("boundary violation digest mismatch")
+        return self
+
+
+class MainLedgerBoundaryResetTransition(StrictModel):
+    """Terminal CAS reset that preserves sequence and increments only boundaries."""
+
+    schema_version: Literal[2] = 2
+    activation_digest: Sha256Digest
+    prior_state: MainLedgerAccumulatorState
+    prior_state_digest: Sha256Digest
+    violation: MainLedgerBoundaryViolationEvidence
+    resulting_state: MainLedgerAccumulatorState
+    resulting_state_digest: Sha256Digest
+    transition_digest: Sha256Digest
+
+    @model_validator(mode="after")
+    def validate_reset(self) -> MainLedgerBoundaryResetTransition:
+        if self.prior_state_digest != self.prior_state.state_digest:
+            raise ValueError("boundary reset prior state digest mismatch")
+        if self.activation_digest != self.prior_state.activation_digest:
+            raise ValueError("boundary reset activation differs from prior state")
+        if self.violation.activation_digest != self.activation_digest:
+            raise ValueError("boundary violation activation differs from reset")
+        if self.violation.current_state_digest != self.prior_state.state_digest:
+            raise ValueError("boundary violation current state differs from reset predecessor")
+        if self.violation.expected_scheduler_sequence <= self.prior_state.last_scheduler_sequence:
+            raise ValueError("boundary violation expected sequence is not after current state")
+        if self.resulting_state_digest != self.resulting_state.state_digest:
+            raise ValueError("boundary reset resulting state digest mismatch")
+        if (
+            self.resulting_state.activation_digest != self.activation_digest
+            or self.resulting_state.last_scheduler_sequence
+            != self.prior_state.last_scheduler_sequence
+            or self.resulting_state.streak != 0
+            or self.resulting_state.successes != self.prior_state.successes
+            or self.resulting_state.failures != self.prior_state.failures
+            or self.resulting_state.boundary_violations != self.prior_state.boundary_violations + 1
+            or self.resulting_state.threshold_complete
+        ):
+            raise ValueError("boundary reset state delta is not exact")
+        if self.transition_digest != canonical_digest(
+            self.model_dump(exclude={"transition_digest"}, mode="json")
+        ):
+            raise ValueError("boundary reset transition digest mismatch")
         return self
 
 
@@ -501,6 +644,8 @@ class MainLedgerAccumulatorTransition(StrictModel):
         else:
             if self.outcome is None or self.outcome_digest != self.outcome.outcome_digest:
                 raise ValueError("eligible transition requires exactly one terminal outcome")
+            if self.outcome.activation_digest != self.activation_digest:
+                raise ValueError("CAS outcome activation differs from transition")
             if self.outcome.classification_digest != self.classification.classification_digest:
                 raise ValueError("CAS outcome classification differs")
             if self.outcome.scheduler_sequence != self.classification.scheduler_sequence:
@@ -563,9 +708,14 @@ class MainLedgerEvidencePackage(StrictModel):
     """Closed aggregate proving activation, accounting, terminality, and CAS."""
 
     schema_version: Literal[2] = 2
+    status: Literal["threshold_complete", "boundary_reset"]
     activation: MainLedgerActivation
-    submissions: list[MainLedgerSubmissionEnvelope] = Field(min_length=1)
-    classifications: list[MainLedgerClassificationEvidence] = Field(min_length=1)
+    submissions: list[MainLedgerSubmissionEnvelope] = Field(
+        default_factory=list[MainLedgerSubmissionEnvelope]
+    )
+    classifications: list[MainLedgerClassificationEvidence] = Field(
+        default_factory=list[MainLedgerClassificationEvidence]
+    )
     outcomes: list[MainLedgerTerminalOutcome] = Field(
         default_factory=list[MainLedgerTerminalOutcome]
     )
@@ -573,11 +723,21 @@ class MainLedgerEvidencePackage(StrictModel):
         default_factory=list[MainLedgerAccumulatorTransition]
     )
     final_state: MainLedgerAccumulatorState
+    boundary_evidence: MainLedgerBoundaryViolationEvidence | None = None
+    terminal_boundary_reset: MainLedgerBoundaryResetTransition | None = None
     package_digest: Sha256Digest
     deploy_performed: Literal[False] = False
 
     @model_validator(mode="after")
     def validate_package(self) -> MainLedgerEvidencePackage:
+        if self.status == "threshold_complete" and (
+            self.boundary_evidence is not None or self.terminal_boundary_reset is not None
+        ):
+            raise ValueError("threshold-complete package cannot contain boundary reset evidence")
+        if self.status == "boundary_reset" and (
+            self.boundary_evidence is None or self.terminal_boundary_reset is None
+        ):
+            raise ValueError("boundary-reset package requires boundary evidence and reset")
         if self.activation.activation_digest != self.final_state.activation_digest:
             raise ValueError("ledger final state activation differs")
         if len(self.submissions) != len(self.classifications):
@@ -626,6 +786,10 @@ class MainLedgerEvidencePackage(StrictModel):
         ):
             raise ValueError("CAS transitions must be unique per scheduler sequence")
         outcome_by_sequence = {item.scheduler_sequence: item for item in self.outcomes}
+        if self.status == "threshold_complete" and any(
+            item.boundary_violation for item in self.outcomes
+        ):
+            raise ValueError("boundary violations require terminal boundary-reset closure")
         eligible_sequences = {
             item.scheduler_sequence
             for item in self.classifications
@@ -642,6 +806,9 @@ class MainLedgerEvidencePackage(StrictModel):
             self.activation.scheduler_sequence_watermark,
         )
         expected_state = self.activation.scheduler_sequence_watermark
+        classification_by_sequence = {
+            item.scheduler_sequence: item for item in self.classifications
+        }
         transitions_by_sequence = {
             item.classification.scheduler_sequence: item for item in self.transitions
         }
@@ -652,11 +819,11 @@ class MainLedgerEvidencePackage(StrictModel):
                 raise ValueError("first CAS predecessor is not the canonical genesis state")
             if index > 0 and transition.prior_state != self.transitions[index - 1].resulting_state:
                 raise ValueError("CAS predecessor differs from prior resulting state")
-            expected_classification = self.classifications[
+            expected_classification = classification_by_sequence.get(
                 transition.classification.scheduler_sequence
-                - self.activation.scheduler_sequence_watermark
-                - 1
-            ]
+            )
+            if expected_classification is None:
+                raise ValueError("CAS transition references an unknown classification")
             if transition.classification != expected_classification:
                 raise ValueError("CAS transition classification differs")
             if transition.outcome is not None:
@@ -682,10 +849,39 @@ class MainLedgerEvidencePackage(StrictModel):
         for sequence, outcome in transition_outcomes.items():
             if outcome != outcome_by_sequence[sequence]:
                 raise ValueError("CAS outcome does not equal aggregate terminal outcome")
-        if self.final_state.last_scheduler_sequence != expected_state:
+        normal_final_state = self.transitions[-1].resulting_state if self.transitions else genesis
+        if self.status == "boundary_reset":
+            assert self.boundary_evidence is not None
+            assert self.terminal_boundary_reset is not None
+            if (
+                self.boundary_evidence.activation_digest != self.activation.activation_digest
+                or self.boundary_evidence.controller_authority
+                != self.activation.controller_authority
+                or self.boundary_evidence.detected_at < self.activation.freshness_cutoff
+                or self.boundary_evidence.detected_at < self.activation.activated_at
+                or self.boundary_evidence.detected_at
+                > self.activation.controller_authority.expires_at
+            ):
+                raise ValueError("boundary evidence is not bound to active controller root")
+            if self.boundary_evidence != self.terminal_boundary_reset.violation:
+                raise ValueError("boundary evidence differs from terminal reset violation")
+            if self.terminal_boundary_reset.prior_state != normal_final_state:
+                raise ValueError("boundary reset predecessor differs from normal ledger state")
+            if self.final_state != self.terminal_boundary_reset.resulting_state:
+                raise ValueError("final state does not equal terminal boundary reset")
+            if self.final_state.threshold_complete:
+                raise ValueError("boundary-reset package cannot complete threshold")
+        else:
+            if self.final_state != normal_final_state:
+                raise ValueError("final state does not equal the last CAS result")
+            if not self.final_state.threshold_complete:
+                raise ValueError("threshold-complete package has not reached threshold")
+        if self.final_state.last_scheduler_sequence != expected_state and (
+            self.status != "boundary_reset"
+            or self.final_state.last_scheduler_sequence
+            != normal_final_state.last_scheduler_sequence
+        ):
             raise ValueError("final state does not close CAS transition chain")
-        if self.final_state != self.transitions[-1].resulting_state:
-            raise ValueError("final state does not equal the last CAS result")
         if self.package_digest != canonical_digest(
             self.model_dump(exclude={"package_digest"}, mode="json")
         ):
@@ -774,6 +970,8 @@ __all__ = [
     "MainLedgerActivationRecord",
     "MainLedgerActivationV2",
     "MainLedgerAttemptOutcome",
+    "MainLedgerBoundaryResetTransition",
+    "MainLedgerBoundaryViolationEvidence",
     "MainLedgerC8CapabilityEvidence",
     "MainLedgerC8CapabilityEvidenceV2",
     "MainLedgerClassificationEvidence",

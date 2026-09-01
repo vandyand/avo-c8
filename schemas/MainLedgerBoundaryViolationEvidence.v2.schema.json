@@ -129,138 +129,32 @@
     }
   },
   "additionalProperties": false,
-  "description": "Controller-owned classification; exclusions require independent proof.",
+  "description": "Controller-owned, out-of-band proof that an activation must terminate.",
   "properties": {
     "activation_digest": {
       "pattern": "^sha256:[0-9a-f]{64}$",
       "title": "Activation Digest",
       "type": "string"
     },
-    "classification": {
-      "enum": [
-        "eligible",
-        "excluded"
-      ],
-      "title": "Classification",
-      "type": "string"
-    },
-    "classification_digest": {
-      "pattern": "^sha256:[0-9a-f]{64}$",
-      "title": "Classification Digest",
-      "type": "string"
-    },
     "controller_authority": {
       "$ref": "#/$defs/MainLedgerControllerAuthority"
     },
-    "deploy_performed": {
-      "const": false,
-      "default": false,
-      "title": "Deploy Performed",
-      "type": "boolean"
-    },
-    "empty": {
-      "title": "Empty",
-      "type": "boolean"
-    },
-    "exclusion_reason": {
-      "anyOf": [
-        {
-          "enum": [
-            "empty",
-            "nonordinary"
-          ],
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null,
-      "title": "Exclusion Reason"
-    },
-    "independent_exclusion_evidence": {
-      "anyOf": [
-        {
-          "$ref": "#/$defs/ArtifactRef"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null
-    },
-    "independent_exclusion_evidence_digest": {
-      "anyOf": [
-        {
-          "pattern": "^sha256:[0-9a-f]{64}$",
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null,
-      "title": "Independent Exclusion Evidence Digest"
-    },
-    "issuer_authority_digest": {
+    "current_state_digest": {
       "pattern": "^sha256:[0-9a-f]{64}$",
-      "title": "Issuer Authority Digest",
+      "title": "Current State Digest",
       "type": "string"
     },
-    "issuer_domain": {
-      "const": "controller-policy",
-      "default": "controller-policy",
-      "title": "Issuer Domain",
+    "detected_at": {
+      "format": "date-time",
+      "title": "Detected At",
       "type": "string"
     },
-    "issuer_identity": {
-      "minLength": 1,
-      "title": "Issuer Identity",
-      "type": "string"
+    "evidence_artifact": {
+      "$ref": "#/$defs/ArtifactRef"
     },
-    "operation_id": {
-      "pattern": "^sha256:[0-9a-f]{64}$",
-      "title": "Operation Id",
-      "type": "string"
-    },
-    "ordinary": {
-      "title": "Ordinary",
-      "type": "boolean"
-    },
-    "path_manifest_digest": {
-      "pattern": "^sha256:[0-9a-f]{64}$",
-      "title": "Path Manifest Digest",
-      "type": "string"
-    },
-    "paths": {
-      "items": {
-        "minLength": 1,
-        "type": "string"
-      },
-      "title": "Paths",
-      "type": "array"
-    },
-    "policy_digest": {
-      "pattern": "^sha256:[0-9a-f]{64}$",
-      "title": "Policy Digest",
-      "type": "string"
-    },
-    "policy_epoch": {
-      "pattern": "^sha256:[0-9a-f]{64}$",
-      "title": "Policy Epoch",
-      "type": "string"
-    },
-    "risk_class": {
-      "enum": [
-        "ordinary",
-        "nonordinary"
-      ],
-      "title": "Risk Class",
-      "type": "string"
-    },
-    "scheduler_sequence": {
+    "expected_scheduler_sequence": {
       "exclusiveMinimum": 0,
-      "title": "Scheduler Sequence",
+      "title": "Expected Scheduler Sequence",
       "type": "integer"
     },
     "schema_version": {
@@ -269,30 +163,33 @@
       "title": "Schema Version",
       "type": "integer"
     },
-    "submission_digest": {
+    "violation_digest": {
       "pattern": "^sha256:[0-9a-f]{64}$",
-      "title": "Submission Digest",
+      "title": "Violation Digest",
+      "type": "string"
+    },
+    "violation_kind": {
+      "enum": [
+        "starvation",
+        "withholding",
+        "silent_exclusion",
+        "scheduler_gap",
+        "operator_intervention"
+      ],
+      "title": "Violation Kind",
       "type": "string"
     }
   },
   "required": [
     "activation_digest",
-    "submission_digest",
-    "operation_id",
-    "scheduler_sequence",
-    "classification",
-    "empty",
-    "ordinary",
-    "risk_class",
-    "paths",
-    "path_manifest_digest",
-    "policy_digest",
-    "policy_epoch",
     "controller_authority",
-    "issuer_identity",
-    "issuer_authority_digest",
-    "classification_digest"
+    "expected_scheduler_sequence",
+    "current_state_digest",
+    "violation_kind",
+    "evidence_artifact",
+    "detected_at",
+    "violation_digest"
   ],
-  "title": "MainLedgerClassificationEvidence",
+  "title": "MainLedgerBoundaryViolationEvidence",
   "type": "object"
 }

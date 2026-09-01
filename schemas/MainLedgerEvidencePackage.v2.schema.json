@@ -1,5 +1,50 @@
 {
   "$defs": {
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Digest",
+          "type": "string"
+        },
+        "media_type": {
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "role": {
+          "minLength": 1,
+          "title": "Role",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "size_bytes": {
+          "minimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "digest",
+        "size_bytes",
+        "media_type",
+        "role",
+        "created_at"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
     "MainLedgerAccumulatorState": {
       "additionalProperties": false,
       "description": "Content-addressed state used as the CAS predecessor of a transition.",
@@ -299,6 +344,124 @@
       "title": "MainLedgerActivation",
       "type": "object"
     },
+    "MainLedgerBoundaryResetTransition": {
+      "additionalProperties": false,
+      "description": "Terminal CAS reset that preserves sequence and increments only boundaries.",
+      "properties": {
+        "activation_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Activation Digest",
+          "type": "string"
+        },
+        "prior_state": {
+          "$ref": "#/$defs/MainLedgerAccumulatorState"
+        },
+        "prior_state_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Prior State Digest",
+          "type": "string"
+        },
+        "resulting_state": {
+          "$ref": "#/$defs/MainLedgerAccumulatorState"
+        },
+        "resulting_state_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Resulting State Digest",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": 2,
+          "default": 2,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "transition_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Transition Digest",
+          "type": "string"
+        },
+        "violation": {
+          "$ref": "#/$defs/MainLedgerBoundaryViolationEvidence"
+        }
+      },
+      "required": [
+        "activation_digest",
+        "prior_state",
+        "prior_state_digest",
+        "violation",
+        "resulting_state",
+        "resulting_state_digest",
+        "transition_digest"
+      ],
+      "title": "MainLedgerBoundaryResetTransition",
+      "type": "object"
+    },
+    "MainLedgerBoundaryViolationEvidence": {
+      "additionalProperties": false,
+      "description": "Controller-owned, out-of-band proof that an activation must terminate.",
+      "properties": {
+        "activation_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Activation Digest",
+          "type": "string"
+        },
+        "controller_authority": {
+          "$ref": "#/$defs/MainLedgerControllerAuthority"
+        },
+        "current_state_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Current State Digest",
+          "type": "string"
+        },
+        "detected_at": {
+          "format": "date-time",
+          "title": "Detected At",
+          "type": "string"
+        },
+        "evidence_artifact": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "expected_scheduler_sequence": {
+          "exclusiveMinimum": 0,
+          "title": "Expected Scheduler Sequence",
+          "type": "integer"
+        },
+        "schema_version": {
+          "const": 2,
+          "default": 2,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "violation_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Violation Digest",
+          "type": "string"
+        },
+        "violation_kind": {
+          "enum": [
+            "starvation",
+            "withholding",
+            "silent_exclusion",
+            "scheduler_gap",
+            "operator_intervention"
+          ],
+          "title": "Violation Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "activation_digest",
+        "controller_authority",
+        "expected_scheduler_sequence",
+        "current_state_digest",
+        "violation_kind",
+        "evidence_artifact",
+        "detected_at",
+        "violation_digest"
+      ],
+      "title": "MainLedgerBoundaryViolationEvidence",
+      "type": "object"
+    },
     "MainLedgerC8CapabilityEvidence": {
       "additionalProperties": false,
       "description": "Controller-observed hosting, queue, validation, and release capability.",
@@ -467,6 +630,17 @@
           ],
           "default": null,
           "title": "Exclusion Reason"
+        },
+        "independent_exclusion_evidence": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "independent_exclusion_evidence_digest": {
           "anyOf": [
@@ -760,6 +934,9 @@
           "title": "Activation Digest",
           "type": "string"
         },
+        "content_artifact": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
         "content_inspected": {
           "const": false,
           "default": false,
@@ -832,6 +1009,7 @@
         "source_identity",
         "submission_identity",
         "submission_digest",
+        "content_artifact",
         "operation_id",
         "recorded_at",
         "envelope_digest"
@@ -917,6 +1095,17 @@
           "title": "Outcome Digest",
           "type": "string"
         },
+        "package_artifact": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "package_binding_digest": {
           "anyOf": [
             {
@@ -977,6 +1166,9 @@
           "title": "Terminal At",
           "type": "string"
         },
+        "terminal_evidence": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
         "terminal_evidence_digest": {
           "pattern": "^sha256:[0-9a-f]{64}$",
           "title": "Terminal Evidence Digest",
@@ -994,6 +1186,7 @@
         "outcome",
         "evidence_kind",
         "terminal_evidence_digest",
+        "terminal_evidence",
         "terminal_at",
         "outcome_digest"
       ],
@@ -1007,11 +1200,21 @@
     "activation": {
       "$ref": "#/$defs/MainLedgerActivation"
     },
+    "boundary_evidence": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/MainLedgerBoundaryViolationEvidence"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
     "classifications": {
       "items": {
         "$ref": "#/$defs/MainLedgerClassificationEvidence"
       },
-      "minItems": 1,
       "title": "Classifications",
       "type": "array"
     },
@@ -1042,13 +1245,31 @@
       "title": "Schema Version",
       "type": "integer"
     },
+    "status": {
+      "enum": [
+        "threshold_complete",
+        "boundary_reset"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
     "submissions": {
       "items": {
         "$ref": "#/$defs/MainLedgerSubmissionEnvelope"
       },
-      "minItems": 1,
       "title": "Submissions",
       "type": "array"
+    },
+    "terminal_boundary_reset": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/MainLedgerBoundaryResetTransition"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "transitions": {
       "items": {
@@ -1059,9 +1280,8 @@
     }
   },
   "required": [
+    "status",
     "activation",
-    "submissions",
-    "classifications",
     "final_state",
     "package_digest"
   ],

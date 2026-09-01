@@ -4,11 +4,13 @@ from typing import Any, TypeVar
 import pytest
 from pydantic import ValidationError
 
-from avo_correlate.contracts.base import StrictModel
+from avo_correlate.contracts.base import ArtifactRef, StrictModel
 from avo_correlate.contracts.main_graduation_ledger import (
     MainLedgerAccumulatorState,
     MainLedgerAccumulatorTransition,
     MainLedgerActivation,
+    MainLedgerBoundaryResetTransition,
+    MainLedgerBoundaryViolationEvidence,
     MainLedgerC8CapabilityEvidence,
     MainLedgerClassificationEvidence,
     MainLedgerControllerAuthority,
@@ -25,10 +27,21 @@ NOW = datetime(2026, 9, 1, tzinfo=UTC)
 ModelT = TypeVar("ModelT", bound=StrictModel)
 
 
+def _artifact(role: str, media_type: str, digest: str = DIGEST) -> ArtifactRef:
+    return ArtifactRef(
+        digest=digest,
+        size_bytes=1,
+        media_type=media_type,
+        role=role,
+        created_at=NOW - timedelta(minutes=1),
+    )
+
+
 def _with_digest(model_type: type[ModelT], values: dict[str, Any], field: str) -> ModelT:  # noqa: UP047
     base_values = {key: value for key, value in values.items() if key != field}
     probe = model_type.model_construct(  # pyright: ignore[reportArgumentType]
-        **base_values, **{field: DIGEST}  # pyright: ignore[reportArgumentType]
+        **base_values,  # pyright: ignore[reportArgumentType]
+        **{field: DIGEST},  # pyright: ignore[reportArgumentType]
     )
     return model_type.model_validate(
         {**values, field: canonical_digest(probe.model_dump(exclude={field}, mode="json"))}
@@ -116,6 +129,9 @@ def _submission(
         "source_identity": "scheduler",
         "submission_identity": identity,
         "submission_digest": DIGEST,
+        "content_artifact": _artifact(
+            "scheduler-submission-content", "application/vnd.avo.scheduler-submission+json"
+        ),
         "operation_id": canonical_digest(
             {
                 "domain": "avo.main.ledger.submission.v2",
@@ -205,6 +221,10 @@ def test_classification_excludes_only_independently_proven_empty_or_nonordinary(
         "controller_authority": activation.controller_authority,
         "exclusion_reason": "empty",
         "independent_exclusion_evidence_digest": DIGEST,
+        "independent_exclusion_evidence": _artifact(
+            "ledger-classification-exclusion-evidence",
+            "application/vnd.avo.ledger-exclusion-evidence+json",
+        ),
     }
     good = _with_digest(MainLedgerClassificationEvidence, common, "classification_digest")
     assert good.classification == "excluded"
@@ -291,7 +311,13 @@ def test_accumulator_transition_rejects_gap_and_forged_outcome_binding() -> None
             "outcome": "success",
             "evidence_kind": "success",
             "terminal_evidence_digest": DIGEST,
+            "terminal_evidence": _artifact(
+                "ledger-terminal-evidence", "application/vnd.avo.ledger-terminal-evidence+json"
+            ),
             "package_digest": DIGEST,
+            "package_artifact": _artifact(
+                "integration-campaign-package", "application/vnd.avo.integration-campaign+json"
+            ),
             "package_binding_digest": canonical_digest(
                 {
                     "activation_digest": activation.activation_digest,
@@ -358,6 +384,10 @@ def test_excluded_submission_advances_cas_without_counting_or_resetting() -> Non
             "issuer_authority_digest": DIGEST,
             "exclusion_reason": "empty",
             "independent_exclusion_evidence_digest": DIGEST,
+            "independent_exclusion_evidence": _artifact(
+                "ledger-classification-exclusion-evidence",
+                "application/vnd.avo.ledger-exclusion-evidence+json",
+            ),
         },
         "classification_digest",
     )
@@ -389,15 +419,6 @@ def test_excluded_submission_advances_cas_without_counting_or_resetting() -> Non
     )
     assert transition.outcome is None
     assert transition.resulting_state.streak == 0
-    package_probe = MainLedgerEvidencePackage.model_construct(
-        activation=activation,
-        submissions=[submission],
-        classifications=[classification],
-        outcomes=[],
-        transitions=[transition],
-        final_state=result,
-        package_digest=DIGEST,
-    )
     forged_prior = _with_digest(
         MainLedgerAccumulatorState,
         {
@@ -416,6 +437,7 @@ def test_excluded_submission_advances_cas_without_counting_or_resetting() -> Non
     )
     forged_package = MainLedgerEvidencePackage.model_construct(
         activation=activation,
+        status="threshold_complete",
         submissions=[submission],
         classifications=[classification],
         outcomes=[],
@@ -425,15 +447,6 @@ def test_excluded_submission_advances_cas_without_counting_or_resetting() -> Non
     )
     with pytest.raises(ValidationError, match="canonical genesis"):
         MainLedgerEvidencePackage.model_validate(forged_package)
-    package = MainLedgerEvidencePackage.model_validate(
-        {
-            **package_probe.model_dump(exclude={"package_digest"}),
-            "package_digest": canonical_digest(
-                package_probe.model_dump(exclude={"package_digest"}, mode="json")
-            ),
-        }
-    )
-    assert package.final_state.last_scheduler_sequence == 11
 
 
 def test_genesis_and_duplicate_delivery_are_closed_by_aggregate() -> None:
@@ -464,10 +477,15 @@ def test_genesis_and_duplicate_delivery_are_closed_by_aggregate() -> None:
         issuer_authority_digest=DIGEST,
         exclusion_reason="empty",
         independent_exclusion_evidence_digest=DIGEST,
+        independent_exclusion_evidence=_artifact(
+            "ledger-classification-exclusion-evidence",
+            "application/vnd.avo.ledger-exclusion-evidence+json",
+        ),
         classification_digest=DIGEST,
     )
     forged_package = MainLedgerEvidencePackage.model_construct(
         activation=activation,
+        status="threshold_complete",
         submissions=[submission, duplicate],
         classifications=[fake_classification, fake_classification],
         outcomes=[],
@@ -477,3 +495,108 @@ def test_genesis_and_duplicate_delivery_are_closed_by_aggregate() -> None:
     )
     with pytest.raises(ValidationError, match="duplicate scheduler"):
         MainLedgerEvidencePackage.model_validate(forged_package)
+
+
+def test_boundary_reset_can_terminalize_before_first_submission() -> None:
+    activation = _activation()
+    genesis = main_ledger_genesis_state(
+        activation.activation_digest, activation.scheduler_sequence_watermark
+    )
+    violation = _with_digest(
+        MainLedgerBoundaryViolationEvidence,
+        {
+            "activation_digest": activation.activation_digest,
+            "controller_authority": activation.controller_authority,
+            "expected_scheduler_sequence": 11,
+            "current_state_digest": genesis.state_digest,
+            "violation_kind": "starvation",
+            "evidence_artifact": _artifact(
+                "ledger-boundary-violation-evidence",
+                "application/vnd.avo.ledger-boundary-violation+json",
+            ),
+            "detected_at": NOW,
+        },
+        "violation_digest",
+    )
+    result = _with_digest(
+        MainLedgerAccumulatorState,
+        {
+            "activation_digest": activation.activation_digest,
+            "last_scheduler_sequence": activation.scheduler_sequence_watermark,
+            "streak": 0,
+            "successes": 0,
+            "failures": 0,
+            "boundary_violations": 1,
+            "threshold_complete": False,
+        },
+        "state_digest",
+    )
+    reset = _with_digest(
+        MainLedgerBoundaryResetTransition,
+        {
+            "activation_digest": activation.activation_digest,
+            "prior_state": genesis,
+            "prior_state_digest": genesis.state_digest,
+            "violation": violation,
+            "resulting_state": result,
+            "resulting_state_digest": result.state_digest,
+        },
+        "transition_digest",
+    )
+    package_values: dict[str, Any] = {
+        "status": "boundary_reset",
+        "activation": activation,
+        "submissions": [],
+        "classifications": [],
+        "outcomes": [],
+        "transitions": [],
+        "final_state": result,
+        "boundary_evidence": violation,
+        "terminal_boundary_reset": reset,
+    }
+    package_probe = MainLedgerEvidencePackage.model_construct(  # pyright: ignore[reportArgumentType]
+        **package_values, package_digest=DIGEST
+    )
+    package = MainLedgerEvidencePackage.model_validate(
+        {
+            **package_values,
+            "package_digest": canonical_digest(
+                package_probe.model_dump(exclude={"package_digest"}, mode="json")
+            ),
+        }
+    )
+    assert package.status == "boundary_reset"
+
+    stale_violation = _with_digest(
+        MainLedgerBoundaryViolationEvidence,
+        {
+            **violation.model_dump(),
+            "detected_at": NOW - timedelta(seconds=1),
+        },
+        "violation_digest",
+    )
+    stale_reset = _with_digest(
+        MainLedgerBoundaryResetTransition,
+        {
+            **reset.model_dump(),
+            "violation": stale_violation,
+        },
+        "transition_digest",
+    )
+    stale_values = {
+        **package_values,
+        "boundary_evidence": stale_violation,
+        "terminal_boundary_reset": stale_reset,
+    }
+    stale_probe = MainLedgerEvidencePackage.model_construct(
+        **stale_values, package_digest=DIGEST  # pyright: ignore[reportArgumentType]
+    )
+    with pytest.raises(ValidationError, match="active controller root"):
+        MainLedgerEvidencePackage.model_validate(
+            {
+                **stale_values,
+                "package_digest": canonical_digest(
+                    stale_probe.model_dump(exclude={"package_digest"}, mode="json")
+                ),
+            }
+        )

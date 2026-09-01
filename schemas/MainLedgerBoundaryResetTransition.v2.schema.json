@@ -1,0 +1,311 @@
+{
+  "$defs": {
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Digest",
+          "type": "string"
+        },
+        "media_type": {
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "role": {
+          "minLength": 1,
+          "title": "Role",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "size_bytes": {
+          "minimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "digest",
+        "size_bytes",
+        "media_type",
+        "role",
+        "created_at"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
+    "MainLedgerAccumulatorState": {
+      "additionalProperties": false,
+      "description": "Content-addressed state used as the CAS predecessor of a transition.",
+      "properties": {
+        "activation_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Activation Digest",
+          "type": "string"
+        },
+        "boundary_violations": {
+          "minimum": 0,
+          "title": "Boundary Violations",
+          "type": "integer"
+        },
+        "failures": {
+          "minimum": 0,
+          "title": "Failures",
+          "type": "integer"
+        },
+        "last_scheduler_sequence": {
+          "minimum": 0,
+          "title": "Last Scheduler Sequence",
+          "type": "integer"
+        },
+        "schema_version": {
+          "const": 2,
+          "default": 2,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "state_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "State Digest",
+          "type": "string"
+        },
+        "streak": {
+          "maximum": 12,
+          "minimum": 0,
+          "title": "Streak",
+          "type": "integer"
+        },
+        "successes": {
+          "minimum": 0,
+          "title": "Successes",
+          "type": "integer"
+        },
+        "threshold_complete": {
+          "title": "Threshold Complete",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "activation_digest",
+        "last_scheduler_sequence",
+        "streak",
+        "successes",
+        "failures",
+        "boundary_violations",
+        "threshold_complete",
+        "state_digest"
+      ],
+      "title": "MainLedgerAccumulatorState",
+      "type": "object"
+    },
+    "MainLedgerBoundaryViolationEvidence": {
+      "additionalProperties": false,
+      "description": "Controller-owned, out-of-band proof that an activation must terminate.",
+      "properties": {
+        "activation_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Activation Digest",
+          "type": "string"
+        },
+        "controller_authority": {
+          "$ref": "#/$defs/MainLedgerControllerAuthority"
+        },
+        "current_state_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Current State Digest",
+          "type": "string"
+        },
+        "detected_at": {
+          "format": "date-time",
+          "title": "Detected At",
+          "type": "string"
+        },
+        "evidence_artifact": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
+        "expected_scheduler_sequence": {
+          "exclusiveMinimum": 0,
+          "title": "Expected Scheduler Sequence",
+          "type": "integer"
+        },
+        "schema_version": {
+          "const": 2,
+          "default": 2,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "violation_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Violation Digest",
+          "type": "string"
+        },
+        "violation_kind": {
+          "enum": [
+            "starvation",
+            "withholding",
+            "silent_exclusion",
+            "scheduler_gap",
+            "operator_intervention"
+          ],
+          "title": "Violation Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "activation_digest",
+        "controller_authority",
+        "expected_scheduler_sequence",
+        "current_state_digest",
+        "violation_kind",
+        "evidence_artifact",
+        "detected_at",
+        "violation_digest"
+      ],
+      "title": "MainLedgerBoundaryViolationEvidence",
+      "type": "object"
+    },
+    "MainLedgerControllerAuthority": {
+      "additionalProperties": false,
+      "description": "Self-contained controller root, not an authentication primitive.\n\nPersistence and service callers must supply an injected verifier that\nauthenticates this authority and its issuer before using this DTO.",
+      "properties": {
+        "authority_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Authority Digest",
+          "type": "string"
+        },
+        "authorized_at": {
+          "format": "date-time",
+          "title": "Authorized At",
+          "type": "string"
+        },
+        "controller_config_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Controller Config Digest",
+          "type": "string"
+        },
+        "expires_at": {
+          "format": "date-time",
+          "title": "Expires At",
+          "type": "string"
+        },
+        "issuer_authority_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Issuer Authority Digest",
+          "type": "string"
+        },
+        "issuer_identity": {
+          "minLength": 1,
+          "title": "Issuer Identity",
+          "type": "string"
+        },
+        "policy_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Policy Digest",
+          "type": "string"
+        },
+        "policy_epoch": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Policy Epoch",
+          "type": "string"
+        },
+        "protocol_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Protocol Digest",
+          "type": "string"
+        },
+        "repository_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Repository Digest",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": 2,
+          "default": 2,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "target_ref": {
+          "const": "refs/heads/main",
+          "default": "refs/heads/main",
+          "title": "Target Ref",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository_digest",
+        "protocol_digest",
+        "controller_config_digest",
+        "policy_digest",
+        "policy_epoch",
+        "issuer_identity",
+        "issuer_authority_digest",
+        "authorized_at",
+        "expires_at",
+        "authority_digest"
+      ],
+      "title": "MainLedgerControllerAuthority",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Terminal CAS reset that preserves sequence and increments only boundaries.",
+  "properties": {
+    "activation_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Activation Digest",
+      "type": "string"
+    },
+    "prior_state": {
+      "$ref": "#/$defs/MainLedgerAccumulatorState"
+    },
+    "prior_state_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Prior State Digest",
+      "type": "string"
+    },
+    "resulting_state": {
+      "$ref": "#/$defs/MainLedgerAccumulatorState"
+    },
+    "resulting_state_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Resulting State Digest",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 2,
+      "default": 2,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "transition_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Transition Digest",
+      "type": "string"
+    },
+    "violation": {
+      "$ref": "#/$defs/MainLedgerBoundaryViolationEvidence"
+    }
+  },
+  "required": [
+    "activation_digest",
+    "prior_state",
+    "prior_state_digest",
+    "violation",
+    "resulting_state",
+    "resulting_state_digest",
+    "transition_digest"
+  ],
+  "title": "MainLedgerBoundaryResetTransition",
+  "type": "object"
+}

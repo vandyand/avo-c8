@@ -1,4 +1,51 @@
 {
+  "$defs": {
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Digest",
+          "type": "string"
+        },
+        "media_type": {
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "role": {
+          "minLength": 1,
+          "title": "Role",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "size_bytes": {
+          "minimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "digest",
+        "size_bytes",
+        "media_type",
+        "role",
+        "created_at"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    }
+  },
   "additionalProperties": false,
   "description": "Immutable scheduler receipt written before candidate content inspection.",
   "properties": {
@@ -6,6 +53,9 @@
       "pattern": "^sha256:[0-9a-f]{64}$",
       "title": "Activation Digest",
       "type": "string"
+    },
+    "content_artifact": {
+      "$ref": "#/$defs/ArtifactRef"
     },
     "content_inspected": {
       "const": false,
@@ -79,6 +129,7 @@
     "source_identity",
     "submission_identity",
     "submission_digest",
+    "content_artifact",
     "operation_id",
     "recorded_at",
     "envelope_digest"

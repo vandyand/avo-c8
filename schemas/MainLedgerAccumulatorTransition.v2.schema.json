@@ -1,5 +1,50 @@
 {
   "$defs": {
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Digest",
+          "type": "string"
+        },
+        "media_type": {
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "role": {
+          "minLength": 1,
+          "title": "Role",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "size_bytes": {
+          "minimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "digest",
+        "size_bytes",
+        "media_type",
+        "role",
+        "created_at"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    },
     "MainLedgerAccumulatorState": {
       "additionalProperties": false,
       "description": "Content-addressed state used as the CAS predecessor of a transition.",
@@ -114,6 +159,17 @@
           ],
           "default": null,
           "title": "Exclusion Reason"
+        },
+        "independent_exclusion_evidence": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "independent_exclusion_evidence_digest": {
           "anyOf": [
@@ -382,6 +438,17 @@
           "title": "Outcome Digest",
           "type": "string"
         },
+        "package_artifact": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ArtifactRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "package_binding_digest": {
           "anyOf": [
             {
@@ -442,6 +509,9 @@
           "title": "Terminal At",
           "type": "string"
         },
+        "terminal_evidence": {
+          "$ref": "#/$defs/ArtifactRef"
+        },
         "terminal_evidence_digest": {
           "pattern": "^sha256:[0-9a-f]{64}$",
           "title": "Terminal Evidence Digest",
@@ -459,6 +529,7 @@
         "outcome",
         "evidence_kind",
         "terminal_evidence_digest",
+        "terminal_evidence",
         "terminal_at",
         "outcome_digest"
       ],
