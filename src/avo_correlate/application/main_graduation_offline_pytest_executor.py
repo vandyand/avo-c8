@@ -34,6 +34,7 @@ from avo_correlate.contracts.main_graduation_offline_drill import (
     MainGraduationOfflineExecutionAuthority,
     MainGraduationOfflineExecutionReport,
     MainGraduationOfflineNodeObservation,
+    MainGraduationOfflineWorkspaceIdentity,
 )
 from avo_correlate.domain.canonical import canonical_digest
 
@@ -203,8 +204,28 @@ class HermeticPytestExecutor:
             "executed_at": now,
             "authority_expires_at": authority.expires_at,
         }
+        # Build the digest input through the report model so Pydantic performs
+        # the same JSON-mode serialization used by ``validate_report`` below.
+        # In particular, the execution timestamps are real ``datetime``
+        # objects here, while the canonicalizer intentionally accepts only
+        # JSON-safe values.
+        report_probe_values = values | {
+            "workspace_before_identity": MainGraduationOfflineWorkspaceIdentity.model_construct(
+                **before
+            ),
+            "workspace_after_identity": MainGraduationOfflineWorkspaceIdentity.model_construct(
+                **after
+            ),
+        }
+        report_probe_values["report_digest"] = "sha256:" + "0" * 64
+        report_probe = MainGraduationOfflineExecutionReport.model_construct(
+            **report_probe_values  # pyright: ignore[reportArgumentType]
+        )
         values["report_digest"] = canonical_digest(
-            {"domain": "avo-004.7-c7/offline-execution-report/v1", "value": values}
+            {
+                "domain": "avo-004.7-c7/offline-execution-report/v1",
+                "value": report_probe.model_dump(exclude={"report_digest"}, mode="json"),
+            }
         )
         return MainGraduationOfflineExecutionReport.model_validate(values)
 

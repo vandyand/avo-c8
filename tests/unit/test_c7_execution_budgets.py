@@ -9,6 +9,7 @@ import json
 import shutil
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -25,8 +26,15 @@ from avo_correlate.application.c7_controller_root import (
 )
 from avo_correlate.application.main_graduation_offline_identity import (
     FROZEN_OFFLINE_EXECUTION_ARGV,
+    C7WorkspaceIdentity,
+)
+from avo_correlate.contracts.base import ArtifactRef
+from avo_correlate.contracts.main_graduation_offline_drill import (
+    FROZEN_OFFLINE_EXECUTION_NODE_IDS,
+    MainGraduationOfflineExecutionAuthority,
 )
 from avo_correlate.domain.canonical import canonical_digest
+from tests.unit.test_main_graduation_offline_drill_contracts import _authority
 
 D = "sha256:" + "a" * 64
 NOW = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
@@ -141,4 +149,96 @@ def test_pytest_runner_uses_longer_finite_timeout_and_propagates_timeout(
     assert (
         executor_module._PYTEST_COMMAND_TIMEOUT_SECONDS
         > identity_module._IDENTITY_COMMAND_TIMEOUT_SECONDS
+    )
+
+
+def test_executor_constructs_report_digest_from_json_safe_datetime_values(
+    tmp_path: Path,
+) -> None:
+    authority_source = _authority()
+    authority_values = authority_source.model_dump()
+    authority_values["nodes"] = authority_source.nodes
+    authority_values["argv"] = FROZEN_OFFLINE_EXECUTION_ARGV
+    authority_values["authority_digest"] = D
+    authority_values["authorized_at"] = NOW
+    authority_values["expires_at"] = NOW + timedelta(hours=1)
+    authority_probe = MainGraduationOfflineExecutionAuthority.model_construct(
+        **authority_values
+    )
+    authority_values["authority_digest"] = canonical_digest(
+        {
+            "domain": "avo-004.7-c7/offline-execution-authority/v1",
+            "value": authority_probe.model_dump(exclude={"authority_digest"}, mode="json"),
+        }
+    )
+    authority = MainGraduationOfflineExecutionAuthority.model_validate(authority_values)
+
+    identity = C7WorkspaceIdentity(
+        **{
+            field: getattr(authority, field)
+            for field in (
+                "source_commit",
+                "source_tree",
+                "source_tree_digest",
+                "lockfile_digest",
+                "interpreter_digest",
+                "pytest_digest",
+                "plugin_set_digest",
+                "toolchain_digest",
+                "environment_identity_digest",
+                "uv_digest",
+            )
+        }
+    )
+
+    class FakeIdentityChecker:
+        def __init__(self) -> None:
+            self._last_uv_path = tmp_path / "uv"
+            self._last_uv_path.write_text("uv", encoding="utf-8")
+
+        def __call__(self, _authority: MainGraduationOfflineExecutionAuthority) -> None:
+            return None
+
+        def observe(self) -> C7WorkspaceIdentity:
+            return identity
+
+    def runner(argv: list[str], cwd: Path, report_path: Path) -> int:
+        del argv, cwd
+        root = ET.Element("testsuite")
+        for node_id in FROZEN_OFFLINE_EXECUTION_NODE_IDS:
+            path, _, name = node_id.partition("::")
+            ET.SubElement(
+                root,
+                "testcase",
+                classname=f"tests.unit.{path[:-3].replace('/', '.')}",
+                name=name,
+                status="passed",
+            )
+        report_path.write_bytes(ET.tostring(root, encoding="utf-8"))
+        return 0
+
+    authority_ref = ArtifactRef(
+        digest=D,
+        size_bytes=1,
+        media_type="application/vnd.avo.c7.execution-authority+json",
+        role="c7-execution-authority",
+        created_at=authority.authorized_at,
+    )
+    executor = executor_module.HermeticPytestExecutor(
+        tmp_path,
+        FilesystemArtifactStore(tmp_path / "artifacts"),
+        clock=lambda: authority.authorized_at + timedelta(minutes=1),
+        runner=runner,
+        identity_checker=FakeIdentityChecker(),
+    )
+
+    report = executor.execute(authority, authority_ref)
+
+    assert report.executed_at == authority.authorized_at + timedelta(minutes=1)
+    assert report.authority_expires_at == authority.expires_at
+    assert report.report_digest == canonical_digest(
+        {
+            "domain": "avo-004.7-c7/offline-execution-report/v1",
+            "value": report.model_dump(exclude={"report_digest"}, mode="json"),
+        }
     )
