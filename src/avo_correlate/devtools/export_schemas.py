@@ -153,6 +153,7 @@ from avo_correlate.contracts.main_graduation_ledger import (
     MainLedgerHostedRollbackProofV2,
     MainLedgerSubmissionEnvelopeV2,
     MainLedgerTerminalOutcomeV2,
+    MainLedgerUnresolvedTailEntry,
 )
 from avo_correlate.contracts.model import ModelInvocationRecord, ModelRequest, ModelResponse
 from avo_correlate.contracts.operations import (
@@ -374,6 +375,7 @@ MODELS: tuple[type[StrictModel], ...] = (
     MainLedgerAccumulatorStateV2,
     MainLedgerAccumulatorTransitionV2,
     MainLedgerEvidencePackageV2,
+    MainLedgerUnresolvedTailEntry,
 )
 
 
