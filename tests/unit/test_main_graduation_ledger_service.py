@@ -102,7 +102,7 @@ def test_submit_durable_before_resolver_and_retry_adopts_timestamp(tmp_path: Pat
     assert retry == first
 
 
-def test_later_submission_is_durable_but_advance_stops_at_open_predecessor(tmp_path: Path) -> None:
+def test_next_submission_is_rejected_until_predecessor_transitions(tmp_path: Path) -> None:
     journal, _activation, store = _journal(tmp_path)
     service = MainGraduationLedgerService(
         journal, Clock(), resolver=Resolver(), classifier=Classifier()
@@ -110,9 +110,14 @@ def test_later_submission_is_durable_but_advance_stops_at_open_predecessor(tmp_p
     first_content = _content(store, 1)
     second_content = _content(store, 2)
     service.submit(11, "scheduler", "one", first_content.digest, first_content)
-    service.submit(12, "scheduler", "two", second_content.digest, second_content)
-    assert service.advance() is None
-    assert journal.read_submission_by_sequence(12) is not None
+    with pytest.raises(MainGraduationLedgerJournalError, match="exact next unprocessed"):
+        service.submit(12, "scheduler", "two", second_content.digest, second_content)
+    assert journal.read_submission_by_sequence(12) is None
+    service.classify(11)
+    service.record_outcome(11, "failure", _terminal(store))
+    service.advance()
+    admitted = service.submit(12, "scheduler", "two", second_content.digest, second_content)
+    assert admitted.scheduler_sequence == 12
 
 
 def test_exclusion_advances_without_counting(tmp_path: Path) -> None:
@@ -179,6 +184,8 @@ def test_submitted_unclassified_envelope_is_bound_in_boundary_tail_and_replays(
         max_bytes=1024 * 1024,
     )
     evidence, _reset = service.record_boundary_violation("withholding", boundary_artifact)
+    with pytest.raises(MainGraduationLedgerJournalError, match="terminal"):
+        service.classify(11)
     assert (
         evidence.submission_digest,
         evidence.operation_id,
@@ -347,6 +354,10 @@ def test_threshold_completion_fences_new_submission_before_package(tmp_path: Pat
         service.record_outcome(sequence, "success", terminal, package_artifact=package)
         service.advance()
     assert service.read_status().state.threshold_complete
+    package_record = service.package()
+    assert package_record.status == "threshold_complete"
+    assert package_record.unresolved_tail == []
+    assert service.replay() == package_record
     content = _content(store, 23)
     with pytest.raises(MainGraduationLedgerJournalError, match="threshold"):
         service.submit(23, "scheduler", "twenty-three", content.digest, content)

@@ -152,6 +152,12 @@ class MainGraduationLedgerService:
                 raise MainGraduationLedgerJournalError("conflicting submission retry")
             return old
         self._ensure_not_terminal(active)
+        state = self._current_state(active)
+        expected_sequence = state.last_scheduler_sequence + 1
+        if scheduler_sequence != expected_sequence:
+            raise MainGraduationLedgerJournalError(
+                "submission must be the exact next unprocessed sequence"
+            )
         if recorded_at is not None:
             raise MainGraduationLedgerJournalError("submission timestamp is controller-owned")
         timestamp = self._mutation_now(active)
