@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import errno
+import hashlib
 import inspect
 import json
 import os
@@ -13,6 +14,27 @@ from typing import Any, Protocol
 
 from avo_correlate.adapters.artifacts.filesystem import FilesystemArtifactStore
 from avo_correlate.contracts.base import ArtifactRef
+from avo_correlate.contracts.main_graduation import (
+    MainCompletionPackage,
+    MainReconciliation,
+    MainRollbackCleanupTerminalEvidence,
+    MainRollbackCompletionPackage,
+)
+from avo_correlate.contracts.main_graduation_ledger import (
+    BOUNDARY_ARTIFACT_MEDIA_TYPE,
+    BOUNDARY_ARTIFACT_ROLE,
+    CONTENT_ARTIFACT_MEDIA_TYPE,
+    CONTENT_ARTIFACT_ROLE,
+    EXCLUSION_ARTIFACT_MEDIA_TYPE,
+    EXCLUSION_ARTIFACT_ROLE,
+    PACKAGE_ARTIFACT_MEDIA_TYPE,
+    PACKAGE_ARTIFACT_ROLE,
+    TERMINAL_ARTIFACT_MEDIA_TYPE,
+    TERMINAL_ARTIFACT_ROLE,
+    MainLedgerAccumulatorState,
+    MainLedgerBoundaryViolationEvidence,
+    MainLedgerEvidencePackage,
+)
 from avo_correlate.contracts.main_graduation_offline_drill import (
     OFFLINE_EVIDENCE_ROLE_MEDIA,
     MainGraduationOfflineDrillCaseResult,
@@ -98,6 +120,23 @@ _MODELS = {
     "plan": MainGraduationOfflineDrillPlan,
     "case": MainGraduationOfflineDrillCaseResult,
     "result": MainGraduationOfflineDrillResult,
+}
+
+# Every accepted C7 native namespace has one exact native wire model.  Keep
+# this table closed: in particular, provider/attester/controller evidence has
+# no safe native model in this boundary and therefore remains fail-closed.
+_NATIVE_MODELS: dict[
+    MainGraduationOfflineEvidenceKind, type[Any]
+] = {
+    MainGraduationOfflineEvidenceKind.C4_COMPLETION: MainCompletionPackage,
+    MainGraduationOfflineEvidenceKind.C4_RECOVERY: MainReconciliation,
+    MainGraduationOfflineEvidenceKind.C5_ROLLBACK: MainRollbackCompletionPackage,
+    MainGraduationOfflineEvidenceKind.C5_CLEANUP: MainRollbackCleanupTerminalEvidence,
+    MainGraduationOfflineEvidenceKind.C6_LEDGER: MainLedgerEvidencePackage,
+    MainGraduationOfflineEvidenceKind.C6_BOUNDARY: MainLedgerBoundaryViolationEvidence,
+    MainGraduationOfflineEvidenceKind.C6_THRESHOLD: MainLedgerAccumulatorState,
+    MainGraduationOfflineEvidenceKind.EXECUTION_AUTHORITY: MainGraduationOfflineExecutionAuthority,
+    MainGraduationOfflineEvidenceKind.EXECUTION_REPORT: MainGraduationOfflineExecutionReport,
 }
 
 
@@ -546,11 +585,19 @@ class MainGraduationOfflineDrillJournal:
         report: MainGraduationOfflineExecutionReport,
         authority: MainGraduationOfflineExecutionAuthority,
     ) -> tuple[MainGraduationOfflineEvidenceRef, ...]:
-        refs = tuple(
-            ref for observation in report.observations for ref in observation.evidence_refs
-        )
-        self._validate_native_refs(refs, authority=authority, report=report, unique=False)
-        return refs
+        refs: list[MainGraduationOfflineEvidenceRef] = []
+        for observation in report.observations:
+            self._validate_native_refs(
+                observation.evidence_refs,
+                authority=authority,
+                report=report,
+                expected_operation_id=offline_drill_operation_id(
+                    report.operation_id, observation.case_id, observation.vector_id
+                ),
+                unique=False,
+            )
+            refs.extend(observation.evidence_refs)
+        return tuple(refs)
 
     def _read_case_evidence(
         self,
@@ -559,7 +606,9 @@ class MainGraduationOfflineDrillJournal:
         report: MainGraduationOfflineExecutionReport,
     ) -> tuple[MainGraduationOfflineEvidenceRef, ...]:
         refs = case.native_evidence_refs
-        self._validate_native_refs(refs, authority=authority, report=report)
+        self._validate_native_refs(
+            refs, authority=authority, report=report, case=case
+        )
         return refs
 
     def _validate_native_refs(
@@ -568,6 +617,8 @@ class MainGraduationOfflineDrillJournal:
         *,
         authority: MainGraduationOfflineExecutionAuthority,
         report: MainGraduationOfflineExecutionReport,
+        case: MainGraduationOfflineDrillCaseResult | None = None,
+        expected_operation_id: str | None = None,
         unique: bool = True,
     ) -> None:
         seen: set[str] = set()
@@ -590,14 +641,27 @@ class MainGraduationOfflineDrillJournal:
             if hasattr(typed, "evidence_digest") and typed.evidence_digest != typed.artifact.digest:
                 raise MainGraduationOfflineDrillJournalError("native evidence digest mismatch")
             expected_role, expected_media = _KIND_ROLE_MEDIA[kind]
-            if typed.artifact.role != expected_role or typed.artifact.media_type != expected_media:
+            if (
+                typed.artifact.role != expected_role
+                or typed.artifact.media_type != expected_media
+                or typed.artifact.size_bytes <= 0
+                or typed.artifact.size_bytes > self._max
+            ):
                 raise MainGraduationOfflineDrillJournalError("native evidence role/media mismatch")
             try:
                 raw = self._store.read_bytes(typed.artifact)
                 payload = _strict_loads(raw)
                 if canonical_bytes(payload) != raw or not isinstance(payload, dict):
                     raise ValueError("native artifact is not canonical JSON object")
-                self._parse_native(kind, payload, authority, report)
+                native = self._parse_native(
+                    kind,
+                    payload,
+                    authority,
+                    report,
+                    case=case,
+                    expected_operation_id=expected_operation_id,
+                )
+                self._validate_native_children(native)
             except Exception as exc:
                 raise MainGraduationOfflineDrillJournalError(
                     "native evidence is unverifiable"
@@ -609,6 +673,9 @@ class MainGraduationOfflineDrillJournal:
         payload: dict[str, Any],
         authority: MainGraduationOfflineExecutionAuthority,
         report: MainGraduationOfflineExecutionReport,
+        *,
+        case: MainGraduationOfflineDrillCaseResult | None = None,
+        expected_operation_id: str | None = None,
     ) -> Any:
         if "c7_binding" in payload:
             raise ValueError("legacy generic C7 evidence envelope")
@@ -622,11 +689,256 @@ class MainGraduationOfflineDrillJournal:
             if parsed != report:
                 raise ValueError("report native evidence differs")
             return parsed
-        # Native C4/C5/C6 and provider/controller contracts are not yet wired
-        # to this journal.  Probing unrelated package models here would turn
-        # an untyped blob into authority evidence.  Keep this explicit until
-        # each native kind gets its own parser and binding check.
-        raise ValueError(f"native evidence kind {kind.value} is unsupported")
+        model = _NATIVE_MODELS.get(kind)
+        if model is None:
+            # Provider-attester and controller-verifier evidence are deliberately
+            # not accepted until their exact authenticated native contracts are
+            # available at this boundary.
+            raise ValueError(f"native evidence kind {kind.value} is unsupported")
+        parsed = model.model_validate(payload)
+        MainGraduationOfflineDrillJournal._bind_native_identity(
+            kind, parsed, authority, report, case, expected_operation_id
+        )
+        return parsed
+
+    @staticmethod
+    def _bind_native_identity(
+        kind: MainGraduationOfflineEvidenceKind,
+        native: Any,
+        authority: MainGraduationOfflineExecutionAuthority,
+        report: MainGraduationOfflineExecutionReport,
+        case: MainGraduationOfflineDrillCaseResult | None,
+        expected_operation_id: str | None,
+    ) -> None:
+        """Bind a parsed native record to the C7 execution context.
+
+        Native records intentionally retain their own schemas and validators;
+        this method only checks the cross-wire identity that cannot be inferred
+        from a C7 ``ArtifactRef``.  A report-level ref may describe the root
+        operation or a vector operation.  Once a case is being persisted, the
+        native operation is required to be that case's exact derived operation.
+        """
+
+        expected_root = authority.operation_id
+        if report.operation_id != expected_root:
+            raise ValueError("native evidence report operation differs from authority")
+        expected_operations = {expected_root, report.operation_id}
+        if case is not None:
+            expected_operations = {case.operation_id}
+        elif expected_operation_id is not None:
+            expected_operations = {expected_operation_id}
+        operation_id = getattr(native, "operation_id", None)
+        if operation_id is not None and operation_id not in expected_operations:
+            raise ValueError("native evidence operation identity differs from C7")
+
+        repository_digest = getattr(native, "repository_digest", None)
+        target_ref = getattr(native, "target_ref", None)
+        activation = getattr(native, "activation", None)
+        if activation is not None:
+            repository_digest = getattr(activation, "repository_digest", repository_digest)
+            target_ref = getattr(activation, "target_ref", target_ref)
+            activation_digest = getattr(activation, "activation_digest", None)
+            if activation_digest != authority.activation_digest:
+                raise ValueError("native evidence activation differs from authority")
+
+        controller_authority = getattr(native, "controller_authority", None)
+        if controller_authority is not None and (
+            controller_authority.repository_digest != authority.repository_digest
+            or controller_authority.target_ref != authority.target_ref
+        ):
+            raise ValueError("native controller authority target differs from C7")
+
+        if repository_digest is not None and repository_digest != authority.repository_digest:
+            raise ValueError("native evidence repository differs from authority")
+        if target_ref is not None and target_ref != authority.target_ref:
+            raise ValueError("native evidence target differs from authority")
+
+        # The native aggregate validators establish the exact topology.  The
+        # additional checks below bind the C7 case snapshot to those native
+        # observations where the native model exposes a terminal topology.
+        if case is None:
+            return
+        if isinstance(native, MainReconciliation):
+            if (
+                native.main_commit != case.main_after_commit
+                or native.main_tree != case.main_after_tree
+            ):
+                raise ValueError("native recovery topology differs from C7 case")
+            if tuple(native.main_parents) != case.main_after_parents:
+                raise ValueError("native recovery parents differ from C7 case")
+        elif isinstance(native, MainRollbackCompletionPackage):
+            post_state = native.post_state
+            if (
+                post_state.result_commit != case.main_after_commit
+                or post_state.result_tree != case.main_after_tree
+                or tuple(post_state.result_parents) != case.main_after_parents
+            ):
+                raise ValueError("native rollback topology differs from C7 case")
+        elif isinstance(native, MainCompletionPackage):
+            post_state = native.provider_post_state_observation
+            if (
+                post_state.result_commit != case.main_after_commit
+                or post_state.result_tree != case.main_after_tree
+                or tuple(post_state.result_parents) != case.main_after_parents
+            ):
+                raise ValueError("native completion topology differs from C7 case")
+        elif isinstance(native, MainLedgerEvidencePackage):
+            if native.final_state.activation_digest != authority.activation_digest:
+                raise ValueError("native ledger state differs from authority")
+
+    def _validate_native_children(self, native: Any) -> None:
+        """Re-read content-addressed children of accepted native aggregates."""
+
+        if isinstance(native, MainCompletionPackage):
+            values: dict[str, Any] = {
+                "main-graduation-source-package": native.source_package,
+                "main-graduation-delta": native.delta,
+                "main-graduation-composition": native.composition,
+                "main-graduation-queue-configuration": native.queue_configuration,
+                "main-graduation-queue-observation": native.queue_observation,
+                "main-graduation-protection-manifest": native.protection_manifest,
+                "main-graduation-attestation-manifest": native.attestation_manifest,
+                "main-graduation-merge-group-checks": native.merge_group_checks,
+                "main-graduation-merge-group-webhook-receipt": (
+                    native.hold_observation.merge_group_receipt
+                ),
+                "main-graduation-release-issuer-binding": native.release_issuer_binding,
+                "main-graduation-plan": native.plan,
+                "main-graduation-intent": native.intent,
+                "main-graduation-preparation-authorization": native.preparation_authorization,
+                "main-graduation-queue-admission": native.admission_observation,
+                "main-graduation-release-hold": native.hold_observation,
+                "main-graduation-release-authorization": native.release_authorization,
+                "main-graduation-release-transition": native.transition_receipt,
+                "main-graduation-provider-receipt": native.provider_receipt,
+                "main-graduation-provider-post-state-observation": (
+                    native.provider_post_state_observation
+                ),
+                "main-graduation-reconciliation": native.reconciliation,
+                "main-graduation-lease-evidence-record": native.lease_evidence_record,
+                "main-graduation-release-claim": native.release_claim,
+                "main-graduation-claimed-release-transition": native.claimed_transition_receipt,
+                "main-graduation-mutation-intent": native.release_transition_intent,
+                "main-graduation-mutation-receipt": native.release_transition_mutation_receipt,
+            }
+            if native.release_transition_fence_resolution is not None:
+                values["main-graduation-mutation-fence-resolution"] = (
+                    native.release_transition_fence_resolution
+                )
+            self._validate_child_artifacts(native.artifacts, values)
+        elif isinstance(native, MainLedgerEvidencePackage):
+            for submission in native.submissions:
+                self._read_native_external(
+                    submission.content_artifact,
+                    CONTENT_ARTIFACT_ROLE,
+                    CONTENT_ARTIFACT_MEDIA_TYPE,
+                )
+            for classification in native.classifications:
+                if classification.independent_exclusion_evidence is not None:
+                    self._read_native_external(
+                        classification.independent_exclusion_evidence,
+                        EXCLUSION_ARTIFACT_ROLE,
+                        EXCLUSION_ARTIFACT_MEDIA_TYPE,
+                    )
+            for outcome in native.outcomes:
+                self._read_native_external(
+                    outcome.terminal_evidence,
+                    TERMINAL_ARTIFACT_ROLE,
+                    TERMINAL_ARTIFACT_MEDIA_TYPE,
+                )
+                if outcome.package_artifact is not None:
+                    self._read_native_external(
+                        outcome.package_artifact,
+                        PACKAGE_ARTIFACT_ROLE,
+                        PACKAGE_ARTIFACT_MEDIA_TYPE,
+                    )
+            if native.boundary_evidence is not None:
+                self._read_native_external(
+                    native.boundary_evidence.evidence_artifact,
+                    BOUNDARY_ARTIFACT_ROLE,
+                    BOUNDARY_ARTIFACT_MEDIA_TYPE,
+                )
+            if native.terminal_boundary_reset is not None:
+                self._read_native_external(
+                    native.terminal_boundary_reset.violation.evidence_artifact,
+                    BOUNDARY_ARTIFACT_ROLE,
+                    BOUNDARY_ARTIFACT_MEDIA_TYPE,
+                )
+        elif isinstance(native, MainRollbackCompletionPackage):
+            # The source completion is a full native C4 aggregate embedded in
+            # the C5 package; its own child refs remain part of the authority
+            # closure and must be reread as well.
+            self._validate_native_children(native.source_completion)
+            values = {
+                "main-rollback-attempt-authority": native.attempt_authority,
+                "main-rollback-source-completion": native.source_completion,
+                "main-rollback-preparation-authorization": (
+                    native.rollback_preparation_authorization
+                ),
+                "main-rollback-lease-evidence-record": native.lease_evidence_record,
+                "main-rollback-queue-configuration": native.queue_configuration,
+                "main-rollback-queue-observation": native.queue_observation,
+                "main-rollback-protection-manifest": native.protection_manifest,
+                "main-rollback-attestation-manifest": native.attestation_manifest,
+                "main-rollback-merge-group-checks": native.merge_group_checks,
+                "main-rollback-merge-group-webhook-receipt": native.merge_group_receipt,
+                "main-rollback-queue-admission": native.admission_observation,
+                "main-rollback-release-hold": native.hold_observation,
+                "main-rollback-release-authorization": native.release_authorization,
+                "main-rollback-release-claim": native.release_claim,
+                "main-rollback-claimed-release-transition": native.claimed_transition_receipt,
+                "main-rollback-release-transition": native.release_transition_receipt,
+                "main-rollback-mutation-intent": native.release_transition_intent,
+                "main-rollback-mutation-receipt": native.release_transition_mutation_receipt,
+                "main-rollback-composition": native.composition,
+                "main-rollback-authorization": native.rollback_authorization,
+                "main-rollback-intent": native.rollback_intent,
+                "main-rollback-result": native.rollback_result,
+                "main-rollback-post-state-observation": native.post_state,
+                "main-rollback-cleanup-intent": native.cleanup_intent,
+                "main-rollback-cleanup-receipt": native.cleanup_receipt,
+                "main-rollback-cleanup-terminal": native.cleanup_terminal,
+            }
+            if native.cleanup_observation is not None:
+                values["main-rollback-cleanup-observation"] = native.cleanup_observation
+            if native.release_transition_fence_resolution is not None:
+                values["main-rollback-mutation-fence-resolution"] = (
+                    native.release_transition_fence_resolution
+                )
+            self._validate_child_artifacts(native.artifacts, values)
+
+    def _validate_child_artifacts(self, refs: list[ArtifactRef], values: dict[str, Any]) -> None:
+        references = {ref.role: ref for ref in refs}
+        if set(references) != set(values):
+            raise ValueError("native aggregate child artifact closure is incomplete")
+        for role, value in values.items():
+            reference = references[role]
+            expected_media = f"application/vnd.avo.{role}+json"
+            payload = canonical_bytes(value)
+            if (
+                reference.media_type != expected_media
+                or reference.digest != _digest_bytes(payload)
+                or reference.size_bytes != len(payload)
+            ):
+                raise ValueError("native aggregate child artifact binding differs")
+            data = self._store.read_bytes(reference)
+            if data != payload:
+                raise ValueError("native aggregate child artifact differs")
+
+    def _read_native_external(
+        self, reference: ArtifactRef, role: str, media_type: str
+    ) -> None:
+        if (
+            reference.role != role
+            or reference.media_type != media_type
+            or reference.size_bytes <= 0
+            or reference.size_bytes > self._max
+        ):
+            raise ValueError("native external artifact metadata mismatch")
+        data = self._store.read_bytes(reference)
+        parsed = _strict_loads(data)
+        if not isinstance(parsed, dict) or canonical_bytes(parsed) != data:
+            raise ValueError("native external artifact is not canonical JSON")
 
     @staticmethod
     def _bind_report_to_authority(
@@ -986,6 +1298,10 @@ class MainGraduationOfflineDrillJournal:
 def _path_token(digest: str) -> str:
     """Keep nested Windows index paths short; full digests remain authoritative."""
     return digest.removeprefix("sha256:")[:16]
+
+
+def _digest_bytes(data: bytes) -> str:
+    return f"sha256:{hashlib.sha256(data).hexdigest()}"
 
 
 def _strict_loads(data: bytes) -> Any:

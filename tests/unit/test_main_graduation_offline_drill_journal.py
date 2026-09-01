@@ -14,6 +14,7 @@ from avo_correlate.adapters.artifacts.main_graduation_offline_drill_journal impo
     MainGraduationOfflineDrillJournalError,
 )
 from avo_correlate.contracts.base import ArtifactRef
+from avo_correlate.contracts.main_graduation import MainReconciliation
 from avo_correlate.contracts.main_graduation_offline_drill import (
     OFFLINE_EVIDENCE_ROLE_MEDIA,
     MainGraduationOfflineDrillCaseResult,
@@ -397,6 +398,43 @@ def test_native_generic_wrong_kind_role_media_and_missing_fail(tmp_path: Path) -
     store.delete(authority_ref.digest)
     with pytest.raises(MainGraduationOfflineDrillJournalError):
         journal.read_execution_authority(authority.operation_id, authority.authority_digest)
+
+
+def test_native_c4_recovery_is_typed_and_case_operation_bound(tmp_path: Path) -> None:
+    journal, plan, authority, authority_ref, report, report_ref, _store = _setup(tmp_path)
+    case_id, vector_id = plan.cases[0].case_id, plan.cases[0].vectors[0].vector_id
+    case = _bound_case(plan, authority_ref, report_ref, case_id, vector_id, 1)
+    recovery = MainReconciliation(
+        operation_id=case.operation_id,
+        repository_digest=authority.repository_digest,
+        target_ref=authority.target_ref,
+        state="reconciliation_required",
+        main_commit=case.main_after_commit,
+        main_tree=case.main_after_tree,
+        main_parents=list(case.main_after_parents),
+        expected_tree=case.main_after_tree,
+        expected_base_commit=case.main_after_parents[0],
+        queue_generation_digest="sha256:" + "b" * 64,
+    )
+    parsed = journal._parse_native(  # type: ignore[reportPrivateUsage]
+        MainGraduationOfflineEvidenceKind.C4_RECOVERY,
+        json.loads(canonical_bytes(recovery)),
+        authority,
+        report,
+        case=case,
+    )
+    assert parsed == recovery
+    with pytest.raises(ValueError):
+        journal._parse_native(  # type: ignore[reportPrivateUsage]
+            MainGraduationOfflineEvidenceKind.C4_RECOVERY,
+            {
+                **json.loads(canonical_bytes(recovery)),
+                "operation_id": authority.operation_id,
+            },
+            authority,
+            report,
+            case=case,
+        )
 
 
 @pytest.mark.parametrize(
