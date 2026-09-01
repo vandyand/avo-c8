@@ -14,17 +14,9 @@
           "type": "string"
         },
         "plan_operation_id": {
-          "anyOf": [
-            {
-              "pattern": "^sha256:[0-9a-f]{64}$",
-              "type": "string"
-            },
-            {
-              "type": "null"
-            }
-          ],
-          "default": null,
-          "title": "Plan Operation Id"
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Plan Operation Id",
+          "type": "string"
         },
         "schema_version": {
           "const": 1,
@@ -45,7 +37,8 @@
       "required": [
         "case_id",
         "vectors",
-        "case_digest"
+        "case_digest",
+        "plan_operation_id"
       ],
       "title": "MainGraduationOfflineDrillCaseSpec",
       "type": "object"
@@ -155,31 +148,15 @@
       "type": "boolean"
     },
     "execution_authority_digest": {
-      "anyOf": [
-        {
-          "pattern": "^sha256:[0-9a-f]{64}$",
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null,
-      "title": "Execution Authority Digest"
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Execution Authority Digest",
+      "type": "string"
     },
     "execution_authority_ref": {
-      "anyOf": [
-        {
-          "maxLength": 256,
-          "minLength": 1,
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null,
-      "title": "Execution Authority Ref"
+      "maxLength": 256,
+      "minLength": 1,
+      "title": "Execution Authority Ref",
+      "type": "string"
     },
     "main_before_commit": {
       "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
@@ -264,6 +241,8 @@
     "main_before_tree",
     "main_before_parents",
     "cases",
+    "execution_authority_digest",
+    "execution_authority_ref",
     "plan_digest"
   ],
   "title": "MainGraduationOfflineDrillPlan",

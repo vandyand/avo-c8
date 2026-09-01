@@ -182,40 +182,15 @@
       "title": "Deploy Performed",
       "type": "boolean"
     },
-    "evidence_artifacts": {
-      "items": {
-        "$ref": "#/$defs/ArtifactRef"
-      },
-      "maxItems": 32,
-      "minItems": 7,
-      "title": "Evidence Artifacts",
-      "type": "array"
-    },
     "execution_authority_digest": {
-      "anyOf": [
-        {
-          "pattern": "^sha256:[0-9a-f]{64}$",
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null,
-      "title": "Execution Authority Digest"
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Execution Authority Digest",
+      "type": "string"
     },
     "execution_report_digest": {
-      "anyOf": [
-        {
-          "pattern": "^sha256:[0-9a-f]{64}$",
-          "type": "string"
-        },
-        {
-          "type": "null"
-        }
-      ],
-      "default": null,
-      "title": "Execution Report Digest"
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Execution Report Digest",
+      "type": "string"
     },
     "expected_outcome": {
       "enum": [
@@ -296,6 +271,7 @@
         "$ref": "#/$defs/MainGraduationOfflineEvidenceRef"
       },
       "maxItems": 16,
+      "minItems": 2,
       "title": "Native Evidence Refs",
       "type": "array"
     },
@@ -409,7 +385,9 @@
     "replay_facts",
     "injected_fault_digest",
     "reason_code",
-    "evidence_artifacts",
+    "execution_authority_digest",
+    "execution_report_digest",
+    "native_evidence_refs",
     "result_digest"
   ],
   "title": "MainGraduationOfflineDrillCaseResult",

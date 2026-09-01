@@ -7,8 +7,12 @@ only.  A consumer must still load the referenced records and use its
 controller-owned verifier.
 """
 
+# Exact pytest node IDs are intentionally long and are protocol data.
+# ruff: noqa: E501
+
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
 from enum import StrEnum
 from types import MappingProxyType
@@ -171,7 +175,9 @@ class MainGraduationOfflineEvidenceKind(StrEnum):
     EXECUTION_REPORT = "execution-report"
 
 
-OFFLINE_EVIDENCE_ROLE_MEDIA: MappingProxyType = MappingProxyType(
+OFFLINE_EVIDENCE_ROLE_MEDIA: Mapping[
+    MainGraduationOfflineEvidenceKind, tuple[str, str]
+] = MappingProxyType(
     {
         MainGraduationOfflineEvidenceKind.C4_COMPLETION: (
             "c7-c4-completion",
@@ -244,17 +250,80 @@ class MainGraduationOfflineExecutionNodeSpec(StrictModel):
     expected_state: DrillState
 
 
+_FROZEN_NODE_ID_BY_VECTOR: dict[tuple[str, str], str] = {
+    ("duplicate-lease-runners", "duplicate-runner"): "test_main_rollback_authority_recovery_matrix.py::test_duplicate_runner_and_lease_claims_are_single_owner_or_conflicts",
+    ("duplicate-lease-runners", "stale-lease"): "test_main_rollback_authority_recovery_matrix.py::test_stale_lease_is_rejected_before_rollback_intent",
+    ("stale-base-cas", "stale-base"): "test_main_rollback_composition.py::test_inverse_rejects_advanced_main_before_candidate_retention",
+    ("stale-base-cas", "cas-conflict"): "test_main_rollback_authority_recovery_matrix.py::test_fresh_process_rejects_rollback_artifact_index_cas_or_schema_tamper[cas]",
+    ("package-drift", "package-digest-drift"): "test_main_graduation_contracts.py::test_preparation_chain_rejects_each_shared_binding_edge[package_digest-sha256:2222222222222222222222222222222222222222222222222222222222222222]",
+    ("package-drift", "child-digest-drift"): "test_main_rollback_composition.py::test_inverse_rejects_wrong_completion_digest",
+    ("composition-mismatch", "tree-mismatch"): "test_main_graduation_contracts.py::test_reconciliation_rejects_wrong_composition_tree_or_repository",
+    ("composition-mismatch", "parent-mismatch"): "test_main_graduation_contracts.py::test_preparation_chain_rejects_each_shared_binding_edge[base_tree-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa]",
+    ("composition-mismatch", "path-manifest-drift"): "test_main_graduation_contract_coverage.py::test_path_and_source_contracts_reject_normalization_and_artifact_substitution",
+    ("check-queue-protection", "check-failure"): "test_protected_main_adversarial.py::test_check_run_exact_sha_app_state_and_freshness[mutation0]",
+    ("check-queue-protection", "queue-disabled"): "test_protected_main_adversarial.py::test_queue_rejects_unsafe_graphql_configuration[maximumEntriesToMerge-2]",
+    ("check-queue-protection", "protection-drift"): "test_protected_main_adversarial.py::test_protection_requires_active_full_ruleset_without_bypass[mutation0]",
+    ("provider-ambiguity", "timeout"): "test_main_graduation_completion_filesystem.py::test_timeout_then_expired_fresh_recovery_completes_read_only_and_replays_exactly",
+    ("provider-ambiguity", "lost-receipt"): "test_main_graduation_completion_filesystem.py::test_no_result_ambiguity_remains_reconciliation_required_after_expiry",
+    ("provider-ambiguity", "ambiguous-provider"): "test_main_rollback_coordinator_adversarial_matrix.py::test_provider_crash_persists_ambiguous_once_and_fresh_recovery_is_read_only",
+    ("wrong-topology", "multi-parent"): "test_protected_main_adversarial.py::test_merge_group_requires_authenticated_event_and_rechecks_commit_topology",
+    ("wrong-topology", "wrong-tree"): "test_main_graduation_contract_coverage.py::test_provider_reconciliation_attestation_and_rollback_guards",
+    ("wrong-topology", "wrong-main"): "test_main_graduation_contracts.py::test_main_binding_rejects_wrong_target_and_deploy",
+    ("crash-boundary-matrix", "before-preparation-auth"): "test_main_graduation_coordinator_preparation.py::test_fresh_process_recovers_after_intent_before_dispatch_crash[candidate_publication]",
+    ("crash-boundary-matrix", "after-preparation-auth"): "test_main_graduation_coordinator_preparation.py::test_fresh_process_recovers_after_applied_mutation_response_loss[candidate_publication]",
+    ("crash-boundary-matrix", "before-enqueue"): "test_main_graduation_coordinator_preparation.py::test_fresh_process_recovers_after_intent_before_dispatch_crash[queue_enqueue]",
+    ("crash-boundary-matrix", "after-enqueue"): "test_main_graduation_coordinator_preparation.py::test_fresh_process_recovers_after_applied_mutation_response_loss[queue_enqueue]",
+    ("crash-boundary-matrix", "before-release-auth"): "test_main_graduation_c4_completion_gates.py::test_restart_matrix_never_repeats_irreversible_release_call[authorization-record_release_authorization-None-False]",
+    ("crash-boundary-matrix", "after-release-auth"): "test_main_graduation_c4_completion_gates.py::test_restart_matrix_never_repeats_irreversible_release_call[claim-record_release_claim-None-False]",
+    ("crash-boundary-matrix", "after-hold-success"): "test_main_graduation_c4_completion_gates.py::test_restart_matrix_never_repeats_irreversible_release_call[claimed-transition-record_claimed_release_transition-None-True]",
+    ("rollback-conflict", "rollback-stale-main"): "test_main_rollback_authority_recovery_matrix.py::test_authority_drift_is_rejected_before_intent_or_provider_mutation[topology]",
+    ("rollback-conflict", "rollback-delta-conflict"): "test_main_rollback_composition.py::test_inverse_requires_distinct_source_operation",
+    ("cleanup-ambiguity", "cleanup-unknown"): "test_main_rollback_hosted_terminal.py::test_ambiguous_delete_is_reconciled_read_only_with_observer_identity",
+    ("cleanup-ambiguity", "cleanup-replay"): "test_main_rollback_hosted_terminal.py::test_cleanup_replay_is_truthful_and_non_dispatching",
+    ("replay-idempotence", "completed-replay"): "test_main_graduation_coordinator_preparation.py::test_happy_path_is_exact_four_stage_and_replay_is_read_only",
+    ("replay-idempotence", "byte-identical-replay"): "test_main_graduation_ledger_service.py::test_boundary_reset_closes_activation_and_replays_package_read_only",
+    ("regeneration-order-rerun", "merge-group-regeneration"): "test_main_graduation_coordinator_preparation.py::test_provider_queue_generation_changes_after_enqueue_and_replays_read_only",
+    ("regeneration-order-rerun", "queue-reorder"): "test_main_graduation_c4_completion_gates.py::test_regenerated_queue_generation_cannot_reuse_durable_hold_authorization",
+    ("regeneration-order-rerun", "check-rerun"): "test_main_graduation_contracts.py::test_merge_group_checks_reject_duplicate_context_rerun",
+    ("regeneration-order-rerun", "stale-hold"): "test_main_graduation_completion_remediation.py::test_completion_rejects_stale_release_authority_chronology[claim_update0-None-release claim chronology]",
+    ("regeneration-order-rerun", "duplicate-delivery"): "test_main_graduation_phase_a_adversarial.py::test_run_nonce_and_webhook_global_indexes_repair_missing_local_pointers",
+    ("issuer-capability-separation", "wrong-issuer"): "test_main_graduation_contracts.py::test_transition_rejects_attacker_repository_or_issuer[issuer_identity-attacker]",
+    ("issuer-capability-separation", "candidate-controlled-hold"): "test_main_graduation_coordinator_preparation.py::test_preparation_surface_has_no_release_or_main_mutation_capability",
+    ("issuer-capability-separation", "app15368-not-release"): "test_main_graduation_phase_a_contracts.py::test_claimed_transition_receipt_requires_non_validation_issuer_and_claim",
+    ("admission-group-identity", "admission-success"): "test_protected_main_adversarial.py::test_admission_attester_binds_issuer_isolation_and_pr_head_role",
+    ("admission-group-identity", "group-separation"): "test_protected_main_adversarial.py::test_group_hold_check_is_exact_isolated_pending_run",
+    ("admission-group-identity", "unrelated-pr"): "test_main_graduation_coordinator_preparation.py::test_foreign_pr_observation_fails_closed_before_admission_or_queue",
+    ("admission-group-identity", "singleton-violation"): "test_protected_main_adversarial.py::test_graphql_queue_is_official_endpoint_and_binds_singleton_entry",
+    ("admission-group-identity", "group-tree-mismatch"): "test_main_graduation_coordinator_preparation.py::test_foreign_post_queue_configuration_fails_closed",
+    ("c6-ledger-identity", "c6-activation-drift"): "test_main_graduation_ledger_contracts.py::test_activation_rejects_stale_hosted_prerequisites",
+    ("c6-ledger-identity", "c6-ledger-identity"): "test_main_graduation_ledger_journal.py::test_authority_is_mandatory_and_submission_is_gap_free",
+    ("c6-ledger-identity", "sequence-gap"): "test_main_graduation_ledger_service.py::test_next_submission_is_rejected_until_predecessor_transitions",
+}
+FROZEN_OFFLINE_NODE_ID_BY_VECTOR = MappingProxyType(_FROZEN_NODE_ID_BY_VECTOR)
+
+
 def _frozen_node_specs() -> tuple[tuple[str, str, str, str], ...]:
     return tuple(
         (
-            f"c7::{case_id}::{vector_id}",
-            f"params::{case_id}::{vector_id}",
+            _FROZEN_NODE_ID_BY_VECTOR[(case_id, vector_id)],
+            vector_id,
             case_id,
             vector_id,
         )
         for case_id in FROZEN_OFFLINE_DRILL_CASE_IDS
         for vector_id in FROZEN_OFFLINE_DRILL_VECTOR_IDS[case_id]
     )
+
+
+def _expected_vector(case_id: str, vector_id: str) -> tuple[DrillOutcome, DrillState]:
+    if case_id == "replay-idempotence":
+        return "replayed", "replayed_read_only"
+    if (case_id, vector_id) in {
+        ("crash-boundary-matrix", "after-hold-success"),
+        ("admission-group-identity", "admission-success"),
+    }:
+        return "passed", "completed"
+    return "reconciliation_required", "failed_closed"
 
 
 FROZEN_OFFLINE_EXECUTION_NODE_IDS = tuple(item[0] for item in _frozen_node_specs())
@@ -305,6 +374,12 @@ class MainGraduationOfflineExecutionAuthority(StrictModel):
         actual = tuple((n.node_id, n.parameter_id, n.case_id, n.vector_id) for n in self.nodes)
         if actual != expected or len({item[0] for item in actual}) != len(actual):
             raise ValueError("authority nodes must exactly match the frozen case/vector matrix")
+        if any(
+            node.expected_outcome != _expected_vector(node.case_id, node.vector_id)[0]
+            or node.expected_state != _expected_vector(node.case_id, node.vector_id)[1]
+            for node in self.nodes
+        ):
+            raise ValueError("authority node expectation differs from frozen vector expectation")
         if self.authority_digest != _domain_digest(
             "avo-004.7-c7/offline-execution-authority/v1",
             self.model_dump(exclude={"authority_digest"}, mode="json"),
@@ -367,9 +442,12 @@ class MainGraduationOfflineExecutionReport(StrictModel):
     )
     process_exit_code: Literal[0] = 0
     executed_at: datetime
+    authority_expires_at: datetime
     report_digest: Sha256Digest
 
-    _aware_executed = field_validator("executed_at")(require_aware_datetime)
+    _aware_executed = field_validator("executed_at", "authority_expires_at")(
+        require_aware_datetime
+    )
 
     @model_validator(mode="after")
     def validate_report(self) -> MainGraduationOfflineExecutionReport:
@@ -383,6 +461,13 @@ class MainGraduationOfflineExecutionReport(StrictModel):
             tuple(self.collected_node_ids) != FROZEN_OFFLINE_EXECUTION_NODE_IDS
         ):
             raise ValueError("execution report has missing, extra, duplicate, or reordered nodes")
+        if self.executed_at > self.authority_expires_at:
+            raise ValueError("execution report was produced after authority expiry")
+        if any(
+            node.outcome != _expected_vector(node.case_id, node.vector_id)[0]
+            for node in self.observations
+        ):
+            raise ValueError("execution node outcome differs from frozen expectation")
         if self.report_digest != _domain_digest(
             "avo-004.7-c7/offline-execution-report/v1",
             self.model_dump(exclude={"report_digest"}, mode="json"),
@@ -421,7 +506,7 @@ class MainGraduationOfflineDrillCaseSpec(StrictModel):
         min_length=1, max_length=16, validation_alias=AliasChoices("vectors", "vector_specs")
     )
     case_digest: Sha256Digest = Field(validation_alias=AliasChoices("case_digest", "digest"))
-    plan_operation_id: Sha256Digest | None = None
+    plan_operation_id: Sha256Digest
 
     @model_validator(mode="after")
     def validate_case(self) -> MainGraduationOfflineDrillCaseSpec:
@@ -431,20 +516,18 @@ class MainGraduationOfflineDrillCaseSpec(StrictModel):
         ids = tuple(item.vector_id for item in self.vectors)
         if ids != required or len(set(ids)) != len(ids):
             raise ValueError("case vectors must exactly match the frozen ordered matrix")
-        local = _domain_digest(
-            "avo-004.7-c7/offline-drill-case-spec/v1",
-            self.model_dump(exclude={"case_digest"}, mode="json"),
+        if any(
+            (item.expected_outcome, item.expected_state)
+            != _expected_vector(self.case_id, item.vector_id)
+            for item in self.vectors
+        ):
+            raise ValueError("case vector expectation differs from the frozen matrix")
+        bound = offline_drill_case_id(
+            self.plan_operation_id,
+            self.case_id,
+            [item.model_dump(mode="json") for item in self.vectors],
         )
-        bound = (
-            offline_drill_case_id(
-                self.plan_operation_id,
-                self.case_id,
-                [item.model_dump(mode="json") for item in self.vectors],
-            )
-            if self.plan_operation_id is not None
-            else None
-        )
-        if self.case_digest != local and self.case_digest != bound:
+        if self.case_digest != bound:
             raise ValueError("offline drill case digest mismatch")
         return self
 
@@ -481,11 +564,10 @@ class MainGraduationOfflineDrillPlan(StrictModel):
         max_length=len(FROZEN_OFFLINE_DRILL_CASE_IDS),
         validation_alias=AliasChoices("cases", "case_specs"),
     )
-    execution_authority_digest: Sha256Digest | None = Field(
-        default=None,
-        validation_alias=AliasChoices("execution_authority_digest", "authority_digest"),
+    execution_authority_digest: Sha256Digest = Field(
+        validation_alias=AliasChoices("execution_authority_digest", "authority_digest")
     )
-    execution_authority_ref: BoundedText | None = None
+    execution_authority_ref: BoundedText
     plan_digest: Sha256Digest
 
     @model_validator(mode="after")
@@ -493,19 +575,13 @@ class MainGraduationOfflineDrillPlan(StrictModel):
         ids = tuple(item.case_id for item in self.cases)
         if ids != FROZEN_OFFLINE_DRILL_CASE_IDS or len(set(ids)) != len(ids):
             raise ValueError("plan cases must exactly match the frozen ordered matrix")
-        if (self.execution_authority_digest is None) != (self.execution_authority_ref is None):
-            raise ValueError("execution authority digest and ref must be supplied together")
         for case in self.cases:
             bound = offline_drill_case_id(
                 self.operation_id,
                 case.case_id,
                 [item.model_dump(mode="json") for item in case.vectors],
             )
-            local = _domain_digest(
-                "avo-004.7-c7/offline-drill-case-spec/v1",
-                case.model_dump(exclude={"case_digest"}, mode="json"),
-            )
-            if case.case_digest not in {bound, local}:
+            if case.case_digest != bound or case.plan_operation_id != self.operation_id:
                 raise ValueError("offline drill case is not bound to this plan")
         if self.plan_digest != _domain_digest(
             "avo-004.7-c7/offline-drill-plan/v1",
@@ -594,11 +670,10 @@ class MainGraduationOfflineDrillCaseResult(StrictModel):
     replay_facts: MainGraduationOfflineDrillReplayFacts
     injected_fault_digest: Sha256Digest
     reason_code: Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9._-]{1,127}$")]
-    evidence_artifacts: tuple[ArtifactRef, ...] = Field(min_length=7, max_length=32)
-    execution_authority_digest: Sha256Digest | None = None
-    execution_report_digest: Sha256Digest | None = None
+    execution_authority_digest: Sha256Digest
+    execution_report_digest: Sha256Digest
     native_evidence_refs: tuple[MainGraduationOfflineEvidenceRef, ...] = Field(
-        default_factory=tuple, max_length=16
+        min_length=2, max_length=16
     )
     deploy_performed: Literal[False] = False
     result_digest: Sha256Digest
@@ -609,6 +684,10 @@ class MainGraduationOfflineDrillCaseResult(StrictModel):
             raise ValueError("unknown frozen offline drill case")
         if self.vector_id not in FROZEN_OFFLINE_DRILL_VECTOR_IDS[self.case_id]:
             raise ValueError("unknown vector for frozen offline drill case")
+        if (self.expected_outcome, self.expected_state) != _expected_vector(
+            self.case_id, self.vector_id
+        ):
+            raise ValueError("case result expectation differs from frozen vector expectation")
         if self.operation_id != offline_drill_operation_id(
             self.root_operation_id, self.case_id, self.vector_id
         ):
@@ -637,18 +716,30 @@ class MainGraduationOfflineDrillCaseResult(StrictModel):
             raise ValueError(
                 "offline drill must not contain unexplained provider/release mutations"
             )
-        if len({item.digest for item in self.evidence_artifacts}) != len(self.evidence_artifacts):
-            raise ValueError("case evidence artifacts must be unique")
         if len({item.artifact.digest for item in self.native_evidence_refs}) != len(
             self.native_evidence_refs
         ):
             raise ValueError("native case evidence refs must be unique")
-        evidence_roles = {item.role.casefold() for item in self.evidence_artifacts}
-        required_kinds = ("c4", "c5", "c6", "provider", "rollback", "ledger", "verifier")
-        if any(not any(kind in role for role in evidence_roles) for kind in required_kinds):
-            raise ValueError(
-                "case evidence must include typed C4/C5/C6/provider/rollback/ledger/verifier refs"
-            )
+        native_kinds = {item.kind for item in self.native_evidence_refs}
+        if {
+            MainGraduationOfflineEvidenceKind.EXECUTION_AUTHORITY,
+            MainGraduationOfflineEvidenceKind.EXECUTION_REPORT,
+        } - native_kinds:
+            raise ValueError("case must include execution authority and report evidence refs")
+        authority_refs = [
+            item.artifact.digest
+            for item in self.native_evidence_refs
+            if item.kind is MainGraduationOfflineEvidenceKind.EXECUTION_AUTHORITY
+        ]
+        report_refs = [
+            item.artifact.digest
+            for item in self.native_evidence_refs
+            if item.kind is MainGraduationOfflineEvidenceKind.EXECUTION_REPORT
+        ]
+        if authority_refs != [self.execution_authority_digest]:
+            raise ValueError("execution authority evidence is not bound to the case digest")
+        if report_refs != [self.execution_report_digest]:
+            raise ValueError("execution report evidence is not bound to the case digest")
         if self.result_digest != _domain_digest(
             "avo-004.7-c7/offline-drill-case-result/v1",
             self.model_dump(exclude={"result_digest"}, mode="json"),
@@ -672,8 +763,8 @@ class MainGraduationOfflineDrillResult(StrictModel):
     main_after_tree: GitObject
     main_after_parents: tuple[GitObject, ...] = Field(min_length=0, max_length=2)
     cases: tuple[MainGraduationOfflineDrillCaseResult, ...] = Field(min_length=1, max_length=128)
-    execution_authority_digest: Sha256Digest | None = None
-    execution_report_digest: Sha256Digest | None = None
+    execution_authority_digest: Sha256Digest
+    execution_report_digest: Sha256Digest
     proof_class: Literal["deterministic-offline-proof"] = OFFLINE_PROOF_CLASS
     deploy_performed: Literal[False] = False
     result_digest: Sha256Digest
@@ -711,6 +802,16 @@ class MainGraduationOfflineDrillResult(StrictModel):
             for item in self.cases
         ):
             raise ValueError("aggregate execution manifest binding differs from root")
+        native_kinds = {
+            ref.kind
+            for item in self.cases
+            for ref in item.native_evidence_refs
+        }
+        if {
+            MainGraduationOfflineEvidenceKind.EXECUTION_AUTHORITY,
+            MainGraduationOfflineEvidenceKind.EXECUTION_REPORT,
+        } - native_kinds:
+            raise ValueError("aggregate lacks controller-owned execution evidence")
         if self.main_before_commit != self.main_after_commit or (
             self.main_before_tree != self.main_after_tree
         ):
@@ -739,6 +840,10 @@ __all__ = [
     "FROZEN_OFFLINE_DRILL_CASE_IDS",
     "FROZEN_OFFLINE_DRILL_CASE_VECTOR_MATRIX",
     "FROZEN_OFFLINE_DRILL_VECTOR_IDS",
+    "FROZEN_OFFLINE_EXECUTION_NODE_IDS",
+    "FROZEN_OFFLINE_EXECUTION_PARAMETER_IDS",
+    "FROZEN_OFFLINE_NODE_ID_BY_VECTOR",
+    "OFFLINE_EVIDENCE_ROLE_MEDIA",
     "OFFLINE_PROOF_CLASS",
     "MainGraduationOfflineDrillAggregateResult",
     "MainGraduationOfflineDrillCase",
@@ -751,6 +856,12 @@ __all__ = [
     "MainGraduationOfflineDrillResult",
     "MainGraduationOfflineDrillVector",
     "MainGraduationOfflineDrillVectorSpec",
+    "MainGraduationOfflineEvidenceKind",
+    "MainGraduationOfflineEvidenceRef",
+    "MainGraduationOfflineExecutionAuthority",
+    "MainGraduationOfflineExecutionNodeSpec",
+    "MainGraduationOfflineExecutionReport",
+    "MainGraduationOfflineNodeObservation",
     "OfflineDrillCaseResult",
     "OfflineDrillCaseSpec",
     "OfflineDrillPlan",

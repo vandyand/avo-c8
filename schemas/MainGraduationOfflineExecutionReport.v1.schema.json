@@ -195,6 +195,11 @@
       "title": "Authority Digest",
       "type": "string"
     },
+    "authority_expires_at": {
+      "format": "date-time",
+      "title": "Authority Expires At",
+      "type": "string"
+    },
     "collected_node_ids": {
       "items": {
         "maxLength": 256,
@@ -336,6 +341,7 @@
     "collected_node_ids",
     "observations",
     "executed_at",
+    "authority_expires_at",
     "report_digest"
   ],
   "title": "MainGraduationOfflineExecutionReport",
