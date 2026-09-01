@@ -12,6 +12,7 @@ import shutil
 import tempfile
 from contextlib import suppress
 from contextvars import ContextVar
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from threading import get_ident
@@ -90,7 +91,15 @@ class MainGraduationRecordConflictError(MainGraduationJournalError):
     """A create-once key was already bound to different canonical bytes."""
 
 
-_ReadOwner = tuple[int, int | None]
+_ExecutionOwner = tuple[int, int | None]
+
+
+@dataclass
+class _ReadOwner:
+    execution: _ExecutionOwner
+    active: bool = True
+
+
 _ReadTraversal = tuple[
     _ReadOwner, dict[tuple[str, str], tuple[StrictModel, ArtifactRef]]
 ]
@@ -539,21 +548,34 @@ class MainGraduationJournal:
 
     def _read(self, kind: str, key: str) -> tuple[StrictModel, ArtifactRef] | None:
         """Read one record with a cache scoped to this validation traversal."""
-        token = self._read_state.set(self._next_read_state())
+        traversal, outermost = self._next_read_state()
+        token = self._read_state.set(traversal)
         try:
             return self._read_impl(kind, key)
         finally:
+            if outermost:
+                traversal[0].active = False
             self._read_state.reset(token)
 
-    def _next_read_state(self) -> _ReadTraversal:
-        owner = self._read_owner()
+    def _next_read_state(self) -> tuple[_ReadTraversal, bool]:
+        """Reuse only active recursion in this thread/task execution owner.
+
+        A synchronous ``Context.run`` made while this owner is active is
+        intentionally treated as nested recursion.  A copied context used
+        after the outer read returns sees the inactive owner and starts fresh.
+        """
+        execution = self._read_owner()
         state = self._read_state.get()
-        if state is None or state[0] != owner:
-            return owner, {}
-        return owner, state[1]
+        if (
+            state is not None
+            and state[0].active
+            and state[0].execution == execution
+        ):
+            return state, False
+        return (_ReadOwner(execution), {}), True
 
     @staticmethod
-    def _read_owner() -> _ReadOwner:
+    def _read_owner() -> _ExecutionOwner:
         try:
             task = asyncio.current_task()
         except RuntimeError:
@@ -957,10 +979,13 @@ class MainGraduationJournal:
 
     def _read_phase_a(self, kind: str, key: str) -> tuple[StrictModel, ArtifactRef] | None:
         """Direct phase-A reads use the same traversal-scoped cache."""
-        token = self._read_state.set(self._next_read_state())
+        traversal, outermost = self._next_read_state()
+        token = self._read_state.set(traversal)
         try:
             return self._read_phase_a_impl(kind, key)
         finally:
+            if outermost:
+                traversal[0].active = False
             self._read_state.reset(token)
 
     def _read_phase_a_impl(

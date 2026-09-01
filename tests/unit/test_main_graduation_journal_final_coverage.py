@@ -12,6 +12,7 @@ import asyncio
 import json
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from datetime import timedelta
 from pathlib import Path
 from threading import Barrier
@@ -241,6 +242,74 @@ def test_traversal_cache_isolated_from_child_async_task(
         assert await child_task
 
     asyncio.run(scenario())
+
+
+def test_copied_context_after_return_starts_a_fresh_traversal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    journal = MainGraduationJournal(tmp_path)
+    started = EligibilityLedgerStarted(
+        activation_digest=D,
+        repository_digest=R,
+        controller_config_digest=D2,
+        scheduler_sequence_watermark=0,
+        streak=0,
+    )
+    reference = journal.record_ledger_started(started)
+    original = EligibilityLedgerStarted.model_validate
+    captured = None
+    validations = 0
+
+    def counted(cls: Any, value: Any, *args: Any, **kwargs: Any) -> Any:
+        nonlocal captured, validations
+        validations += 1
+        captured = copy_context()
+        return original(value, *args, **kwargs)
+
+    monkeypatch.setattr(
+        EligibilityLedgerStarted, "model_validate", classmethod(counted)
+    )
+    assert journal.read_ledger_started(D) == (started, reference)
+    assert captured is not None
+    assert captured.run(lambda: journal.read_ledger_started(D)) == (started, reference)
+    assert validations == 2
+
+
+def test_copied_context_after_exception_cannot_reuse_partial_traversal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    journal = MainGraduationJournal(tmp_path)
+    started = EligibilityLedgerStarted(
+        activation_digest=D,
+        repository_digest=R,
+        controller_config_digest=D2,
+        scheduler_sequence_watermark=0,
+        streak=0,
+    )
+    reference = journal.record_ledger_started(started)
+    original = EligibilityLedgerStarted.model_validate
+    captured = None
+    validations = 0
+    fail_once = True
+
+    def counted(cls: Any, value: Any, *args: Any, **kwargs: Any) -> Any:
+        nonlocal captured, fail_once, validations
+        validations += 1
+        captured = copy_context()
+        result = original(value, *args, **kwargs)
+        if fail_once:
+            fail_once = False
+            raise ValueError("test validation failure")
+        return result
+
+    monkeypatch.setattr(
+        EligibilityLedgerStarted, "model_validate", classmethod(counted)
+    )
+    with pytest.raises(MainGraduationJournalError):
+        journal.read_ledger_started(D)
+    assert captured is not None
+    assert captured.run(lambda: journal.read_ledger_started(D)) == (started, reference)
+    assert validations == 2
 
 
 def test_top_level_recursive_read_revalidates_tampered_predecessor(
