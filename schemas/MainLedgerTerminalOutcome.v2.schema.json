@@ -1,4 +1,246 @@
 {
+  "$defs": {
+    "MainLedgerClassificationEvidence": {
+      "additionalProperties": false,
+      "description": "Controller-owned classification; exclusions require independent proof.",
+      "properties": {
+        "activation_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Activation Digest",
+          "type": "string"
+        },
+        "classification": {
+          "enum": [
+            "eligible",
+            "excluded"
+          ],
+          "title": "Classification",
+          "type": "string"
+        },
+        "classification_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Classification Digest",
+          "type": "string"
+        },
+        "controller_authority": {
+          "$ref": "#/$defs/MainLedgerControllerAuthority"
+        },
+        "deploy_performed": {
+          "const": false,
+          "default": false,
+          "title": "Deploy Performed",
+          "type": "boolean"
+        },
+        "empty": {
+          "title": "Empty",
+          "type": "boolean"
+        },
+        "exclusion_reason": {
+          "anyOf": [
+            {
+              "enum": [
+                "empty",
+                "nonordinary"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Exclusion Reason"
+        },
+        "independent_exclusion_evidence_digest": {
+          "anyOf": [
+            {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Independent Exclusion Evidence Digest"
+        },
+        "issuer_authority_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Issuer Authority Digest",
+          "type": "string"
+        },
+        "issuer_domain": {
+          "const": "controller-policy",
+          "default": "controller-policy",
+          "title": "Issuer Domain",
+          "type": "string"
+        },
+        "issuer_identity": {
+          "minLength": 1,
+          "title": "Issuer Identity",
+          "type": "string"
+        },
+        "operation_id": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Operation Id",
+          "type": "string"
+        },
+        "ordinary": {
+          "title": "Ordinary",
+          "type": "boolean"
+        },
+        "path_manifest_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Path Manifest Digest",
+          "type": "string"
+        },
+        "paths": {
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Paths",
+          "type": "array"
+        },
+        "policy_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Policy Digest",
+          "type": "string"
+        },
+        "policy_epoch": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Policy Epoch",
+          "type": "string"
+        },
+        "risk_class": {
+          "enum": [
+            "ordinary",
+            "nonordinary"
+          ],
+          "title": "Risk Class",
+          "type": "string"
+        },
+        "scheduler_sequence": {
+          "exclusiveMinimum": 0,
+          "title": "Scheduler Sequence",
+          "type": "integer"
+        },
+        "schema_version": {
+          "const": 2,
+          "default": 2,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "submission_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Submission Digest",
+          "type": "string"
+        }
+      },
+      "required": [
+        "activation_digest",
+        "submission_digest",
+        "operation_id",
+        "scheduler_sequence",
+        "classification",
+        "empty",
+        "ordinary",
+        "risk_class",
+        "paths",
+        "path_manifest_digest",
+        "policy_digest",
+        "policy_epoch",
+        "controller_authority",
+        "issuer_identity",
+        "issuer_authority_digest",
+        "classification_digest"
+      ],
+      "title": "MainLedgerClassificationEvidence",
+      "type": "object"
+    },
+    "MainLedgerControllerAuthority": {
+      "additionalProperties": false,
+      "description": "Self-contained controller root; callers cannot substitute a digest pointer.",
+      "properties": {
+        "authority_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Authority Digest",
+          "type": "string"
+        },
+        "authorized_at": {
+          "format": "date-time",
+          "title": "Authorized At",
+          "type": "string"
+        },
+        "controller_config_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Controller Config Digest",
+          "type": "string"
+        },
+        "expires_at": {
+          "format": "date-time",
+          "title": "Expires At",
+          "type": "string"
+        },
+        "issuer_authority_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Issuer Authority Digest",
+          "type": "string"
+        },
+        "issuer_identity": {
+          "minLength": 1,
+          "title": "Issuer Identity",
+          "type": "string"
+        },
+        "policy_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Policy Digest",
+          "type": "string"
+        },
+        "policy_epoch": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Policy Epoch",
+          "type": "string"
+        },
+        "protocol_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Protocol Digest",
+          "type": "string"
+        },
+        "repository_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Repository Digest",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": 2,
+          "default": 2,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "target_ref": {
+          "const": "refs/heads/main",
+          "default": "refs/heads/main",
+          "title": "Target Ref",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository_digest",
+        "protocol_digest",
+        "controller_config_digest",
+        "policy_digest",
+        "policy_epoch",
+        "issuer_identity",
+        "issuer_authority_digest",
+        "authorized_at",
+        "expires_at",
+        "authority_digest"
+      ],
+      "title": "MainLedgerControllerAuthority",
+      "type": "object"
+    }
+  },
   "additionalProperties": false,
   "description": "One append-only terminal outcome for one eligible scheduler submission.",
   "properties": {
@@ -11,6 +253,27 @@
       "pattern": "^sha256:[0-9a-f]{64}$",
       "title": "Attempt Id",
       "type": "string"
+    },
+    "boundary_violation": {
+      "default": false,
+      "title": "Boundary Violation",
+      "type": "boolean"
+    },
+    "boundary_violation_evidence_digest": {
+      "anyOf": [
+        {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Boundary Violation Evidence Digest"
+    },
+    "classification": {
+      "$ref": "#/$defs/MainLedgerClassificationEvidence"
     },
     "classification_digest": {
       "pattern": "^sha256:[0-9a-f]{64}$",
@@ -125,6 +388,7 @@
     "activation_digest",
     "submission_digest",
     "classification_digest",
+    "classification",
     "operation_id",
     "attempt_id",
     "scheduler_sequence",

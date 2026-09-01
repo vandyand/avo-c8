@@ -13,6 +13,11 @@
       "title": "Completion State",
       "type": "string"
     },
+    "controller_authority_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Controller Authority Digest",
+      "type": "string"
+    },
     "deploy_performed": {
       "const": false,
       "default": false,
@@ -77,6 +82,7 @@
     "operation_id",
     "repository_digest",
     "proof_artifact_digest",
+    "controller_authority_digest",
     "rollback_authority_identity",
     "rollback_authority_digest",
     "result_evidence_digest",

@@ -1,4 +1,300 @@
 {
+  "$defs": {
+    "MainLedgerC8CapabilityEvidence": {
+      "additionalProperties": false,
+      "description": "Controller-observed hosting, queue, validation, and release capability.",
+      "properties": {
+        "bypass_allowed": {
+          "const": false,
+          "default": false,
+          "title": "Bypass Allowed",
+          "type": "boolean"
+        },
+        "controller_authority_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Controller Authority Digest",
+          "type": "string"
+        },
+        "direct_merge_allowed": {
+          "const": false,
+          "default": false,
+          "title": "Direct Merge Allowed",
+          "type": "boolean"
+        },
+        "evidence_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Evidence Digest",
+          "type": "string"
+        },
+        "hosting_authority_identity": {
+          "minLength": 1,
+          "title": "Hosting Authority Identity",
+          "type": "string"
+        },
+        "max_entries_per_group": {
+          "const": 1,
+          "default": 1,
+          "title": "Max Entries Per Group",
+          "type": "integer"
+        },
+        "observed_at": {
+          "format": "date-time",
+          "title": "Observed At",
+          "type": "string"
+        },
+        "queue_configuration_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Queue Configuration Digest",
+          "type": "string"
+        },
+        "queue_generation_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Queue Generation Digest",
+          "type": "string"
+        },
+        "queue_required": {
+          "const": true,
+          "default": true,
+          "title": "Queue Required",
+          "type": "boolean"
+        },
+        "release_issuer_app_id": {
+          "exclusiveMinimum": 0,
+          "title": "Release Issuer App Id",
+          "type": "integer"
+        },
+        "release_issuer_authority_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Release Issuer Authority Digest",
+          "type": "string"
+        },
+        "release_issuer_identity": {
+          "minLength": 1,
+          "title": "Release Issuer Identity",
+          "type": "string"
+        },
+        "release_issuer_isolated": {
+          "const": true,
+          "default": true,
+          "title": "Release Issuer Isolated",
+          "type": "boolean"
+        },
+        "repository_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Repository Digest",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": 2,
+          "default": 2,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "target_ref": {
+          "const": "refs/heads/main",
+          "default": "refs/heads/main",
+          "title": "Target Ref",
+          "type": "string"
+        },
+        "validation_app_id": {
+          "const": 15368,
+          "default": 15368,
+          "title": "Validation App Id",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "repository_digest",
+        "controller_authority_digest",
+        "hosting_authority_identity",
+        "queue_configuration_digest",
+        "queue_generation_digest",
+        "release_issuer_identity",
+        "release_issuer_app_id",
+        "release_issuer_authority_digest",
+        "observed_at",
+        "evidence_digest"
+      ],
+      "title": "MainLedgerC8CapabilityEvidence",
+      "type": "object"
+    },
+    "MainLedgerControllerAuthority": {
+      "additionalProperties": false,
+      "description": "Self-contained controller root; callers cannot substitute a digest pointer.",
+      "properties": {
+        "authority_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Authority Digest",
+          "type": "string"
+        },
+        "authorized_at": {
+          "format": "date-time",
+          "title": "Authorized At",
+          "type": "string"
+        },
+        "controller_config_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Controller Config Digest",
+          "type": "string"
+        },
+        "expires_at": {
+          "format": "date-time",
+          "title": "Expires At",
+          "type": "string"
+        },
+        "issuer_authority_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Issuer Authority Digest",
+          "type": "string"
+        },
+        "issuer_identity": {
+          "minLength": 1,
+          "title": "Issuer Identity",
+          "type": "string"
+        },
+        "policy_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Policy Digest",
+          "type": "string"
+        },
+        "policy_epoch": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Policy Epoch",
+          "type": "string"
+        },
+        "protocol_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Protocol Digest",
+          "type": "string"
+        },
+        "repository_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Repository Digest",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": 2,
+          "default": 2,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "target_ref": {
+          "const": "refs/heads/main",
+          "default": "refs/heads/main",
+          "title": "Target Ref",
+          "type": "string"
+        }
+      },
+      "required": [
+        "repository_digest",
+        "protocol_digest",
+        "controller_config_digest",
+        "policy_digest",
+        "policy_epoch",
+        "issuer_identity",
+        "issuer_authority_digest",
+        "authorized_at",
+        "expires_at",
+        "authority_digest"
+      ],
+      "title": "MainLedgerControllerAuthority",
+      "type": "object"
+    },
+    "MainLedgerHostedRollbackProof": {
+      "additionalProperties": false,
+      "description": "Fresh hosted main rollback proof required before ledger activation.",
+      "properties": {
+        "completed_at": {
+          "format": "date-time",
+          "title": "Completed At",
+          "type": "string"
+        },
+        "completion_state": {
+          "const": "successful",
+          "default": "successful",
+          "title": "Completion State",
+          "type": "string"
+        },
+        "controller_authority_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Controller Authority Digest",
+          "type": "string"
+        },
+        "deploy_performed": {
+          "const": false,
+          "default": false,
+          "title": "Deploy Performed",
+          "type": "boolean"
+        },
+        "fresh_hosted": {
+          "const": true,
+          "default": true,
+          "title": "Fresh Hosted",
+          "type": "boolean"
+        },
+        "operation_id": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Operation Id",
+          "type": "string"
+        },
+        "proof_artifact_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Proof Artifact Digest",
+          "type": "string"
+        },
+        "proof_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Proof Digest",
+          "type": "string"
+        },
+        "repository_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Repository Digest",
+          "type": "string"
+        },
+        "result_evidence_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Result Evidence Digest",
+          "type": "string"
+        },
+        "rollback_authority_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Rollback Authority Digest",
+          "type": "string"
+        },
+        "rollback_authority_identity": {
+          "minLength": 1,
+          "title": "Rollback Authority Identity",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": 2,
+          "default": 2,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "target_ref": {
+          "const": "refs/heads/main",
+          "default": "refs/heads/main",
+          "title": "Target Ref",
+          "type": "string"
+        }
+      },
+      "required": [
+        "operation_id",
+        "repository_digest",
+        "proof_artifact_digest",
+        "controller_authority_digest",
+        "rollback_authority_identity",
+        "rollback_authority_digest",
+        "result_evidence_digest",
+        "completed_at",
+        "proof_digest"
+      ],
+      "title": "MainLedgerHostedRollbackProof",
+      "type": "object"
+    }
+  },
   "additionalProperties": false,
   "description": "Frozen controller root for one 12-success campaign.",
   "properties": {
@@ -12,10 +308,16 @@
       "title": "Activation Digest",
       "type": "string"
     },
+    "c8_capability_evidence": {
+      "$ref": "#/$defs/MainLedgerC8CapabilityEvidence"
+    },
     "c8_capability_evidence_digest": {
       "pattern": "^sha256:[0-9a-f]{64}$",
       "title": "C8 Capability Evidence Digest",
       "type": "string"
+    },
+    "controller_authority": {
+      "$ref": "#/$defs/MainLedgerControllerAuthority"
     },
     "controller_config_digest": {
       "pattern": "^sha256:[0-9a-f]{64}$",
@@ -42,6 +344,9 @@
       "pattern": "^sha256:[0-9a-f]{64}$",
       "title": "Hosted Rollback Artifact Digest",
       "type": "string"
+    },
+    "hosted_rollback_proof": {
+      "$ref": "#/$defs/MainLedgerHostedRollbackProof"
     },
     "hosted_rollback_proof_digest": {
       "pattern": "^sha256:[0-9a-f]{64}$",
@@ -72,6 +377,11 @@
     "repository_digest": {
       "pattern": "^sha256:[0-9a-f]{64}$",
       "title": "Repository Digest",
+      "type": "string"
+    },
+    "rollback_authority_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Rollback Authority Digest",
       "type": "string"
     },
     "rollback_authority_identity": {
@@ -112,9 +422,13 @@
     "controller_issuer_identity",
     "controller_issuer_authority_digest",
     "scheduler_sequence_watermark",
+    "controller_authority",
+    "hosted_rollback_proof",
+    "c8_capability_evidence",
     "hosted_rollback_proof_digest",
     "hosted_rollback_artifact_digest",
     "rollback_authority_identity",
+    "rollback_authority_digest",
     "c8_capability_evidence_digest",
     "activated_at",
     "activation_digest"

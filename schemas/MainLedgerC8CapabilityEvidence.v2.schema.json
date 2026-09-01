@@ -8,6 +8,11 @@
       "title": "Bypass Allowed",
       "type": "boolean"
     },
+    "controller_authority_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Controller Authority Digest",
+      "type": "string"
+    },
     "direct_merge_allowed": {
       "const": false,
       "default": false,
@@ -98,6 +103,7 @@
   },
   "required": [
     "repository_digest",
+    "controller_authority_digest",
     "hosting_authority_identity",
     "queue_configuration_digest",
     "queue_generation_digest",
