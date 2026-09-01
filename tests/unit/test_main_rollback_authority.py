@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
@@ -13,8 +14,13 @@ from avo_correlate.application.main_rollback_authority import (
     MainRollbackAuthorityError,
     MainRollbackCurrentAuthority,
 )
-from avo_correlate.contracts.main_graduation import MainLeaseEvidenceRecord
-from avo_correlate.domain.canonical import canonical_digest
+from avo_correlate.contracts.base import ArtifactRef
+from avo_correlate.contracts.main_graduation import (
+    MainLeaseEvidenceRecord,
+    MainRollbackCompositionArtifact,
+    main_rollback_composition_id,
+)
+from avo_correlate.domain.canonical import canonical_bytes, canonical_digest
 from tests.unit.c4_coordinator_test_support import MAIN_OPERATION, REPOSITORY
 from tests.unit.test_main_graduation_completion_filesystem import _fresh_journal
 from tests.unit.test_main_rollback_composition import _adapter, _Reader, _ready
@@ -167,6 +173,110 @@ def test_composition_authority_prepare_replays_exactly(tmp_path) -> None:
         wire.pop("composition_artifact_digest")
         with pytest.raises(ValidationError):
             type(record).model_validate(wire)
+
+
+def test_authority_rejects_unjournaled_forged_composition_before_lease(tmp_path) -> None:
+    journal, checkout, provider, package = _ready(tmp_path)
+    composed = _adapter(
+        tmp_path,
+        journal,
+        _Reader(checkout, provider.main_commit, provider.main_tree),
+    ).compose(
+        source_operation_id=MAIN_OPERATION,
+        completion_package_digest=canonical_digest(package),
+    )
+    original = composed.composition
+    values = original.model_dump(mode="json")
+    values.pop("composition_id")
+    values.pop("retention_ref")
+    values["candidate_commit"] = "a" * 40
+    values["inverse_delta_digest"] = "sha256:" + "0" * 64
+    probe = MainRollbackCompositionArtifact.model_construct(
+        **values,
+        composition_id="sha256:" + "0" * 64,
+        retention_ref="refs/avo/main-rollback/" + "0" * 64,
+    )
+    values["inverse_delta_digest"] = canonical_digest(
+        probe.model_dump(
+            exclude={"inverse_delta_digest", "composition_id", "retention_ref"},
+            mode="json",
+        )
+    )
+    probe = MainRollbackCompositionArtifact.model_construct(
+        **values,
+        composition_id="sha256:" + "0" * 64,
+        retention_ref="refs/avo/main-rollback/" + "0" * 64,
+    )
+    forged_id = main_rollback_composition_id(
+        **probe.model_dump(exclude={"composition_id", "retention_ref"}, mode="json")
+    )
+    values["composition_id"] = forged_id
+    values["retention_ref"] = "refs/avo/main-rollback/" + forged_id.removeprefix("sha256:")
+    forged = MainRollbackCompositionArtifact.model_validate(values)
+    forged_ref = ArtifactRef(
+        digest=canonical_digest(forged),
+        size_bytes=len(canonical_bytes(forged)),
+        media_type=composed.composition_artifact.media_type,
+        role=composed.composition_artifact.role,
+        created_at=composed.composition_artifact.created_at,
+    )
+    forged_result = replace(
+        composed,
+        composition_id=forged.composition_id,
+        composition=forged,
+        composition_artifact=forged_ref,
+        candidate_commit=forged.candidate_commit,
+        candidate_tree=forged.candidate_tree,
+        candidate_parent_commit=forged.candidate_parent_commit,
+        retention_ref=forged.retention_ref,
+    )
+    source = cast(Any, package)
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    lease_calls = 0
+
+    def acquire(*_args: object) -> MainLeaseEvidenceRecord:
+        nonlocal lease_calls
+        lease_calls += 1
+        raise AssertionError("lease acquisition must not run")
+
+    authority = MainRollbackAuthority(
+        journal=journal,
+        clock=type("Clock", (), {"now": lambda self: now})(),
+        policy_epoch=source.plan.policy_epoch,
+        controller_config_digest=source.release_issuer_binding.controller_config_digest,
+        release_issuer_binding=source.release_issuer_binding,
+        current_authority_reader=lambda: MainRollbackCurrentAuthority(
+            current_main_commit=provider.main_commit,
+            current_main_tree=provider.main_tree,
+            current_main_parent_commit=source.reconciliation.main_parents[0],
+            policy_epoch=source.plan.policy_epoch,
+            controller_config_digest=source.release_issuer_binding.controller_config_digest,
+            release_issuer_binding=source.release_issuer_binding,
+        ),
+        lease_acquirer=acquire,
+    )
+    for operation in (authority.preview, authority.prepare):
+        with pytest.raises(MainRollbackAuthorityError, match="durably recorded"):
+            operation(
+                source_operation_id=MAIN_OPERATION,
+                attempt_nonce="forged-composition",
+                composition=forged_result,
+            )
+    assert lease_calls == 0
+    assert list((tmp_path / "main-graduation-index" / "rollback-intent").glob("*.json")) == []
+
+    mismatched_ref = replace(
+        composed,
+        composition_artifact=composed.composition_artifact.model_copy(
+            update={"digest": "sha256:" + "0" * 64}
+        ),
+    )
+    with pytest.raises(MainRollbackAuthorityError, match="artifact reference digest"):
+        authority.preview(
+            source_operation_id=MAIN_OPERATION,
+            attempt_nonce="mismatched-ref",
+            composition=mismatched_ref,
+        )
 
 
 def test_new_rollback_wires_reject_raw_legacy_shape() -> None:

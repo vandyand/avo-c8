@@ -150,7 +150,9 @@ class MainRollbackAuthority:
         """Derive the final identity before lease acquisition or any writes."""
 
         source = self._source(source_operation_id)
-        composition_artifact = self._composition(composition, source_operation_id)
+        composition_artifact, _ = self._durable_composition(
+            composition, source_operation_id
+        )
         policy = policy_epoch or self.policy_epoch or source.plan.policy_epoch
         config = (
             controller_config_digest
@@ -200,7 +202,9 @@ class MainRollbackAuthority:
 
         try:
             source = self._source(source_operation_id)
-            composition_artifact = self._composition(composition, source_operation_id)
+            composition_artifact, composition_ref = self._durable_composition(
+                composition, source_operation_id
+            )
             policy = policy_epoch or self.policy_epoch or source.plan.policy_epoch
             config = (
                 controller_config_digest
@@ -261,7 +265,6 @@ class MainRollbackAuthority:
                 authority_at = cast(MainRollbackIntent, prior_intent[0]).recorded_at
 
             candidate_ref = f"refs/heads/avo/main-rollback/{operation_id.removeprefix('sha256:')}"
-            composition_ref = self._ensure_composition(composition_artifact)
             auth = self._build_authorization(
                 operation_id=operation_id,
                 source=source,
@@ -395,6 +398,36 @@ class MainRollbackAuthority:
             raise MainRollbackAuthorityError("composition identity differs")
         return artifact
 
+    def _durable_composition(
+        self,
+        composition: MainRollbackCompositionResult,
+        source_operation_id: Sha256Digest,
+    ) -> tuple[MainRollbackCompositionArtifact, ArtifactRef]:
+        """Adopt only the exact composition already recorded by the adapter."""
+
+        artifact = self._composition(composition, source_operation_id)
+        recovery = getattr(self.journal, "rollback_authority_recovery", None)
+        context = recovery() if callable(recovery) else None
+        if context is None:
+            loaded = self.journal.read_rollback_composition(artifact.composition_id)
+        else:
+            with context:
+                loaded = self.journal.read_rollback_composition(artifact.composition_id)
+        if loaded is None:
+            raise MainRollbackAuthorityError(
+                "rollback composition is not durably recorded"
+            )
+        durable = cast(MainRollbackCompositionArtifact, loaded[0])
+        durable_ref = loaded[1]
+        if (
+            canonical_bytes(durable) != canonical_bytes(artifact)
+            or durable_ref != composition.composition_artifact
+        ):
+            raise MainRollbackAuthorityError(
+                "durable rollback composition differs from verified composition"
+            )
+        return durable, durable_ref
+
     def _durable_lease(
         self,
         operation_id: Sha256Digest,
@@ -443,37 +476,6 @@ class MainRollbackAuthority:
         if canonical_bytes(checked) != canonical_bytes(durable):
             raise MainRollbackAuthorityError("lease verifier returned a different durable record")
         return durable
-
-    def _ensure_composition(
-        self, composition: MainRollbackCompositionArtifact
-    ) -> ArtifactRef:
-        recovery = getattr(self.journal, "rollback_authority_recovery", None)
-        context = recovery() if callable(recovery) else None
-        if context is None:
-            return self._ensure_composition_unscoped(composition)
-        with context:
-            return self._ensure_composition_unscoped(composition)
-
-    def _ensure_composition_unscoped(
-        self, composition: MainRollbackCompositionArtifact
-    ) -> ArtifactRef:
-        loaded = self.journal.read_rollback_composition(composition.composition_id)
-        if loaded is not None:
-            if canonical_bytes(loaded[0]) != canonical_bytes(composition):
-                raise MainRollbackAuthorityError(
-                    "durable rollback composition differs from verified composition"
-                )
-            return loaded[1]
-        try:
-            return self.journal.record_rollback_composition(composition)
-        except (
-            MainGraduationJournalError,
-            MainGraduationRecordConflictError,
-            ValueError,
-        ) as exc:
-            raise MainRollbackAuthorityError(
-                "rollback composition was not durably recorded"
-            ) from exc
 
     def _validate_current_authority(
         self,
