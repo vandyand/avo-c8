@@ -7,7 +7,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from avo_correlate.adapters.artifacts.main_graduation_journal import MainGraduationJournal
+import pytest
+
+from avo_correlate.adapters.artifacts.main_graduation_journal import (
+    MainGraduationJournal,
+    MainGraduationJournalError,
+)
 from avo_correlate.adapters.git.main_rollback_composition import MainRollbackCompositionResult
 from avo_correlate.application.c4_capabilities import (
     CandidateObservationRequest,
@@ -256,7 +261,7 @@ def _prepared_rollback(
         "observed_at": clock.now() + timedelta(minutes=1),
     }
     result = _digest(MainRollbackResultReceipt, values, "receipt_digest")
-    with journal.rollback_authority_recovery():
+    with journal.rollback_authority_recovery(package.operation_id):
         journal.record_rollback_result(result)
     return journal, prepared, result, composition
 
@@ -372,28 +377,42 @@ def test_cleanup_intent_restart_adopts_exact_timestamp_and_dispatches_once(tmp_p
     journal, authority, result, _ = _prepared_rollback(tmp_path)
     first = _coordinator(journal, _Clock(NOW + timedelta(minutes=5)), cleanup=_CleanupCapability())
     intent = _cleanup_intent(first, authority, result)
-    with journal.rollback_authority_recovery():
+    with journal.rollback_authority_recovery(authority.intent.source_operation_id):
         journal.record_rollback_cleanup_intent(intent)
 
     cleanup = _CleanupCapability()
     restarted = _rollback_journal(journal)
     second = _coordinator(restarted, _Clock(NOW + timedelta(minutes=10)), cleanup=cleanup)
-    with restarted.rollback_authority_recovery():
+    with restarted.rollback_authority_recovery(authority.intent.source_operation_id):
         adopted = _cleanup_intent(second, authority, result)
     assert adopted.recorded_at == intent.recorded_at
     assert adopted.intent_digest == intent.intent_digest
 
-    with restarted.rollback_authority_recovery():
+    with restarted.rollback_authority_recovery(authority.intent.source_operation_id):
         receipt, observation, terminal = second._cleanup(authority, result, adopted)
     assert cleanup.calls == 1
     assert receipt.outcome == "applied"
     assert observation is None
     assert terminal is not None
     persisted = _rollback_journal(restarted)
-    with persisted.rollback_authority_recovery():
+    with persisted.rollback_authority_recovery(authority.intent.source_operation_id):
         assert persisted.read_rollback_cleanup_intent(adopted.operation_id)[0] == adopted
         assert persisted.read_rollback_cleanup_receipt(adopted.operation_id)[0] == receipt
         assert persisted.read_rollback_cleanup_terminal(adopted.operation_id)[0] == terminal
+
+
+def test_source_recovery_context_does_not_bypass_foreign_lease_slot(tmp_path: Path) -> None:
+    journal, authority, _result, _ = _prepared_rollback(tmp_path)
+    assert journal.release_target_lease(
+        authority.lease.repository_digest,
+        authority.lease.target_ref,
+        authority.operation_id,
+        authority.lease.lease_digest,
+    )
+
+    recovery = journal.rollback_authority_recovery(authority.intent.source_operation_id)
+    with pytest.raises(MainGraduationJournalError, match="target lease"), recovery:
+        journal.read_lease_evidence_record(authority.operation_id)
 
 
 def test_cleanup_owner_without_receipt_reconciles_absence_without_second_delete(
@@ -402,9 +421,9 @@ def test_cleanup_owner_without_receipt_reconciles_absence_without_second_delete(
     journal, authority, result, _ = _prepared_rollback(tmp_path)
     seed = _coordinator(journal, _Clock(NOW + timedelta(minutes=5)), cleanup=_CleanupCapability())
     intent = _cleanup_intent(seed, authority, result)
-    with journal.rollback_authority_recovery():
+    with journal.rollback_authority_recovery(authority.intent.source_operation_id):
         journal.record_rollback_cleanup_intent(intent)
-    with journal.rollback_authority_recovery():
+    with journal.rollback_authority_recovery(authority.intent.source_operation_id):
         assert journal.claim_rollback_cleanup_dispatch(
             operation_id=intent.operation_id,
             intent_digest=intent.intent_digest,
@@ -419,12 +438,11 @@ def test_cleanup_owner_without_receipt_reconciles_absence_without_second_delete(
         _Clock(NOW + timedelta(minutes=10)),
         cleanup=cleanup,
     )
-    with restarted.rollback_authority_recovery():
-        receipt, observation, terminal = recovery.recover_cleanup(
-            authority=authority,
-            result=result,
-            cleanup_intent=intent,
-        )
+    receipt, observation, terminal = recovery.recover_cleanup(
+        authority=authority,
+        result=result,
+        cleanup_intent=intent,
+    )
     assert cleanup.calls == 0
     assert receipt.outcome == "reconciliation_required"
     assert receipt.dispatch_started is True
@@ -433,7 +451,7 @@ def test_cleanup_owner_without_receipt_reconciles_absence_without_second_delete(
     assert terminal is not None and terminal.outcome == "absent"
 
     persisted = _rollback_journal(restarted)
-    with persisted.rollback_authority_recovery():
+    with persisted.rollback_authority_recovery(authority.intent.source_operation_id):
         assert persisted.read_rollback_cleanup_dispatch_owner(intent.intent_digest) is not None
         assert persisted.read_rollback_cleanup_receipt(intent.operation_id)[0] == receipt
         assert persisted.read_rollback_cleanup_observation(intent.operation_id)[0] == observation
@@ -490,7 +508,7 @@ def test_c4_owner_without_receipt_coordinator_recovers_read_only_with_resolution
         },
         "intent_digest",
     )
-    with journal.rollback_authority_recovery():
+    with journal.rollback_authority_recovery(authority.intent.source_operation_id):
         journal.record_mutation_intent(intent)
         assert journal.claim_mutation_dispatch(
             operation_id=intent.operation_id,
@@ -527,15 +545,15 @@ def test_c4_owner_without_receipt_coordinator_recovers_read_only_with_resolution
         observation=observer,
         publication=_StageCapability(),
     )
-    with restarted.rollback_authority_recovery():
+    with restarted.rollback_authority_recovery(authority.intent.source_operation_id):
         recovered_intent, execution = coordinator._stage(request, authority, None)
     assert recovered_intent == intent
     assert execution.effective_outcome in {"applied", "already_applied"}
     assert observer.calls == 1
-    with restarted.rollback_authority_recovery():
+    with restarted.rollback_authority_recovery(authority.intent.source_operation_id):
         assert restarted.read_mutation_receipt_for_intent(intent.intent_digest) is not None
         assert restarted.read_mutation_fence_resolution_by_intent(intent.intent_digest) is not None
     persisted = _rollback_journal(restarted)
-    with persisted.rollback_authority_recovery():
+    with persisted.rollback_authority_recovery(authority.intent.source_operation_id):
         assert persisted.read_mutation_receipt_for_intent(intent.intent_digest) is not None
         assert persisted.read_mutation_fence_resolution_by_intent(intent.intent_digest) is not None

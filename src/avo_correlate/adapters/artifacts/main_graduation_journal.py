@@ -515,8 +515,8 @@ class MainGraduationJournal:
         self._read_state: ContextVar[_ReadTraversal | None] = ContextVar(
             "main_graduation_journal_read_state", default=None
         )
-        self._historical_rollback_lease_reads: ContextVar[bool] = ContextVar(
-            "main_graduation_historical_rollback_lease_reads", default=False
+        self._historical_rollback_lease_reads: ContextVar[frozenset[str]] = ContextVar(
+            "main_graduation_historical_rollback_lease_reads", default=frozenset()
         )
         if self._policy_epoch is not None:
             _check_digest(self._policy_epoch)
@@ -526,17 +526,19 @@ class MainGraduationJournal:
         return self._root
 
     @contextmanager
-    def rollback_authority_recovery(self) -> Any:
+    def rollback_authority_recovery(self, source_operation_id: str) -> Any:
         """Allow a rollback coordinator to re-read terminal source leases.
 
         A rollback lease necessarily replaces the transient target slot held
         by the completed source operation.  During the coordinator's bounded
-        local authority chain, source completion and composition are still
-        checked by their immutable CAS bytes and injected authority verifier;
-        only the superseded target-slot pointer is skipped.  Ordinary reads
-        retain the target-slot assertion.
+        local authority chain, only that exact source operation's superseded
+        target-slot pointer is skipped.  The active rollback lease and all
+        unrelated leases retain the target-slot assertion.
         """
-        token = self._historical_rollback_lease_reads.set(True)
+        _check_digest(source_operation_id)
+        prior = self._historical_rollback_lease_reads.get()
+        allowed = frozenset({*prior, source_operation_id})
+        token = self._historical_rollback_lease_reads.set(allowed)
         try:
             yield
         finally:
@@ -1305,7 +1307,10 @@ class MainGraduationJournal:
             self._assert_phase_identity(kind, resolution.fence_digest, resolution)
             self._verify_fence_authority(resolution, self._source_receipt(resolution))
         elif kind == "lease-evidence-record":
-            if not self._historical_rollback_lease_reads.get():
+            if (
+                cast(MainLeaseEvidenceRecord, record).operation_id
+                not in self._historical_rollback_lease_reads.get()
+            ):
                 self._assert_target_lease(cast(MainLeaseEvidenceRecord, record))
             self._verify_lease_authority(cast(MainLeaseEvidenceRecord, record))
         elif kind == "claimed-release-transition":
@@ -1364,7 +1369,10 @@ class MainGraduationJournal:
                 self._assert_phase_identity(kind, resolution.fence_digest, resolution)
                 self._verify_fence_authority(resolution, self._source_receipt(resolution))
             elif kind == "lease-evidence-record":
-                if not self._historical_rollback_lease_reads.get():
+                if (
+                    cast(MainLeaseEvidenceRecord, record).operation_id
+                    not in self._historical_rollback_lease_reads.get()
+                ):
                     self._assert_target_lease(cast(MainLeaseEvidenceRecord, record))
                 self._verify_lease_authority(cast(MainLeaseEvidenceRecord, record))
             elif kind == "claimed-release-transition":

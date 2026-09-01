@@ -231,7 +231,7 @@ class MainRollbackAuthority:
             # provider dispatch is authorized by replaying local records.
             recovery = getattr(self.journal, "rollback_authority_recovery", None)
             if callable(recovery):
-                with recovery():
+                with recovery(source_operation_id):
                     prior_intent = self.journal.read_rollback_intent(operation_id)
                     prior_auth = self.journal.read_rollback_authorization(operation_id)
             else:
@@ -286,13 +286,18 @@ class MainRollbackAuthority:
                 recorded_at=authority_at,
             )
             intent_ref = self._record_or_adopt(
-                "rollback-intent", operation_id, intent, self.journal.record_rollback_intent
+                "rollback-intent",
+                operation_id,
+                intent,
+                self.journal.record_rollback_intent,
+                source_operation_id,
             )
             auth_ref = self._record_or_adopt(
                 "rollback-authorization",
                 operation_id,
                 auth,
                 self.journal.record_rollback_authorization,
+                source_operation_id,
             )
             attempt = self._build_attempt(
                 operation_id=operation_id,
@@ -310,6 +315,7 @@ class MainRollbackAuthority:
                 operation_id,
                 attempt,
                 self.journal.record_rollback_attempt_authority,
+                source_operation_id,
             )
             preparation = self._build_preparation(
                 operation_id=operation_id,
@@ -327,6 +333,7 @@ class MainRollbackAuthority:
                 operation_id,
                 preparation,
                 self.journal.record_rollback_preparation_authorization,
+                source_operation_id,
             )
             lease_loaded = self.journal.read_lease_evidence_record(operation_id)
             if lease_loaded is None:
@@ -370,7 +377,7 @@ class MainRollbackAuthority:
     def _source(self, operation_id: Sha256Digest) -> MainCompletionPackage:
         recovery = getattr(self.journal, "rollback_authority_recovery", None)
         if callable(recovery):
-            with recovery():
+            with recovery(operation_id):
                 loaded = self.journal.read_completion(operation_id)
         else:
             loaded = self.journal.read_completion(operation_id)
@@ -407,7 +414,7 @@ class MainRollbackAuthority:
 
         artifact = self._composition(composition, source_operation_id)
         recovery = getattr(self.journal, "rollback_authority_recovery", None)
-        context = recovery() if callable(recovery) else None
+        context = recovery(source_operation_id) if callable(recovery) else None
         if context is None:
             loaded = self.journal.read_rollback_composition(artifact.composition_id)
         else:
@@ -758,6 +765,7 @@ class MainRollbackAuthority:
         operation_id: Sha256Digest,
         record: Any,
         writer: Any,
+        source_operation_id: Sha256Digest,
     ) -> ArtifactRef:
         reader_name = {
             "rollback-intent": "read_rollback_intent",
@@ -773,7 +781,7 @@ class MainRollbackAuthority:
         if callable(reader):
             recovery = getattr(prior, "rollback_authority_recovery", None)
             if callable(recovery):
-                with recovery():
+                with recovery(source_operation_id):
                     existing = reader(operation_id)
             else:
                 existing = reader(operation_id)
@@ -784,7 +792,7 @@ class MainRollbackAuthority:
         try:
             recovery = getattr(prior, "rollback_authority_recovery", None)
             if callable(recovery):
-                with recovery():
+                with recovery(source_operation_id):
                     return cast(ArtifactRef, writer(record))
             return cast(ArtifactRef, writer(record))
         except MainGraduationRecordConflictError as exc:

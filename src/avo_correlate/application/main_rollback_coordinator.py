@@ -17,6 +17,7 @@ must authenticate the result before it is journaled.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any, Literal, cast
@@ -254,6 +255,46 @@ class MainRollbackCoordinator:
         webhook_headers: Mapping[str, str] | None = None,
         pull_request_number: int | None = None,
     ) -> RollbackResult:
+        """Run or recover rollback under its exact source-read authority."""
+        try:
+            recovery = getattr(self.journal, "rollback_authority_recovery", None)
+            if not callable(recovery):
+                raise MainRollbackCoordinatorError(
+                    "journal rollback authority recovery context is missing"
+                )
+            with cast(AbstractContextManager[None], recovery(source_operation_id)):
+                return self._execute_scoped(
+                    source_operation_id,
+                    attempt_nonce=attempt_nonce,
+                    composition=composition,
+                    lease=lease,
+                    group_sha=group_sha,
+                    webhook_body=webhook_body,
+                    webhook_headers=webhook_headers,
+                    pull_request_number=pull_request_number,
+                )
+        except (
+            MainRollbackCoordinatorError,
+            MainRollbackAuthorityError,
+            C4StageExecutionError,
+            MainGraduationJournalError,
+            ValueError,
+            TypeError,
+        ) as exc:
+            return RollbackResult(source_operation_id, "quarantined", reason=str(exc))
+
+    def _execute_scoped(
+        self,
+        source_operation_id: Sha256Digest,
+        *,
+        attempt_nonce: str,
+        composition: Any,
+        lease: MainLeaseEvidenceRecord | None = None,
+        group_sha: str | None = None,
+        webhook_body: bytes | None = None,
+        webhook_headers: Mapping[str, str] | None = None,
+        pull_request_number: int | None = None,
+    ) -> RollbackResult:
         """Run or recover the complete rollback chronology."""
         try:
             authority = self.rollback_authority.prepare(
@@ -287,6 +328,30 @@ class MainRollbackCoordinator:
     resume = execute
 
     def recover_cleanup(
+        self,
+        *,
+        authority: MainRollbackAuthorityResult,
+        result: MainRollbackResultReceipt,
+        cleanup_intent: MainRollbackCleanupIntent,
+    ) -> tuple[
+        MainRollbackCleanupReceipt,
+        MainRollbackCleanupObservation | None,
+        MainRollbackCleanupTerminalEvidence | None,
+    ]:
+        """Recover owned cleanup under its exact source-read authority."""
+        recovery = getattr(self.journal, "rollback_authority_recovery", None)
+        if not callable(recovery):
+            raise MainRollbackCoordinatorError(
+                "journal rollback authority recovery context is missing"
+            )
+        with cast(
+            AbstractContextManager[None], recovery(authority.intent.source_operation_id)
+        ):
+            return self._recover_cleanup_scoped(
+                authority=authority, result=result, cleanup_intent=cleanup_intent
+            )
+
+    def _recover_cleanup_scoped(
         self,
         *,
         authority: MainRollbackAuthorityResult,
