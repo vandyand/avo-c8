@@ -1,7 +1,8 @@
 """Immutable, read-only Phase-1 GitHub C8 diagnostic snapshot.
 
-This adapter is intentionally a very small trust boundary: it has exactly four
-allowlisted GETs and provides no hosted writer or capability operation.
+This adapter is intentionally a very small trust boundary: it has five
+allowlisted GETs, including a final main-ref fence, and provides no hosted
+writer or capability operation.
 """
 
 from __future__ import annotations
