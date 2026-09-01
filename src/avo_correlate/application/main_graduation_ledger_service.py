@@ -27,6 +27,7 @@ from avo_correlate.contracts.main_graduation_ledger import (
     MainLedgerEvidencePackage,
     MainLedgerSubmissionEnvelope,
     MainLedgerTerminalOutcome,
+    MainLedgerUnresolvedTailEntry,
     main_ledger_genesis_state,
 )
 from avo_correlate.contracts.promotion_policy import path_manifest_digest
@@ -437,6 +438,27 @@ class MainGraduationLedgerService:
             raise MainGraduationLedgerJournalError(
                 "boundary expected sequence differs from current ledger state"
             )
+        # Boundary identity is derived from the authoritative sequence index,
+        # never from caller claims.  A present envelope is the first unresolved
+        # tail item; an absent one is the exact starvation shape.
+        unresolved = self._journal.read_submission_by_sequence(sequence)
+        if unresolved is not None:
+            submission = unresolved[0]
+            envelope_identity = {
+                "submission_digest": submission.submission_digest,
+                "operation_id": submission.operation_id,
+                "envelope_digest": submission.envelope_digest,
+                "content_artifact": submission.content_artifact,
+            }
+        else:
+            later_sequences = tuple(
+                item for item in self._journal.list_sequences() if item > sequence
+            )
+            if later_sequences:
+                raise MainGraduationLedgerJournalError(
+                    "missing-envelope boundary has later durable submissions"
+                )
+            envelope_identity = {}
         evidence_values: dict[str, Any] = {
             "activation_digest": active.activation_digest,
             "controller_authority": authority,
@@ -445,6 +467,7 @@ class MainGraduationLedgerService:
             "violation_kind": violation_kind,
             "evidence_artifact": evidence_artifact,
             "detected_at": detected,
+            **envelope_identity,
         }
         evidence = MainLedgerBoundaryViolationEvidence.model_validate(
             {
@@ -513,15 +536,33 @@ class MainGraduationLedgerService:
                 "ledger has not reached a packageable terminal state"
             )
         submissions = self._journal.list_submissions()
-        classifications = tuple(
-            self._required_classification(s.scheduler_sequence) for s in submissions
-        )
+        if status == "boundary_reset":
+            assert evidence_loaded is not None
+            first_unresolved = evidence_loaded[0].expected_scheduler_sequence
+            prefix_submissions = tuple(
+                s for s in submissions if s.scheduler_sequence < first_unresolved
+            )
+            unresolved_submissions = tuple(
+                s for s in submissions if s.scheduler_sequence >= first_unresolved
+            )
+            classifications = tuple(
+                self._required_classification(s.scheduler_sequence) for s in prefix_submissions
+            )
+            unresolved_tail = self._build_unresolved_tail(first_unresolved, unresolved_submissions)
+        else:
+            prefix_submissions = submissions
+            classifications = tuple(
+                self._required_classification(s.scheduler_sequence) for s in prefix_submissions
+            )
+            unresolved_tail = tuple()
         outcomes_list: list[MainLedgerTerminalOutcome] = []
-        for submission, classification in zip(submissions, classifications, strict=True):
+        for submission, classification in zip(prefix_submissions, classifications, strict=True):
             if classification.classification == "eligible":
                 outcomes_list.append(self._required_outcome(submission.scheduler_sequence))
         outcomes = tuple(outcomes_list)
-        transitions = tuple(self._required_transition(s.scheduler_sequence) for s in submissions)
+        transitions = tuple(
+            self._required_transition(s.scheduler_sequence) for s in prefix_submissions
+        )
         final_state = reset_loaded[0].resulting_state if reset_loaded is not None else status_state
         values: dict[str, Any] = {
             "status": status,
@@ -530,6 +571,7 @@ class MainGraduationLedgerService:
             "classifications": list(classifications),
             "outcomes": list(outcomes),
             "transitions": list(transitions),
+            "unresolved_tail": list(unresolved_tail),
             "final_state": final_state,
             "boundary_evidence": evidence_loaded[0] if evidence_loaded is not None else None,
             "terminal_boundary_reset": reset_loaded[0] if reset_loaded is not None else None,
@@ -544,6 +586,58 @@ class MainGraduationLedgerService:
         )
         self._journal.record_package(record)
         return record
+
+    def _build_unresolved_tail(
+        self,
+        first_unresolved: int,
+        submissions: tuple[MainLedgerSubmissionEnvelope, ...],
+    ) -> tuple[MainLedgerUnresolvedTailEntry, ...]:
+        """Copy the durable unresolved suffix into identity-only tail entries.
+
+        Durable envelopes remain in the aggregate's submission inventory.  The
+        tail therefore carries their exact identities without duplicating the
+        envelope bytes.  A missing first envelope is represented explicitly;
+        the journal's boundary verifier guarantees it cannot have a later
+        durable sequence.
+        """
+        entries: list[MainLedgerUnresolvedTailEntry] = []
+        expected = first_unresolved
+        for submission in submissions:
+            if submission.scheduler_sequence != expected:
+                raise MainGraduationLedgerJournalError(
+                    "durable unresolved submissions are not contiguous"
+                )
+            values: dict[str, Any] = {
+                "scheduler_sequence": submission.scheduler_sequence,
+                "submission_digest": submission.submission_digest,
+                "operation_id": submission.operation_id,
+                "envelope_digest": submission.envelope_digest,
+                "content_artifact": submission.content_artifact,
+            }
+            entries.append(
+                MainLedgerUnresolvedTailEntry.model_validate(
+                    {
+                        **values,
+                        "entry_digest": self._digest_model(
+                            MainLedgerUnresolvedTailEntry, values, "entry_digest"
+                        ),
+                    }
+                )
+            )
+            expected += 1
+        if not entries:
+            values = {"scheduler_sequence": first_unresolved}
+            entries.append(
+                MainLedgerUnresolvedTailEntry.model_validate(
+                    {
+                        **values,
+                        "entry_digest": self._digest_model(
+                            MainLedgerUnresolvedTailEntry, values, "entry_digest"
+                        ),
+                    }
+                )
+            )
+        return tuple(entries)
 
     build_package = package
     record_submission = submit

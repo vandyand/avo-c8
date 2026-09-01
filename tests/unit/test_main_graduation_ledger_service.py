@@ -6,7 +6,9 @@ from typing import Any
 
 import pytest
 
+from avo_correlate.adapters.artifacts.filesystem import FilesystemArtifactStore
 from avo_correlate.adapters.artifacts.main_graduation_ledger_journal import (
+    MainGraduationLedgerJournal,
     MainGraduationLedgerJournalError,
 )
 from avo_correlate.application.main_graduation_ledger_service import (
@@ -21,7 +23,7 @@ from avo_correlate.contracts.main_graduation_ledger import (
     TERMINAL_ARTIFACT_ROLE,
 )
 from avo_correlate.domain.canonical import canonical_bytes
-from tests.unit.test_main_graduation_ledger_journal import _journal
+from tests.unit.test_main_graduation_ledger_journal import _journal, _Verifier
 
 NOW = datetime(2026, 9, 1, tzinfo=UTC)
 
@@ -50,6 +52,15 @@ class Classifier:
 
 class Resolver:
     def resolve(self, _artifact: Any) -> object:
+        return b"content"
+
+
+class CountingResolver:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def resolve(self, _artifact: Any) -> object:
+        self.calls += 1
         return b"content"
 
 
@@ -154,6 +165,75 @@ def test_boundary_reset_closes_activation_and_replays_package_read_only(tmp_path
     assert reset.resulting_state.boundary_violations == 1
 
 
+def test_submitted_unclassified_envelope_is_bound_in_boundary_tail_and_replays(
+    tmp_path: Path,
+) -> None:
+    journal, _activation, store = _journal(tmp_path)
+    service = MainGraduationLedgerService(journal, Clock())
+    content = _content(store, 7)
+    submission = service.submit(11, "scheduler", "seven", content.digest, content)
+    boundary_artifact = store.put_bytes(
+        canonical_bytes({"kind": "withholding"}),
+        media_type="application/vnd.avo.ledger-boundary-violation+json",
+        role="ledger-boundary-violation-evidence",
+        max_bytes=1024 * 1024,
+    )
+    evidence, _reset = service.record_boundary_violation("withholding", boundary_artifact)
+    assert (
+        evidence.submission_digest,
+        evidence.operation_id,
+        evidence.envelope_digest,
+        evidence.content_artifact,
+    ) == (
+        submission.submission_digest,
+        submission.operation_id,
+        submission.envelope_digest,
+        submission.content_artifact,
+    )
+    package = service.package()
+    assert package.submissions == [submission]
+    assert len(package.unresolved_tail) == 1
+    tail = package.unresolved_tail[0]
+    assert tail.envelope is None
+    assert (
+        tail.submission_digest,
+        tail.operation_id,
+        tail.envelope_digest,
+        tail.content_artifact,
+    ) == (
+        submission.submission_digest,
+        submission.operation_id,
+        submission.envelope_digest,
+        submission.content_artifact,
+    )
+    fresh_journal = MainGraduationLedgerJournal(
+        tmp_path,
+        _Verifier(),
+        artifact_store=FilesystemArtifactStore(
+            tmp_path / "artifacts", clock=lambda: NOW - timedelta(minutes=1)
+        ),
+    )
+    fresh = MainGraduationLedgerService(fresh_journal, Clock(NOW + timedelta(days=1)))
+    assert fresh.replay() == package
+
+
+def test_missing_envelope_boundary_package_has_explicit_starvation_tail(tmp_path: Path) -> None:
+    journal, _activation, store = _journal(tmp_path)
+    service = MainGraduationLedgerService(journal, Clock())
+    boundary_artifact = store.put_bytes(
+        canonical_bytes({"kind": "starvation"}),
+        media_type="application/vnd.avo.ledger-boundary-violation+json",
+        role="ledger-boundary-violation-evidence",
+        max_bytes=1024 * 1024,
+    )
+    evidence, _reset = service.record_boundary_violation("starvation", boundary_artifact)
+    package = service.package()
+    assert evidence.submission_digest is None
+    assert len(package.unresolved_tail) == 1
+    assert package.unresolved_tail[0].scheduler_sequence == evidence.expected_scheduler_sequence
+    assert not package.unresolved_tail[0].has_envelope_identity
+
+
 def test_fresh_callers_cannot_supply_mutation_timestamps(tmp_path: Path) -> None:
     journal, _activation, store = _journal(tmp_path)
     clock = Clock()
@@ -209,7 +289,8 @@ def test_crash_after_outcome_adopts_durable_record_after_expiry(tmp_path: Path) 
 def test_crash_after_boundary_evidence_derives_missing_reset_after_expiry(tmp_path: Path) -> None:
     journal, _activation, store = _journal(tmp_path)
     clock = Clock()
-    service = MainGraduationLedgerService(journal, clock)
+    resolver = CountingResolver()
+    service = MainGraduationLedgerService(journal, clock, resolver, Classifier())
     evidence = store.put_bytes(
         canonical_bytes({"kind": "withholding"}),
         media_type="application/vnd.avo.ledger-boundary-violation+json",
@@ -228,6 +309,7 @@ def test_crash_after_boundary_evidence_derives_missing_reset_after_expiry(tmp_pa
     clock.value = NOW + timedelta(days=1)
     _, reset = service.record_boundary_violation("withholding", evidence)
     assert reset.resulting_state.boundary_violations == 1
+    assert resolver.calls == 0
 
 
 def test_mixed_case_paths_use_shared_policy_manifest_digest(tmp_path: Path) -> None:
