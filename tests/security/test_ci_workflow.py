@@ -1,8 +1,7 @@
 """Static security guardrails for required CI validation events."""
 
-from pathlib import Path
 import re
-
+from pathlib import Path
 
 WORKFLOW = Path(__file__).parents[2] / ".github" / "workflows" / "ci.yml"
 
@@ -13,7 +12,11 @@ def _workflow_text() -> str:
 
 def test_required_validation_events_and_read_only_permissions() -> None:
     text = _workflow_text()
-    assert re.search(r"^on:\n  pull_request:\n  merge_group:\n    types: \[checks_requested\]", text, re.MULTILINE)
+    assert re.search(
+        r"^on:\n  pull_request:\n  merge_group:\n    types: \[checks_requested\]",
+        text,
+        re.MULTILINE,
+    )
     assert re.search(r"^permissions:\n  contents: read\n", text, re.MULTILINE)
     assert "workflow_dispatch" not in text
     assert "avo-main-release" not in text
@@ -25,7 +28,11 @@ def test_required_validation_events_and_read_only_permissions() -> None:
 
 def test_validation_jobs_checkout_exact_event_sha() -> None:
     text = _workflow_text()
-    assert "ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}" in text
+    assert (
+        "ref: ${{ github.event_name == 'pull_request' && "
+        "github.event.pull_request.head.sha || github.sha }}"
+        in text
+    )
     assert "ref: ${{ github.sha }}" in text
     assert "actions/checkout@v4" not in text
     assert "astral-sh/setup-uv@v6" not in text
