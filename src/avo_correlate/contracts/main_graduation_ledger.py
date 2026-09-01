@@ -192,6 +192,12 @@ class MainLedgerActivation(StrictModel):
     c8_capability_evidence_digest: Sha256Digest
     activated_at: datetime
     activation_digest: Sha256Digest
+    # Optional for legacy offline/C7 activation records.  Hosted activation
+    # requires this to bind the raw proof record separately from the
+    # completion-package digest carried by ``hosted_rollback_artifact_digest``.
+    hosted_rollback_raw_artifact_digest: Sha256Digest | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     deploy_performed: Literal[False] = False
 
     _aware_activated_at = field_validator("activated_at")(_aware)
@@ -230,6 +236,12 @@ class MainLedgerActivation(StrictModel):
             or not self.freshness_cutoff <= proof.completed_at <= self.activated_at
         ):
             raise ValueError("activation hosted rollback proof is not fresh and authority-bound")
+        if (
+            self.hosted_rollback_raw_artifact_digest is not None
+            and self.hosted_rollback_raw_artifact_digest
+            == self.hosted_rollback_artifact_digest
+        ):
+            raise ValueError("raw hosted rollback artifact must differ from completion artifact")
         capability = self.c8_capability_evidence
         if (
             capability.evidence_digest != self.c8_capability_evidence_digest
@@ -239,9 +251,15 @@ class MainLedgerActivation(StrictModel):
             or not self.freshness_cutoff <= capability.observed_at <= self.activated_at
         ):
             raise ValueError("activation C8 capability evidence is not authority-bound")
-        if self.activation_digest != canonical_digest(
+        expected_digest = canonical_digest(
             self.model_dump(exclude={"activation_digest"}, mode="json")
-        ):
+        )
+        # The raw-proof binding was added after v2 activation records had
+        # already been written.  ``exclude_if`` keeps an absent binding out
+        # of canonical wire bytes, preserving those old activation digests;
+        # a present binding is always included and therefore cannot be
+        # changed while retaining the old activation digest.
+        if self.activation_digest != expected_digest:
             raise ValueError("ledger activation digest mismatch")
         if self.initial_streak != 0 or self.threshold != 12:
             raise ValueError("ledger activation must start at streak zero with threshold 12")
