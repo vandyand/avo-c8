@@ -11,7 +11,8 @@ import binascii
 import hashlib
 import re
 from collections.abc import Callable, Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from threading import Lock
 from typing import Literal, NoReturn, cast
 from urllib.parse import quote
 
@@ -49,8 +50,8 @@ class C8GitHubSnapshotAdapter:
         token: str,
         transport: Callable[[str, str, JsonBody | None, Mapping[str, str]], tuple[int, JsonValue]]
         | None = None,
-        observed_at: datetime | None = None,
-        freshness_cutoff: datetime | None = None,
+        clock: Callable[[], datetime] | None = None,
+        freshness_window: timedelta = timedelta(minutes=5),
         api_origin: str = "https://api.github.com",
     ) -> None:
         if not token:
@@ -68,25 +69,18 @@ class C8GitHubSnapshotAdapter:
             raise ValueError("workflow path is not allowlisted")
         if workflow_path.endswith("/"):
             raise ValueError("workflow path is not allowlisted")
-        now = observed_at or datetime.now(UTC)
-        cutoff = freshness_cutoff or now
-        if (
-            now.tzinfo is None
-            or now.utcoffset() is None
-            or cutoff.tzinfo is None
-            or cutoff.utcoffset() is None
-        ):
-            raise ValueError("observation timestamps must be timezone-aware")
-        if now < cutoff:
-            raise ValueError("observation is stale")
+        if freshness_window <= timedelta(0):
+            raise ValueError("freshness window must be positive")
         if api_origin.rstrip("/") != "https://api.github.com":
             raise ValueError("GitHub API origin must be exact")
         self.owner, self.repo, self.workflow_path = owner, repo, workflow_path
         self._token = token  # retained only for request headers; never serialized
-        self._observed_at, self._freshness_cutoff = now, cutoff
+        self._clock = clock or (lambda: datetime.now(UTC))
+        self._freshness_window = freshness_window
         self._transport = transport or GitHubJsonTransport(origin=api_origin)
         self._captured: tuple[C8RepositoryRead, C8WorkflowRead] | None = None
         self._binding: C8ObservationBinding | None = None
+        self._capture_lock = Lock()
 
     @staticmethod
     def _validate_repo_part(value: str, label: str) -> None:
@@ -130,7 +124,16 @@ class C8GitHubSnapshotAdapter:
     def capture(self) -> tuple[C8RepositoryRead, C8WorkflowRead]:
         if self._captured is not None:
             return self._captured
+        with self._capture_lock:
+            if self._captured is not None:
+                return self._captured
+            return self._capture_locked()
+
+    def _capture_locked(self) -> tuple[C8RepositoryRead, C8WorkflowRead]:
         base = f"/repos/{quote(self.owner, safe='')}/{quote(self.repo, safe='')}"
+        started = self._clock()
+        if started.tzinfo is None or started.utcoffset() is None:
+            raise ValueError("clock must return a timezone-aware timestamp")
         repository_raw = self._obj(self._get(base))
         full_name = self._string(repository_raw, "full_name")
         if full_name != f"{self.owner}/{self.repo}":
@@ -173,6 +176,8 @@ class C8GitHubSnapshotAdapter:
         ):
             raise C8SnapshotUnverifiable()
         content = self._string(workflow_raw, "content").replace("\n", "")
+        if workflow_raw.get("encoding") != "base64":
+            raise C8SnapshotUnverifiable()
         content_sha = self._string(workflow_raw, "sha")
         if not _OBJECT.fullmatch(content_sha):
             raise C8SnapshotUnverifiable()
@@ -180,6 +185,18 @@ class C8GitHubSnapshotAdapter:
             data = base64.b64decode(content, validate=True)
         except (ValueError, binascii.Error):
             raise C8SnapshotUnverifiable() from None
+        size = workflow_raw.get("size")
+        if size is not None and (
+            isinstance(size, bool) or not isinstance(size, int) or size != len(data)
+        ):
+            raise C8SnapshotUnverifiable()
+        blob_header = f"blob {len(data)}\0".encode() + data
+        if len(content_sha) == 40:
+            expected_sha = hashlib.sha1(blob_header).hexdigest()
+        else:
+            expected_sha = hashlib.sha256(blob_header).hexdigest()
+        if content_sha != expected_sha:
+            raise C8SnapshotUnverifiable()
         workflow_digest = "sha256:" + hashlib.sha256(data).hexdigest()
         source = canonical_digest(
             {
@@ -191,16 +208,34 @@ class C8GitHubSnapshotAdapter:
                     "sha": content_sha,
                     "content_digest": workflow_digest,
                 },
-                "observed_at": self._observed_at.isoformat(),
-                "freshness_cutoff": self._freshness_cutoff.isoformat(),
+            }
+        )
+        finished = self._clock()
+        if finished.tzinfo is None or finished.utcoffset() is None:
+            raise ValueError("clock must return a timezone-aware timestamp")
+        freshness_cutoff = finished - self._freshness_window
+        # Final fence: the ref must not move while the workflow was read.
+        final_ref = self._obj(self._get(base + "/git/ref/heads/main"))
+        final_object = self._obj(final_ref.get("object"))
+        if (
+            self._string(final_ref, "ref") != "refs/heads/main"
+            or final_object.get("type") != "commit"
+            or self._string(final_object, "sha") != commit
+        ):
+            raise C8SnapshotUnverifiable()
+        source = canonical_digest(
+            {
+                "responses": source,
+                "observed_at": finished.isoformat(),
+                "freshness_cutoff": freshness_cutoff.isoformat(),
             }
         )
         binding = C8ObservationBinding(
             repository_digest=github_repository_digest(self.owner, self.repo),
             configuration_epoch=source,
             source_observation_digest=source,
-            observed_at=self._observed_at,
-            freshness_cutoff=self._freshness_cutoff,
+            observed_at=finished,
+            freshness_cutoff=freshness_cutoff,
         )
         repo_read = C8RepositoryRead(
             binding=binding,
@@ -212,7 +247,7 @@ class C8GitHubSnapshotAdapter:
             main_parents=parents,
         )
         try:
-            text = data.decode("utf-8", errors="strict")
+            data.decode("utf-8", errors="strict")
         except UnicodeDecodeError:
             raise C8SnapshotUnverifiable() from None
         policy = canonical_digest(
@@ -222,28 +257,15 @@ class C8GitHubSnapshotAdapter:
                 "content_digest": workflow_digest,
             }
         )
-        identity = canonical_digest({"workflow_digest": workflow_digest})
-        checkout_blocks = re.findall(
-            r"(?ms)^\s*-?\s*uses:\s*actions/checkout@[^\n]+(?P<body>.*?)(?=^\s*-?\s*uses:|\Z)",
-            text,
-        )
-        exact_checkout = bool(checkout_blocks) and all(
-            re.search(
-                r"(?m)^\s*ref\s*:\s*(?:\$\{\{\s*github\.sha\s*\}\}|[0-9a-f]{40})\s*$",
-                block,
-            )
-            is not None
-            for block in checkout_blocks
-        )
         workflow_read = C8WorkflowRead(
             binding=binding,
             path=self.workflow_path,
             workflow_digest=workflow_digest,
             policy_digest=policy,
-            validation_check_identity_digest=identity,
-            pull_request_event=bool(re.search(r"(?m)^\s*pull_request\s*:", text)),
-            merge_group_event=bool(re.search(r"(?m)^\s*merge_group\s*:", text)),
-            exact_sha_checkout=exact_checkout,
+            validation_check_identity_digest=None,
+            pull_request_event=None,
+            merge_group_event=None,
+            exact_sha_checkout=None,
         )
         self._binding, self._captured = binding, (repo_read, workflow_read)
         return self._captured

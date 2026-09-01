@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 from datetime import UTC, datetime
 from typing import Any
 
@@ -36,7 +37,9 @@ def responses(
     content: str | None = None,
     content_sha: str = PARENT,
 ) -> dict[str, Any]:
-    encoded = base64.b64encode(CONTENT if content is None else content.encode()).decode()
+    raw_content = CONTENT if content is None else content.encode()
+    encoded = base64.b64encode(raw_content).decode()
+    blob_sha = hashlib.sha1(f"blob {len(raw_content)}\0".encode() + raw_content).hexdigest()
     return {
         "/repos/avo-org/avo": {"full_name": full_name, "owner": {"type": "Organization"}},
         "/repos/avo-org/avo/git/ref/heads/main": {
@@ -51,8 +54,10 @@ def responses(
         f"/repos/avo-org/avo/contents/.github/workflows/validation.yml?ref={COMMIT}": {
             "path": ".github/workflows/validation.yml",
             "type": "file",
-            "sha": content_sha,
+            "sha": blob_sha if content_sha == PARENT else content_sha,
             "content": encoded,
+            "encoding": "base64",
+            "size": len(raw_content),
         },
     }
 
@@ -81,7 +86,7 @@ def adapter(transport: Any, **kwargs: Any) -> C8GitHubSnapshotAdapter:
         workflow_path=".github/workflows/validation.yml",
         token="injected-secret",
         transport=transport,
-        observed_at=NOW,
+        clock=lambda: NOW,
         **kwargs,
     )
 
@@ -95,6 +100,7 @@ def test_capture_uses_exact_four_gets_and_replays_without_network() -> None:
         ("GET", "/repos/avo-org/avo/git/ref/heads/main", None),
         ("GET", f"/repos/avo-org/avo/git/commits/{COMMIT}", None),
         ("GET", f"/repos/avo-org/avo/contents/.github/workflows/validation.yml?ref={COMMIT}", None),
+        ("GET", "/repos/avo-org/avo/git/ref/heads/main", None),
     ]
     assert all(call[3]["Authorization"] == "Bearer injected-secret" for call in fake.calls)
     first = (repository.model_dump(mode="json"), workflow.model_dump(mode="json"))
@@ -103,7 +109,7 @@ def test_capture_uses_exact_four_gets_and_replays_without_network() -> None:
         subject.observe_repository().model_dump(mode="json"),
         subject.observe_workflow().model_dump(mode="json"),
     ) == first
-    assert len(fake.calls) == 4
+    assert len(fake.calls) == 5
 
 
 def test_snapshot_binding_is_common_fresh_and_deterministic() -> None:

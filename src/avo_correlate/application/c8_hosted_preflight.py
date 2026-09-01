@@ -163,13 +163,19 @@ class C8HostedPreflightService:
                 or workflow.validation_check_identity_digest is None
             ):
                 unverifiable.append("workflow_binding_incomplete")
-            if workflow.pull_request_event and workflow.merge_group_event:
+            if (
+                workflow.pull_request_event is None
+                or workflow.merge_group_event is None
+                or workflow.exact_sha_checkout is None
+            ):
+                unverifiable.append("workflow_semantics_unverifiable")
+            elif workflow.pull_request_event and workflow.merge_group_event:
                 passed.append("workflow_events_required")
             else:
                 blockers.append("workflow_events_incomplete")
-            if workflow.exact_sha_checkout:
+            if workflow.exact_sha_checkout is True:
                 passed.append("workflow_exact_sha_checkout")
-            else:
+            elif workflow.exact_sha_checkout is False:
                 blockers.append("workflow_exact_sha_checkout_missing")
 
         validation = self._read(

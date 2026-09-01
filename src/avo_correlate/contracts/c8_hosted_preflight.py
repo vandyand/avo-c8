@@ -92,9 +92,11 @@ class C8WorkflowRead(StrictModel):
     workflow_digest: Sha256Digest | None = None
     policy_digest: Sha256Digest | None = None
     validation_check_identity_digest: Sha256Digest | None = None
-    pull_request_event: StrictBool
-    merge_group_event: StrictBool
-    exact_sha_checkout: StrictBool
+    # ``None`` means the adapter intentionally could not complete semantic
+    # workflow analysis; it must never be interpreted as a negative assertion.
+    pull_request_event: StrictBool | None
+    merge_group_event: StrictBool | None
+    exact_sha_checkout: StrictBool | None
 
 
 class C8ValidationIdentityRead(StrictModel):
