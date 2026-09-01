@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import io
+import warnings
+from contextlib import redirect_stderr
 from datetime import UTC, datetime
 from typing import Any
 
@@ -216,9 +219,63 @@ def test_model_construct_string_boolean_is_revalidated() -> None:
         bypass_allowed=False,
         direct_merge_allowed=False,
     )
-    report = C8HostedPreflightService(observer).run()
+    with warnings.catch_warnings(record=True) as emitted:
+        warnings.simplefilter("always")
+        report = C8HostedPreflightService(observer).run()
     assert report.result == "unverifiable"
     assert "protection_read_unverifiable" in report.unverifiable_codes
+    assert emitted == []
+
+
+def test_model_construct_numeric_strings_are_revalidated_without_warning() -> None:
+    observer = Observer()
+    observer.observe_queue_configuration = lambda: C8QueueConfigurationRead.model_construct(  # type: ignore[method-assign]
+        binding=BINDING,
+        available=True,
+        maximum_entries_to_merge="1",
+        maximum_entries_to_build=1,
+        merge_method="squash",
+        merging_strategy="allgreen",
+    )
+    with warnings.catch_warnings(record=True) as emitted:
+        warnings.simplefilter("always")
+        report = C8HostedPreflightService(observer).run()
+    assert report.result == "unverifiable"
+    assert "queue_configuration_read_unverifiable" in report.unverifiable_codes
+    assert emitted == []
+
+
+def test_model_construct_issuer_numeric_string_is_revalidated() -> None:
+    observer = Observer()
+    observer.observe_isolated_issuer = lambda: C8IsolatedIssuerRead.model_construct(  # type: ignore[method-assign]
+        binding=BINDING,
+        available=True,
+        identity="issuer",
+        app_id="42",
+        isolation_digest=DIGEST,
+    )
+    report = C8HostedPreflightService(observer).run()
+    assert report.result == "unverifiable"
+    assert "isolated_issuer_read_unverifiable" in report.unverifiable_codes
+
+
+def test_malformed_expected_binding_does_not_leak_canary() -> None:
+    canary = "expected-binding-secret-canary"
+    values = BINDING.model_dump()
+    values["configuration_epoch"] = canary
+    values["observed_at"] = "not-a-date"
+    malformed = C8ObservationBinding.model_construct(**values)
+    stderr = io.StringIO()
+    with warnings.catch_warnings(record=True) as emitted, redirect_stderr(stderr):
+        warnings.simplefilter("always")
+        with pytest.raises(ValueError) as error:
+            C8HostedPreflightService(Observer(), expected_binding=malformed)
+    assert str(error.value) == "invalid expected observation binding"
+    assert error.value.__cause__ is None
+    assert error.value.__context__ is None
+    assert emitted == []
+    assert canary not in str(error.value)
+    assert canary not in stderr.getvalue()
 
 
 def test_mixed_or_stale_snapshot_is_unverifiable() -> None:

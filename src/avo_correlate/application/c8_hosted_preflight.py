@@ -44,7 +44,11 @@ class HostedC8PreflightReadOnly(Protocol):
 
 
 class C8HostedPreflightService:
-    """Classify authenticated reads without creating authority or state."""
+    """Classify diagnostic reads without creating authority or state.
+
+    A future adapter may authenticate the reads.  This pure service does not,
+    and its report therefore never establishes hosted readiness.
+    """
 
     _ISOLATED_ISSUER_MISSING: Final[str] = "isolated_release_issuer_missing"
 
@@ -54,11 +58,18 @@ class C8HostedPreflightService:
         expected_binding: C8ObservationBinding | None = None,
     ) -> None:
         self._observer = observer
-        self._expected_binding = (
-            None
-            if expected_binding is None
-            else C8ObservationBinding.model_validate(expected_binding.model_dump(mode="json"))
-        )
+        invalid_binding = False
+        checked_binding: C8ObservationBinding | None = None
+        try:
+            if expected_binding is not None:
+                checked_binding = C8ObservationBinding.model_validate(
+                    expected_binding.model_dump(mode="json", warnings="error")
+                )
+        except Exception:
+            invalid_binding = True
+        if invalid_binding:
+            raise ValueError("invalid expected observation binding")
+        self._expected_binding = checked_binding
 
     def run(self) -> HostedC8PreflightReport:
         passed: list[str] = []
@@ -257,7 +268,7 @@ class C8HostedPreflightService:
             unverifiable.append(f"{name}_read_unverifiable")
             return None
         try:
-            checked = expected_type.model_validate(value.model_dump(mode="json"))
+            checked = expected_type.model_validate(value.model_dump(mode="json", warnings="error"))
         except Exception:
             unverifiable.append(f"{name}_read_unverifiable")
             return None

@@ -8,17 +8,18 @@ authority, activation, or rollback proof.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import Field, StrictBool, model_validator
+from pydantic import Field, StrictBool, StrictInt, model_validator
 
 from avo_correlate.contracts.base import (
     NonEmptyString,
-    PositiveInt,
     Sha256Digest,
     StrictModel,
 )
 from avo_correlate.domain.canonical import canonical_digest
+
+StrictPositiveInt = Annotated[StrictInt, Field(gt=0)]
 
 
 class C8ObservationBinding(StrictModel):
@@ -60,7 +61,7 @@ class C8ProtectionRead(StrictModel):
 
     binding: C8ObservationBinding | None = None
     effective: StrictBool
-    ruleset_ids: list[PositiveInt] = Field(min_length=0)
+    ruleset_ids: list[StrictPositiveInt] = Field(min_length=0)
     queue_required: StrictBool
     bypass_allowed: StrictBool
     direct_merge_allowed: StrictBool
@@ -77,8 +78,8 @@ class C8QueueConfigurationRead(StrictModel):
 
     binding: C8ObservationBinding | None = None
     available: StrictBool
-    maximum_entries_to_merge: PositiveInt | None = None
-    maximum_entries_to_build: PositiveInt | None = None
+    maximum_entries_to_merge: StrictPositiveInt | None = None
+    maximum_entries_to_build: StrictPositiveInt | None = None
     merge_method: NonEmptyString | None = None
     merging_strategy: NonEmptyString | None = None
 
@@ -114,7 +115,7 @@ class C8IsolatedIssuerRead(StrictModel):
     binding: C8ObservationBinding | None = None
     available: StrictBool
     identity: NonEmptyString | None = None
-    app_id: PositiveInt | None = None
+    app_id: StrictPositiveInt | None = None
     isolation_digest: Sha256Digest | None = None
 
     @model_validator(mode="after")
