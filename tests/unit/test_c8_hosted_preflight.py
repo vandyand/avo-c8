@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -11,6 +12,7 @@ from avo_correlate.application.c8_hosted_preflight import (
 )
 from avo_correlate.contracts.c8_hosted_preflight import (
     C8IsolatedIssuerRead,
+    C8ObservationBinding,
     C8ProtectionRead,
     C8QueueConfigurationRead,
     C8RepositoryRead,
@@ -27,12 +29,19 @@ from avo_correlate.contracts.main_graduation_ledger import (
 from avo_correlate.domain.canonical import canonical_digest
 
 DIGEST = "sha256:" + "a" * 64
+BINDING = C8ObservationBinding(
+    repository_digest=DIGEST,
+    configuration_epoch="epoch-1",
+    source_observation_digest=DIGEST,
+    observed_at=datetime(2026, 1, 1, tzinfo=UTC),
+    freshness_cutoff=datetime(2026, 1, 1, tzinfo=UTC),
+)
 
 
 class Observer:
     def observe_repository(self) -> C8RepositoryRead:
         return C8RepositoryRead(
-            repository_digest=DIGEST,
+            binding=BINDING,
             owner="avo-org",
             repo="avo",
             owner_type="Organization",
@@ -44,6 +53,7 @@ class Observer:
     def observe_protection(self) -> C8ProtectionRead:
         return C8ProtectionRead(
             effective=True,
+            binding=BINDING,
             ruleset_ids=[1],
             queue_required=True,
             bypass_allowed=False,
@@ -52,6 +62,7 @@ class Observer:
 
     def observe_queue_configuration(self) -> C8QueueConfigurationRead:
         return C8QueueConfigurationRead(
+            binding=BINDING,
             available=True,
             maximum_entries_to_merge=1,
             maximum_entries_to_build=1,
@@ -61,28 +72,33 @@ class Observer:
 
     def observe_workflow(self) -> C8WorkflowRead:
         return C8WorkflowRead(
+            binding=BINDING,
             path=".github/workflows/validation.yml",
+            workflow_digest=DIGEST,
+            policy_digest=DIGEST,
+            validation_check_identity_digest=DIGEST,
             pull_request_event=True,
             merge_group_event=True,
             exact_sha_checkout=True,
         )
 
     def observe_validation_identity(self) -> C8ValidationIdentityRead:
-        return C8ValidationIdentityRead(app_id=15368, identity="github-app-15368")
+        return C8ValidationIdentityRead(binding=BINDING, app_id=15368, identity="github-app-15368")
 
     def observe_rollback_namespace(self) -> C8RollbackNamespaceRead:
         return C8RollbackNamespaceRead(
+            binding=BINDING,
             namespace="refs/heads/avo/main-rollback/*",
-            exclusive=True,
-            deletion_protected=True,
-            bypass_allowed=False,
-            exclusive_controller_write=True,
+            controller_exclusive_create_write=True,
             controller_delete_authorized=True,
-            other_delete_denied=True,
+            non_controller_create_denied=True,
+            non_controller_delete_denied=True,
+            bypass_allowed=False,
         )
 
     def observe_isolated_issuer(self) -> C8IsolatedIssuerRead:
         return C8IsolatedIssuerRead(
+            binding=BINDING,
             available=True,
             identity="isolated-release",
             app_id=42,
@@ -94,13 +110,15 @@ def test_report_is_deterministic_and_sorted() -> None:
     first = C8HostedPreflightService(Observer()).run()
     second = C8HostedPreflightService(Observer()).run()
 
-    assert first.result == "pass"
+    assert first.result == "no_detected_configuration_blocker"
     assert first.model_dump(mode="json") == second.model_dump(mode="json")
     assert first.report_digest == canonical_digest(
         first.model_dump(exclude={"report_digest"}, mode="json")
     )
     assert list(first.observation_digests) == sorted(first.observation_digests)
     assert first.authority_consumable is False
+    assert first.authoritative is False
+    assert first.readiness_established is False
 
 
 @pytest.mark.parametrize("method", ["observe_repository", "observe_protection", "observe_workflow"])
@@ -120,8 +138,12 @@ def test_missing_or_error_read_is_unverifiable(method: str) -> None:
 
 def test_incomplete_queue_and_issuer_fail_closed() -> None:
     observer = Observer()
-    observer.observe_queue_configuration = lambda: C8QueueConfigurationRead(available=True)  # type: ignore[method-assign]
-    observer.observe_isolated_issuer = lambda: C8IsolatedIssuerRead(available=False)  # type: ignore[method-assign]
+    observer.observe_queue_configuration = lambda: C8QueueConfigurationRead(
+        binding=BINDING, available=True
+    )  # type: ignore[method-assign]
+    observer.observe_isolated_issuer = lambda: C8IsolatedIssuerRead(
+        binding=BINDING, available=False
+    )  # type: ignore[method-assign]
     report = C8HostedPreflightService(observer).run()
     assert report.result == "blocked"
     assert "merge_queue_configuration_invalid" in report.blocker_codes
@@ -131,10 +153,10 @@ def test_incomplete_queue_and_issuer_fail_closed() -> None:
 def test_validation_identity_mismatch_and_issuer_incomplete_are_fail_closed() -> None:
     observer = Observer()
     observer.observe_validation_identity = lambda: C8ValidationIdentityRead(  # type: ignore[method-assign]
-        app_id=None, identity=None
+        binding=BINDING, app_id=None, identity=None
     )
     observer.observe_isolated_issuer = lambda: C8IsolatedIssuerRead(  # type: ignore[method-assign]
-        available=True, identity="issuer", app_id=42, isolation_digest=None
+        binding=BINDING, available=True, identity="issuer", app_id=42, isolation_digest=None
     )
     report = C8HostedPreflightService(observer).run()
     assert report.result == "blocked"
@@ -170,11 +192,67 @@ def test_strict_models_reject_extras_and_forged_digest() -> None:
             exact_sha_checkout=True,
             secret="must not cross boundary",  # type: ignore[call-arg]
         )
+    with pytest.raises(ValidationError):
+        C8RollbackNamespaceRead(
+            binding=BINDING,
+            namespace="refs/heads/avo/main-rollback/*",
+            bypass_allowed=False,
+            deletion_protected=True,  # type: ignore[call-arg]
+        )
     report = C8HostedPreflightService(Observer()).run()
     with pytest.raises(ValidationError):
         HostedC8PreflightReport.model_validate(
             {**report.model_dump(mode="json"), "report_digest": DIGEST}
         )
+
+
+def test_model_construct_string_boolean_is_revalidated() -> None:
+    observer = Observer()
+    observer.observe_protection = lambda: C8ProtectionRead.model_construct(  # type: ignore[method-assign]
+        binding=BINDING,
+        effective="true",
+        ruleset_ids=[1],
+        queue_required=True,
+        bypass_allowed=False,
+        direct_merge_allowed=False,
+    )
+    report = C8HostedPreflightService(observer).run()
+    assert report.result == "unverifiable"
+    assert "protection_read_unverifiable" in report.unverifiable_codes
+
+
+def test_mixed_or_stale_snapshot_is_unverifiable() -> None:
+    observer = Observer()
+    other_binding = BINDING.model_copy(update={"configuration_epoch": "epoch-2"})
+    observer.observe_workflow = lambda: C8WorkflowRead(  # type: ignore[method-assign]
+        binding=other_binding,
+        path="workflow",
+        workflow_digest=DIGEST,
+        policy_digest=DIGEST,
+        validation_check_identity_digest=DIGEST,
+        pull_request_event=True,
+        merge_group_event=True,
+        exact_sha_checkout=True,
+    )
+    report = C8HostedPreflightService(observer).run()
+    assert report.result == "unverifiable"
+    assert "observation_snapshot_mismatch" in report.unverifiable_codes
+
+    stale_values = BINDING.model_dump()
+    stale_values["observed_at"] = datetime(2025, 12, 31, tzinfo=UTC)
+    stale = BINDING.model_construct(**stale_values)
+    observer.observe_workflow = lambda: C8WorkflowRead(  # type: ignore[method-assign]
+        binding=stale,
+        path="workflow",
+        workflow_digest=DIGEST,
+        policy_digest=DIGEST,
+        validation_check_identity_digest=DIGEST,
+        pull_request_event=True,
+        merge_group_event=True,
+        exact_sha_checkout=True,
+    )
+    report = C8HostedPreflightService(observer).run()
+    assert "workflow_read_unverifiable" in report.unverifiable_codes
 
 
 def test_report_is_not_activation_or_capability_evidence() -> None:
@@ -185,3 +263,21 @@ def test_report_is_not_activation_or_capability_evidence() -> None:
         MainLedgerC8CapabilityEvidence.model_validate(payload)
     with pytest.raises(ValidationError):
         MainValidationIdentity.model_validate(payload)
+
+
+def test_report_rejects_removed_pass_result() -> None:
+    with pytest.raises(ValidationError):
+        HostedC8PreflightReport.model_validate(
+            {
+                "schema_version": 1,
+                "result": "pass",
+                "passed_codes": [],
+                "blocker_codes": [],
+                "unverifiable_codes": [],
+                "observation_digests": {},
+                "authority_consumable": False,
+                "authoritative": False,
+                "readiness_established": False,
+                "report_digest": DIGEST,
+            }
+        )

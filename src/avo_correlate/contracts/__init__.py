@@ -5,6 +5,7 @@ from avo_correlate.contracts.budgets import BudgetSpec, UsageRecord
 from avo_correlate.contracts.c8_hosted_preflight import (
     C8HostedPreflightReport,
     C8IsolatedIssuerRead,
+    C8ObservationBinding,
     C8ProtectionRead,
     C8QueueConfigurationRead,
     C8RepositoryRead,
@@ -258,6 +259,7 @@ __all__ = [
     "BudgetSpec",
     "C8HostedPreflightReport",
     "C8IsolatedIssuerRead",
+    "C8ObservationBinding",
     "C8ProtectionRead",
     "C8QueueConfigurationRead",
     "C8RepositoryRead",

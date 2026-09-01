@@ -7,9 +7,10 @@ authority, activation, or rollback proof.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, StrictBool, model_validator
 
 from avo_correlate.contracts.base import (
     NonEmptyString,
@@ -20,14 +21,35 @@ from avo_correlate.contracts.base import (
 from avo_correlate.domain.canonical import canonical_digest
 
 
+class C8ObservationBinding(StrictModel):
+    """Scope/freshness facts shared by every diagnostic observation."""
+
+    repository_digest: Sha256Digest
+    target_ref: Literal["refs/heads/main"] = "refs/heads/main"
+    configuration_epoch: NonEmptyString
+    source_observation_digest: Sha256Digest
+    observed_at: datetime
+    freshness_cutoff: datetime
+
+    @model_validator(mode="after")
+    def timestamps_and_freshness(self) -> C8ObservationBinding:
+        if any(
+            v.tzinfo is None or v.utcoffset() is None
+            for v in (self.observed_at, self.freshness_cutoff)
+        ):
+            raise ValueError("observation timestamps must be timezone-aware")
+        if self.observed_at < self.freshness_cutoff:
+            raise ValueError("observation is stale")
+        return self
+
+
 class C8RepositoryRead(StrictModel):
     """Authenticated repository and immutable protected-main topology read."""
 
-    repository_digest: Sha256Digest
+    binding: C8ObservationBinding | None = None
     owner: NonEmptyString
     repo: NonEmptyString
     owner_type: Literal["Organization", "User", "Bot", "Unknown"]
-    target_ref: Literal["refs/heads/main"] = "refs/heads/main"
     main_commit: NonEmptyString
     main_tree: NonEmptyString
     main_parents: list[NonEmptyString] = Field(min_length=0)
@@ -36,11 +58,12 @@ class C8RepositoryRead(StrictModel):
 class C8ProtectionRead(StrictModel):
     """Sanitized effective protection/ruleset configuration."""
 
-    effective: bool
+    binding: C8ObservationBinding | None = None
+    effective: StrictBool
     ruleset_ids: list[PositiveInt] = Field(min_length=0)
-    queue_required: bool
-    bypass_allowed: bool
-    direct_merge_allowed: bool
+    queue_required: StrictBool
+    bypass_allowed: StrictBool
+    direct_merge_allowed: StrictBool
 
     @model_validator(mode="after")
     def rulesets_are_canonical(self) -> C8ProtectionRead:
@@ -52,7 +75,8 @@ class C8ProtectionRead(StrictModel):
 class C8QueueConfigurationRead(StrictModel):
     """Merge-queue availability and configuration, without queue state."""
 
-    available: bool
+    binding: C8ObservationBinding | None = None
+    available: StrictBool
     maximum_entries_to_merge: PositiveInt | None = None
     maximum_entries_to_build: PositiveInt | None = None
     merge_method: NonEmptyString | None = None
@@ -62,15 +86,20 @@ class C8QueueConfigurationRead(StrictModel):
 class C8WorkflowRead(StrictModel):
     """Workflow/event requirements derived from authenticated repository bytes."""
 
+    binding: C8ObservationBinding | None = None
     path: NonEmptyString
-    pull_request_event: bool
-    merge_group_event: bool
-    exact_sha_checkout: bool
+    workflow_digest: Sha256Digest | None = None
+    policy_digest: Sha256Digest | None = None
+    validation_check_identity_digest: Sha256Digest | None = None
+    pull_request_event: StrictBool
+    merge_group_event: StrictBool
+    exact_sha_checkout: StrictBool
 
 
 class C8ValidationIdentityRead(StrictModel):
     """Validation identity observation; App 15368 is fixed by the contract."""
 
+    binding: C8ObservationBinding | None = None
     app_id: Literal[15368] | None = None
     identity: NonEmptyString | None = None
 
@@ -82,7 +111,8 @@ class C8IsolatedIssuerRead(StrictModel):
     credential, check run, authorization, or transition payload.
     """
 
-    available: bool
+    binding: C8ObservationBinding | None = None
+    available: StrictBool
     identity: NonEmptyString | None = None
     app_id: PositiveInt | None = None
     isolation_digest: Sha256Digest | None = None
@@ -101,25 +131,27 @@ class C8IsolatedIssuerRead(StrictModel):
 class C8RollbackNamespaceRead(StrictModel):
     """Read-only controls observed for the rollback ref namespace."""
 
+    binding: C8ObservationBinding | None = None
     namespace: NonEmptyString
-    exclusive: bool
-    deletion_protected: bool
-    bypass_allowed: bool
-    exclusive_controller_write: bool = False
-    controller_delete_authorized: bool = False
-    other_delete_denied: bool = False
+    controller_exclusive_create_write: StrictBool = False
+    controller_delete_authorized: StrictBool = False
+    non_controller_create_denied: StrictBool = False
+    non_controller_delete_denied: StrictBool = False
+    bypass_allowed: StrictBool
 
 
 class HostedC8PreflightReport(StrictModel):
     """Deterministic diagnostics that are never activation evidence."""
 
     schema_version: Literal[1] = 1
-    result: Literal["pass", "blocked", "unverifiable"]
+    result: Literal["blocked", "unverifiable", "no_detected_configuration_blocker"]
     passed_codes: list[NonEmptyString] = Field(min_length=0)
     blocker_codes: list[NonEmptyString] = Field(min_length=0)
     unverifiable_codes: list[NonEmptyString] = Field(min_length=0)
     observation_digests: dict[str, Sha256Digest] = Field(default_factory=dict)
     authority_consumable: Literal[False] = False
+    authoritative: Literal[False] = False
+    readiness_established: Literal[False] = False
     report_digest: Sha256Digest
 
     @model_validator(mode="after")
@@ -136,7 +168,7 @@ class HostedC8PreflightReport(StrictModel):
             if self.blocker_codes
             else "unverifiable"
             if self.unverifiable_codes
-            else "pass"
+            else "no_detected_configuration_blocker"
         )
         if self.result != expected_outcome:
             raise ValueError("preflight outcome does not match diagnostic codes")
@@ -157,8 +189,12 @@ class HostedC8PreflightReport(StrictModel):
         passed = sorted(set(passed_codes))
         blockers = sorted(set(blocker_codes))
         unverifiable = sorted(set(unverifiable_codes))
-        result: Literal["pass", "blocked", "unverifiable"] = (
-            "blocked" if blockers else "unverifiable" if unverifiable else "pass"
+        result: Literal["blocked", "unverifiable", "no_detected_configuration_blocker"] = (
+            "blocked"
+            if blockers
+            else "unverifiable"
+            if unverifiable
+            else "no_detected_configuration_blocker"
         )
         values = {
             "schema_version": 1,
@@ -168,11 +204,13 @@ class HostedC8PreflightReport(StrictModel):
             "unverifiable_codes": unverifiable,
             "observation_digests": dict(sorted(observation_digests.items())),
             "authority_consumable": False,
+            "authoritative": False,
+            "readiness_established": False,
         }
         return cls.model_validate({**values, "report_digest": canonical_digest(values)})
 
     @property
-    def outcome(self) -> Literal["pass", "blocked", "unverifiable"]:
+    def outcome(self) -> Literal["blocked", "unverifiable", "no_detected_configuration_blocker"]:
         """Compatibility spelling; it is not serialized or authority-bearing."""
         return self.result
 
@@ -185,6 +223,7 @@ C8HostedPreflightReport = HostedC8PreflightReport
 __all__ = [
     "C8HostedPreflightReport",
     "C8IsolatedIssuerRead",
+    "C8ObservationBinding",
     "C8ProtectionRead",
     "C8QueueConfigurationRead",
     "C8RepositoryRead",

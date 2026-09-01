@@ -80,6 +80,11 @@ production authority outside the proposing agent's control.
   two truthful failed-closed dry attempts that exposed datetime-canonicalization and
   semantic-versus-artifact verifier bugs, their reviewed remediations, and the no-live
   boundary. C7 does not establish hosted/live readiness.
+  C8 local Wave 1/2 foundations are now Terra-approved through commits `ecd773c`, `935363c`,
+  and `49fb84e`: bounded pinned/no-redirect GitHub transport is the actual provider default;
+  controller-rooted activation and raw-proof CAS/legacy-compatible ledger schema support are
+  locally implemented. The rollback and activation preparers remain explicitly non-consumable
+  drafts. No concrete trust root, live adapter, or runner exists, and no hosted mutation occurred.
   Live `main` mutation is currently blocked on both required capabilities: the preferred
   merge-queue protocol needs an organization-owned repository with max-one-entry queue and
   exact admission/hold capability, while the current public repository is user-owned, and no
@@ -133,7 +138,7 @@ approving every ordinary patch.
 | C5 — main rollback authority | complete | Offline acceptance passed at HEAD `e38d0b826f94f3f559fb2e3ef0b26d1d17128c53` with Terra APPROVE and combined 24 passed, covering rollback contracts/journaling, inverse composition, authority verification, aggregate orchestration, terminal cleanup/closure, crash/replay, and adversarial recovery. No hosted/provider/main/deploy mutation occurred. [Result](avo-0047-c5-result.md) |
 | C6 — campaign runner and eligibility ledger | complete | Offline acceptance complete at final code HEAD `e6db424cc671d7a5d63b9b8a7246a316c4867f91`; [result](avo-0047-c6-result.md). Hosted ledger activation still requires blocked C8 prerequisites and a fresh hosted rollback drill. |
 | C7 — deterministic offline gate | complete | Offline acceptance complete at code HEAD `9c70c36074810606692f8c2030b25ce83c10a1e4`; 47 exact frozen case/vector entries passed, replay used `executor_calls=0` and `clock_calls=0`, and `deploy_performed=false`. [Result](avo-0047-c7-result.md). No hosted mutation. |
-| C8 — hosted organization/queue/release gate | blocked | Requires explicit organization-hosting/max-one merge-queue capability and isolated admission/hold issuer authority; no live `main` mutation is authorized. |
+| C8 — hosted organization/queue/release gate | blocked | Terra-approved local Wave 1/2 foundations are recorded in the [C8 local-foundations result](avo-0047-c8-local-foundations-result.md): exact-SHA/clean-WSL CI checks, non-consumable rollback/activation drafts, bounded pinned/no-redirect transport as the provider default, controller-rooted activation, and raw-proof CAS/legacy-compatible schema support. No concrete trust root, live adapter, runner, or hosted mutation exists. Hosted completion still requires organization-owned required max-one merge queue, a separate isolated issuer (not App 15368), exclusive controller create/delete authority for `avo/main-rollback/*`, a fresh hosted main rollback drill, then ledger activation and 12 consecutive eligible successes with 0 failures/boundary violations. |
 
 The roadmap gate was completed first because the operator explicitly authorized it. The green test
 and coverage baseline, controlling repository, public remote, baseline tag, recovery rehearsal, and

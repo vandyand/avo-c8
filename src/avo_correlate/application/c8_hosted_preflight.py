@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from typing import Final, Protocol, TypeVar
 
+from avo_correlate.contracts.base import StrictModel
 from avo_correlate.contracts.c8_hosted_preflight import (
     C8IsolatedIssuerRead,
+    C8ObservationBinding,
     C8ProtectionRead,
     C8QueueConfigurationRead,
     C8RepositoryRead,
@@ -16,11 +18,15 @@ from avo_correlate.contracts.c8_hosted_preflight import (
 )
 from avo_correlate.domain.canonical import canonical_digest
 
-_ObservationT = TypeVar("_ObservationT")
+_ObservationT = TypeVar("_ObservationT", bound=StrictModel)
 
 
 class HostedC8PreflightReadOnly(Protocol):
-    """Authenticated observation boundary; deliberately has no write methods."""
+    """Future provider-authenticated observation boundary, with no writers.
+
+    Current DTOs are diagnostic inputs only: this protocol authenticates
+    nothing, creates no authority, and cannot establish hosted readiness.
+    """
 
     def observe_repository(self) -> C8RepositoryRead: ...
 
@@ -42,8 +48,17 @@ class C8HostedPreflightService:
 
     _ISOLATED_ISSUER_MISSING: Final[str] = "isolated_release_issuer_missing"
 
-    def __init__(self, observer: HostedC8PreflightReadOnly) -> None:
+    def __init__(
+        self,
+        observer: HostedC8PreflightReadOnly,
+        expected_binding: C8ObservationBinding | None = None,
+    ) -> None:
         self._observer = observer
+        self._expected_binding = (
+            None
+            if expected_binding is None
+            else C8ObservationBinding.model_validate(expected_binding.model_dump(mode="json"))
+        )
 
     def run(self) -> HostedC8PreflightReport:
         passed: list[str] = []
@@ -63,7 +78,10 @@ class C8HostedPreflightService:
                 passed.append("organization_hosting")
             else:
                 blockers.append("organization_hosting_required")
-            if repository.target_ref == "refs/heads/main":
+            if (
+                repository.binding is not None
+                and repository.binding.target_ref == "refs/heads/main"
+            ):
                 passed.append("protected_main_target")
             else:  # defensive; the typed contract already fixes this value.
                 blockers.append("protected_main_target_mismatch")
@@ -128,6 +146,12 @@ class C8HostedPreflightService:
         )
         if workflow is not None:
             digests["workflow"] = canonical_digest(workflow)
+            if (
+                workflow.workflow_digest is None
+                or workflow.policy_digest is None
+                or workflow.validation_check_identity_digest is None
+            ):
+                unverifiable.append("workflow_binding_incomplete")
             if workflow.pull_request_event and workflow.merge_group_event:
                 passed.append("workflow_events_required")
             else:
@@ -177,25 +201,33 @@ class C8HostedPreflightService:
             digests["rollback_namespace"] = canonical_digest(namespace)
             if namespace.namespace != "refs/heads/avo/main-rollback/*":
                 blockers.append("rollback_namespace_mismatch")
-            if not namespace.exclusive:
-                blockers.append("rollback_namespace_not_exclusive")
             if namespace.bypass_allowed:
                 blockers.append("rollback_namespace_bypass_allowed")
-            if not namespace.exclusive_controller_write:
+            if not namespace.controller_exclusive_create_write:
                 blockers.append("rollback_namespace_controller_write_unverified")
             if not namespace.controller_delete_authorized:
                 blockers.append("rollback_namespace_controller_delete_unverified")
-            if not namespace.other_delete_denied:
+            if not namespace.non_controller_create_denied:
+                blockers.append("rollback_namespace_other_create_unverified")
+            if not namespace.non_controller_delete_denied:
                 blockers.append("rollback_namespace_other_delete_unverified")
             if (
                 namespace.namespace == "refs/heads/avo/main-rollback/*"
-                and namespace.exclusive
                 and not namespace.bypass_allowed
-                and namespace.exclusive_controller_write
+                and namespace.controller_exclusive_create_write
                 and namespace.controller_delete_authorized
-                and namespace.other_delete_denied
+                and namespace.non_controller_create_denied
+                and namespace.non_controller_delete_denied
             ):
                 passed.append("rollback_namespace_controls_read")
+
+        bindings = [
+            value.binding
+            for value in (repository, protection, queue, workflow, validation, issuer, namespace)
+            if value is not None and value.binding is not None
+        ]
+        if bindings and any(binding != bindings[0] for binding in bindings[1:]):
+            unverifiable.append("observation_snapshot_mismatch")
 
         return HostedC8PreflightReport.build(
             passed_codes=passed,
@@ -204,8 +236,8 @@ class C8HostedPreflightService:
             observation_digests=digests,
         )
 
-    @staticmethod
     def _read(
+        self,
         name: str,
         method: object,
         expected_type: type[_ObservationT],
@@ -224,7 +256,19 @@ class C8HostedPreflightService:
         if not isinstance(value, expected_type):
             unverifiable.append(f"{name}_read_unverifiable")
             return None
-        return value
+        try:
+            checked = expected_type.model_validate(value.model_dump(mode="json"))
+        except Exception:
+            unverifiable.append(f"{name}_read_unverifiable")
+            return None
+        binding = getattr(checked, "binding", None)
+        if binding is None:
+            unverifiable.append(f"{name}_snapshot_unbound")
+            return None
+        if self._expected_binding is not None and binding != self._expected_binding:
+            unverifiable.append("observation_snapshot_mismatch")
+            return None
+        return checked
 
 
 HostedC8Preflight = C8HostedPreflightService

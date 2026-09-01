@@ -9,6 +9,14 @@ organization-hosting/merge-queue capability and isolated release-hold authority 
 explicitly authorized. C7 deterministic offline gate is complete at code HEAD
 `9c70c36074810606692f8c2030b25ce83c10a1e4`.
 
+C8 local Wave 1/2 foundations are Terra-approved through commits `ecd773c`, `935363c`, and
+`49fb84e`; see the [local-foundations result](avo-0047-c8-local-foundations-result.md).
+Exact-SHA/clean-WSL CI checks are hardened, bounded pinned/no-redirect GitHub transport is the
+actual provider default, and controller-rooted activation with raw-proof CAS/legacy-compatible
+schema support is locally implemented. Local rollback and activation preparers are explicitly
+non-consumable drafts. No concrete trust root, live adapter, or runner exists, and no hosted
+mutation occurred.
+
 This runbook operationalizes [ADR 0011](adr/0011-protected-main-graduation.md) and the
 [implementation plan](avo-0047-main-graduation-plan.md). It is limited to the declared
 single-host, trusted-team boundary. It does not authorize deployment, production effects,

@@ -15,6 +15,13 @@ at code HEAD `9c70c36074810606692f8c2030b25ce83c10a1e4`; replay used `executor_c
 `clock_calls=0`, with `deploy_performed=false`. See the [durable C7 result](../avo-0047-c7-result.md).
 C6's offline result remains recorded in [the durable result](../avo-0047-c6-result.md).
 
+C8 local Wave 1/2 foundations are Terra-approved through commits `ecd773c`, `935363c`, and
+`49fb84e`; the bounded pinned/no-redirect GitHub transport is now the actual provider default,
+and controller-rooted activation with raw-proof CAS/legacy-compatible ledger schema support is
+implemented locally. The local rollback and activation preparers are explicitly non-consumable
+drafts. These foundations are not a trust root, live adapter, or runner: no concrete instance
+exists and no hosted mutation occurred. See the [C8 local-foundations result](../avo-0047-c8-local-foundations-result.md).
+
 ## Context
 
 AVO-004.5 established a protected, PR-native promotion lifecycle for the `integration`
