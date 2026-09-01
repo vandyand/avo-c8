@@ -45,6 +45,7 @@ _COMMAND_TIMEOUT_SECONDS = 30
 _MAX_ARCHIVE_BYTES = 256 * 1024 * 1024
 _MAX_ARCHIVE_ENTRIES = 100_000
 _MAX_ARCHIVE_FILE_BYTES = 64 * 1024 * 1024
+_ZERO_DIGEST = "sha256:" + "0" * 64
 
 
 class C7WorkspaceIdentityError(RuntimeError):
@@ -164,14 +165,22 @@ class C7WorkspaceIdentityVerifier:
             if supplied != actual:
                 raise C7WorkspaceIdentityError(f"workspace identity mismatch: {name}")
         pinned_environment = getattr(authority, "environment_identity_digest", None)
-        if not isinstance(pinned_environment, str) or (
-            pinned_environment != observed.environment_identity_digest
+        if (
+            not isinstance(pinned_environment, str)
+            or pinned_environment == _ZERO_DIGEST
+            or observed.environment_identity_digest == _ZERO_DIGEST
+            or pinned_environment != observed.environment_identity_digest
         ):
             raise C7WorkspaceIdentityError(
                 "workspace identity mismatch: environment_identity_digest"
             )
         pinned_uv = getattr(authority, "uv_digest", None)
-        if not isinstance(pinned_uv, str) or pinned_uv != observed.uv_digest:
+        if (
+            not isinstance(pinned_uv, str)
+            or pinned_uv == _ZERO_DIGEST
+            or observed.uv_digest == _ZERO_DIGEST
+            or pinned_uv != observed.uv_digest
+        ):
             raise C7WorkspaceIdentityError("workspace identity mismatch: uv_digest")
 
     def observe(self) -> C7WorkspaceIdentity:

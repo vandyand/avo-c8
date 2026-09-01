@@ -119,6 +119,20 @@ def test_identity_verifier_rejects_any_identity_mismatch(
         verifier.verify(authority)
 
 
+def test_identity_verifier_rejects_zero_environment_or_uv_pins(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    verifier = C7WorkspaceIdentityVerifier(Path.cwd())
+    monkeypatch.setattr(verifier, "observe", lambda: _observed())
+    with pytest.raises(C7WorkspaceIdentityError, match="environment_identity_digest"):
+        verifier.verify(
+            _authority(
+                environment_identity_digest="sha256:" + "0" * 64,
+                uv_digest="sha256:" + "3" * 64,
+            )
+        )
+
+
 def test_real_pytest_junit_shape_requires_exact_repository_module() -> None:
     frozen = FROZEN_OFFLINE_EXECUTION_NODE_IDS[0]
     testcase = ET.Element(
