@@ -810,6 +810,42 @@ def test_injected_rollback_authority_is_called_on_record_and_restart_reads(
     ]
 
 
+def test_cleanup_dispatch_owner_requires_intent_and_is_one_use(tmp_path: Path) -> None:
+    source, intent, auth, _inverse, result, cleanup, _receipt, _observation = _lifecycle_records()
+    cleanup = _cleanup_intent(intent, auth, result)
+    journal = MainGraduationJournal(tmp_path, policy_epoch=D)
+    with pytest.raises(MainGraduationJournalError, match="cleanup intent"):
+        journal.claim_rollback_cleanup_dispatch(
+            operation_id=RB,
+            intent_digest=cleanup.intent_digest,
+            candidate_ref=cleanup.candidate_ref,
+            recorded_at=NOW,
+        )
+
+    dependencies = {
+        "completion": source,
+        "rollback-composition": _composition(source),
+        "rollback-intent": intent,
+        "rollback-authorization": auth,
+        "rollback-result": result,
+        "rollback-cleanup-intent": cleanup,
+    }
+    journal = _journal_with_records(tmp_path / "durable", dependencies)
+    assert journal.claim_rollback_cleanup_dispatch(
+        operation_id=RB,
+        intent_digest=cleanup.intent_digest,
+        candidate_ref=cleanup.candidate_ref,
+        recorded_at=NOW,
+    )
+    assert not journal.claim_rollback_cleanup_dispatch(
+        operation_id=RB,
+        intent_digest=cleanup.intent_digest,
+        candidate_ref=cleanup.candidate_ref,
+        recorded_at=NOW,
+    )
+    assert journal.read_rollback_cleanup_dispatch_owner(cleanup.intent_digest) is not None
+
+
 def test_tampered_or_mismatched_rollback_evidence_fails_before_authority_verifier(
     tmp_path: Path,
 ) -> None:

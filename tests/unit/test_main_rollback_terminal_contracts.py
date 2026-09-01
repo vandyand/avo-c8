@@ -290,7 +290,7 @@ def test_terminal_contracts_reject_abandoned_v1_wires_and_round_trip_v2() -> Non
         MainRollbackCleanupTerminalEvidence.model_validate_json(canonical_bytes(terminal))
     ) == canonical_bytes(terminal)
 
-    assert MainRollbackCompletionPackage.model_fields["schema_version"].default == 5
+    assert MainRollbackCompletionPackage.model_fields["schema_version"].default == 6
     with pytest.raises(ValidationError, match="schema_version"):
         MainRollbackCompletionPackage.model_validate({"schema_version": 1})
 

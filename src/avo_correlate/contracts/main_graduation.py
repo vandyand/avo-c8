@@ -1740,9 +1740,7 @@ class MainRollbackCompositionArtifact(MainBound):
             )
         ):
             raise ValueError("rollback composition inverse digest mismatch")
-        identity = self.model_dump(
-            exclude={"composition_id", "retention_ref"}, mode="json"
-        )
+        identity = self.model_dump(exclude={"composition_id", "retention_ref"}, mode="json")
         if self.composition_id != main_rollback_composition_id(**identity):
             raise ValueError("rollback composition identity mismatch")
         return self
@@ -1989,9 +1987,7 @@ class MainRollbackCleanupReceipt(MainBound):
     candidate_commit: GitObject
     pull_request_number: StrictInt = Field(gt=0)
     pull_request_url: NonEmptyString
-    outcome: Literal[
-        "applied", "already_absent", "ambiguous", "reconciliation_required", "invalid"
-    ]
+    outcome: Literal["applied", "already_absent", "ambiguous", "reconciliation_required", "invalid"]
     dispatch_started: StrictBool
     response_digest: Sha256Digest
     observed_at: datetime
@@ -2013,11 +2009,15 @@ class MainRollbackCleanupReceipt(MainBound):
 
     @model_validator(mode="after")
     def validate_cleanup_receipt(self) -> MainRollbackCleanupReceipt:
-        if self.outcome in {
-            "applied",
-            "ambiguous",
-            "reconciliation_required",
-        } and not self.dispatch_started:
+        if (
+            self.outcome
+            in {
+                "applied",
+                "ambiguous",
+                "reconciliation_required",
+            }
+            and not self.dispatch_started
+        ):
             raise ValueError("cleanup mutation outcome requires a dispatched request")
         if self.outcome in {"already_absent", "invalid"} and self.dispatch_started:
             raise ValueError("invalid cleanup cannot claim dispatch")
@@ -2291,9 +2291,10 @@ MainRollbackTerminalCleanupEvidence = MainRollbackCleanupTerminalEvidence
 class MainRollbackCompletionPackage(MainBound):
     """Content-addressed terminal closure for one rollback attempt."""
 
-    # Cleanup receipt/observation gained new terminal-state and observer
-    # bindings; retain v3 and v4 as immutable historical wires.
-    schema_version: Literal[5] = 5
+    # C5 closes the rollback package over the exact queue/protection and
+    # authenticated merge-group evidence.  v5 and older wires remain checked
+    # in as immutable historical schemas.
+    schema_version: Literal[6] = 6
     operation_id: Sha256Digest
     composition_id: Sha256Digest
     composition_artifact_digest: Sha256Digest
@@ -2311,11 +2312,18 @@ class MainRollbackCompletionPackage(MainBound):
         )
     )
     lease_evidence_record: MainLeaseEvidenceRecord
+    queue_configuration: MainQueueConfigurationObservation
+    queue_observation: MainQueueObservation
+    protection_manifest: MainProtectionManifest
+    attestation_manifest: MainAttestationManifest
+    merge_group_checks: MainMergeGroupChecks
+    merge_group_receipt: MainMergeGroupWebhookReceipt
     admission_observation: MainQueueAdmissionObservation
     hold_observation: MainReleaseHoldObservation
     release_authorization: MainReleaseAuthorization
     release_claim: MainReleaseClaim
     claimed_transition_receipt: MainClaimedReleaseTransitionReceipt
+    release_transition_receipt: MainReleaseTransitionReceipt
     release_transition_intent: MainMutationIntent
     release_transition_mutation_receipt: MainMutationReceipt
     release_transition_fence_resolution: MainMutationFenceResolution | None
@@ -2336,9 +2344,7 @@ class MainRollbackCompletionPackage(MainBound):
     cleanup_receipt: MainRollbackCleanupReceipt
     cleanup_observation: MainRollbackCleanupObservation | None
     cleanup_terminal: MainRollbackCleanupTerminalEvidence = Field(
-        validation_alias=AliasChoices(
-            "cleanup_terminal", "cleanup_terminal_evidence"
-        )
+        validation_alias=AliasChoices("cleanup_terminal", "cleanup_terminal_evidence")
     )
     artifacts: list[ArtifactRef] = Field(min_length=1)
     completion_digest: Sha256Digest = Field(
@@ -2352,11 +2358,14 @@ class MainRollbackCompletionPackage(MainBound):
             self.attempt_authority,
             self.rollback_preparation_authorization,
             self.lease_evidence_record,
+            self.merge_group_checks,
+            self.merge_group_receipt,
             self.admission_observation,
             self.hold_observation,
             self.release_authorization,
             self.release_claim,
             self.claimed_transition_receipt,
+            self.release_transition_receipt,
             self.release_transition_intent,
             self.release_transition_mutation_receipt,
             self.composition,
@@ -2390,8 +2399,7 @@ class MainRollbackCompletionPackage(MainBound):
             or self.composition.completion_package_digest != canonical_digest(source)
             or self.composition.current_main_commit != attempt.current_main_commit
             or self.composition.current_main_tree != attempt.current_main_tree
-            or self.composition.current_main_parent_commit
-            != attempt.current_main_parent_commit
+            or self.composition.current_main_parent_commit != attempt.current_main_parent_commit
             or self.composition.inverse_delta_digest != attempt.inverse_delta_digest
             or self.composition.inverse_tree != attempt.inverse_tree
             or self.composition.candidate_commit != attempt.candidate_commit
@@ -2404,8 +2412,7 @@ class MainRollbackCompletionPackage(MainBound):
             or self.rollback_result.source_operation_id != source.operation_id
             or self.rollback_result.completion_package_digest != canonical_digest(source)
             or self.rollback_result.composition_id != self.composition_id
-            or self.rollback_result.composition_artifact_digest
-            != self.composition_artifact_digest
+            or self.rollback_result.composition_artifact_digest != self.composition_artifact_digest
             or self.rollback_result.current_main_commit != self.composition.current_main_commit
             or self.rollback_result.inverse_tree != self.composition.inverse_tree
             or (
@@ -2424,19 +2431,21 @@ class MainRollbackCompletionPackage(MainBound):
             or self.rollback_intent.source_operation_id != source.operation_id
             or self.rollback_intent.completion_package_digest != canonical_digest(source)
             or self.rollback_intent.composition_id != self.composition_id
-            or self.rollback_intent.composition_artifact_digest
-            != self.composition_artifact_digest
+            or self.rollback_intent.composition_artifact_digest != self.composition_artifact_digest
             or self.rollback_preparation_authorization.operation_id != self.operation_id
             or self.rollback_preparation_authorization.rollback_intent_digest
             != self.rollback_intent.intent_digest
             or self.rollback_preparation_authorization.rollback_authorization_digest
             != self.rollback_authorization.authorization_digest
             or self.lease_evidence_record.operation_id != self.operation_id
+            or self.merge_group_checks.operation_id != self.operation_id
+            or self.merge_group_receipt.operation_id != self.operation_id
             or self.admission_observation.operation_id != self.operation_id
             or self.hold_observation.operation_id != self.operation_id
             or self.release_authorization.operation_id != self.operation_id
             or self.release_claim.operation_id != self.operation_id
             or self.claimed_transition_receipt.operation_id != self.operation_id
+            or self.release_transition_receipt.operation_id != self.operation_id
             or self.release_transition_intent.operation_id != self.operation_id
             or self.release_transition_mutation_receipt.operation_id != self.operation_id
         ):
@@ -2450,11 +2459,36 @@ class MainRollbackCompletionPackage(MainBound):
             or self.rollback_result.outcome not in {"applied", "already_applied"}
             or self.rollback_result.result_tree != attempt.inverse_tree
             or self.rollback_result.result_parents != [attempt.current_main_commit]
+            or self.queue_configuration.repository_digest != self.repository_digest
+            or self.queue_configuration.target_ref != self.target_ref
+            or self.queue_configuration.expected_base_commit != attempt.current_main_commit
+            or self.queue_configuration.expected_base_tree != attempt.current_main_tree
+            or self.queue_observation.repository_digest != self.repository_digest
+            or self.queue_observation.target_ref != self.target_ref
+            or self.queue_observation.queue_configuration_digest
+            != self.queue_configuration.queue_configuration_digest
+            or self.queue_observation.admission_observation_digest
+            != canonical_digest(self.admission_observation)
+            or self.queue_observation.pull_request_number
+            != self.admission_observation.pull_request_number
+            or self.protection_manifest.manifest_digest
+            != self.queue_configuration.protection_manifest_digest
+            or self.attestation_manifest.package_digest != source.source_package.package_digest
+            or self.attestation_manifest.operation_id != source.operation_id
+            or self.attestation_manifest.composition_digest != source.composition.composition_digest
+            or self.merge_group_checks.group_sha != self.hold_observation.group_sha
+            or self.merge_group_checks.operation_id != self.operation_id
+            or self.merge_group_receipt != self.hold_observation.merge_group_receipt
+            or self.release_transition_receipt.operation_id != self.operation_id
+            or self.release_transition_receipt.release_authorization_digest
+            != self.release_authorization.authorization_digest
+            or self.release_transition_receipt.group_sha != self.hold_observation.group_sha
+            or self.release_transition_receipt.hold_run_id != self.hold_observation.hold_run_id
+            or self.release_transition_receipt.hold_nonce != self.hold_observation.hold_nonce
             or self.cleanup_receipt.intent_digest != self.cleanup_intent.intent_digest
-            or self.cleanup_receipt.authorization_digest
-            != self.cleanup_intent.authorization_digest
+            or self.cleanup_receipt.authorization_digest != self.cleanup_intent.authorization_digest
             or self.cleanup_receipt.outcome
-                not in {"applied", "already_absent", "ambiguous", "reconciliation_required"}
+            not in {"applied", "already_absent", "ambiguous", "reconciliation_required"}
             or self.cleanup_terminal.candidate_ref_absent is not True
             or self.cleanup_terminal.pull_request_state != "closed"
             or self.cleanup_terminal.pull_request_merged is not True
@@ -2507,11 +2541,18 @@ class MainRollbackCompletionPackage(MainBound):
             "main-rollback-source-completion",
             "main-rollback-preparation-authorization",
             "main-rollback-lease-evidence-record",
+            "main-rollback-queue-configuration",
+            "main-rollback-queue-observation",
+            "main-rollback-protection-manifest",
+            "main-rollback-attestation-manifest",
+            "main-rollback-merge-group-checks",
+            "main-rollback-merge-group-webhook-receipt",
             "main-rollback-queue-admission",
             "main-rollback-release-hold",
             "main-rollback-release-authorization",
             "main-rollback-release-claim",
             "main-rollback-claimed-release-transition",
+            "main-rollback-release-transition",
             "main-rollback-mutation-intent",
             "main-rollback-mutation-receipt",
             "main-rollback-composition",
@@ -2534,11 +2575,18 @@ class MainRollbackCompletionPackage(MainBound):
             "main-rollback-source-completion": self.source_completion,
             "main-rollback-preparation-authorization": self.rollback_preparation_authorization,
             "main-rollback-lease-evidence-record": self.lease_evidence_record,
+            "main-rollback-queue-configuration": self.queue_configuration,
+            "main-rollback-queue-observation": self.queue_observation,
+            "main-rollback-protection-manifest": self.protection_manifest,
+            "main-rollback-attestation-manifest": self.attestation_manifest,
+            "main-rollback-merge-group-checks": self.merge_group_checks,
+            "main-rollback-merge-group-webhook-receipt": self.merge_group_receipt,
             "main-rollback-queue-admission": self.admission_observation,
             "main-rollback-release-hold": self.hold_observation,
             "main-rollback-release-authorization": self.release_authorization,
             "main-rollback-release-claim": self.release_claim,
             "main-rollback-claimed-release-transition": self.claimed_transition_receipt,
+            "main-rollback-release-transition": self.release_transition_receipt,
             "main-rollback-mutation-intent": self.release_transition_intent,
             "main-rollback-mutation-receipt": self.release_transition_mutation_receipt,
             "main-rollback-composition": self.composition,
@@ -2780,9 +2828,7 @@ def main_rollback_composition_id(**identity: object) -> Sha256Digest:
         for key, value in identity.items()
         if key not in {"composition_id", "retention_ref"}
     }
-    return canonical_digest(
-        {"domain": "avo.main.rollback.composition.v1", "identity": identity}
-    )
+    return canonical_digest({"domain": "avo.main.rollback.composition.v1", "identity": identity})
 
 
 def main_record_bytes(record: StrictModel) -> bytes:

@@ -40,6 +40,7 @@ def test_checked_in_schemas_match_generation(tmp_path: Path) -> None:
         "MainRollbackCompletionPackage.v2.schema.json",
         "MainRollbackCompletionPackage.v3.schema.json",
         "MainRollbackCompletionPackage.v4.schema.json",
+        "MainRollbackCompletionPackage.v5.schema.json",
         "MainRollbackIntent.v1.schema.json",
         "MainRollbackIntent.v2.schema.json",
         "MainRollbackIntent.v3.schema.json",
