@@ -10,6 +10,12 @@ from avo_correlate.adapters.git.main_composition import (
     MainCompositionResult,
     compose_main_candidate,
 )
+from avo_correlate.adapters.git.main_rollback_composition import (
+    DeterministicMainRollbackCompositionAdapter,
+    MainRollbackCompositionAdapter,
+    MainRollbackCompositionError,
+    MainRollbackCompositionResult,
+)
 from avo_correlate.adapters.git.publisher import (
     FilesystemPublicationJournal,
     GitCandidatePublisher,
@@ -43,6 +49,9 @@ __all__ = [
     "MainCompositionAdapter",
     "MainCompositionError",
     "MainCompositionResult",
+    "MainRollbackCompositionAdapter",
+    "MainRollbackCompositionError",
+    "MainRollbackCompositionResult",
     "PreparedPublication",
     "PrepublicationAuthorizationJournal",
     "PublicationAmbiguousError",
@@ -52,4 +61,5 @@ __all__ = [
     "PublicationResult",
     "StaleGitSnapshotError",
     "compose_main_candidate",
+    "DeterministicMainRollbackCompositionAdapter",
 ]
