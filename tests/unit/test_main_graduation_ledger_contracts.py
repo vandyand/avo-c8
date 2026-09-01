@@ -16,6 +16,7 @@ from avo_correlate.contracts.main_graduation_ledger import (
     MainLedgerHostedRollbackProof,
     MainLedgerSubmissionEnvelope,
     MainLedgerTerminalOutcome,
+    main_ledger_genesis_state,
 )
 from avo_correlate.domain.canonical import canonical_digest
 
@@ -25,7 +26,10 @@ ModelT = TypeVar("ModelT", bound=StrictModel)
 
 
 def _with_digest(model_type: type[ModelT], values: dict[str, Any], field: str) -> ModelT:  # noqa: UP047
-    probe = model_type.model_construct(**values, **{field: DIGEST})  # pyright: ignore[reportArgumentType]
+    base_values = {key: value for key, value in values.items() if key != field}
+    probe = model_type.model_construct(  # pyright: ignore[reportArgumentType]
+        **base_values, **{field: DIGEST}  # pyright: ignore[reportArgumentType]
+    )
     return model_type.model_validate(
         {**values, field: canonical_digest(probe.model_dump(exclude={field}, mode="json"))}
     )
@@ -86,6 +90,7 @@ def _activation() -> MainLedgerActivation:
         "controller_issuer_authority_digest": DIGEST,
         "scheduler_sequence_watermark": 10,
         "controller_authority": authority,
+        "freshness_cutoff": NOW - timedelta(minutes=2),
         "hosted_rollback_proof": proof,
         "c8_capability_evidence": capability,
         "hosted_rollback_proof_digest": proof.proof_digest,
@@ -99,14 +104,17 @@ def _activation() -> MainLedgerActivation:
 
 
 def _submission(
-    activation: MainLedgerActivation, sequence: int = 11
+    activation: MainLedgerActivation,
+    sequence: int = 11,
+    submission_identity: str | None = None,
 ) -> MainLedgerSubmissionEnvelope:
+    identity = submission_identity or f"submission-{sequence}"
     values = {
         "activation_digest": activation.activation_digest,
         "repository_digest": activation.repository_digest,
         "scheduler_sequence": sequence,
         "source_identity": "scheduler",
-        "submission_identity": f"submission-{sequence}",
+        "submission_identity": identity,
         "submission_digest": DIGEST,
         "operation_id": canonical_digest(
             {
@@ -114,7 +122,7 @@ def _submission(
                 "activation_digest": activation.activation_digest,
                 "scheduler_sequence": sequence,
                 "source_identity": "scheduler",
-                "submission_identity": f"submission-{sequence}",
+                "submission_identity": identity,
                 "submission_digest": DIGEST,
             }
         ),
@@ -147,6 +155,29 @@ def test_activation_and_submission_forgery_is_rejected() -> None:
     with pytest.raises(ValidationError, match="activation configuration"):
         MainLedgerActivation.model_validate(
             {**activation.model_dump(), "policy_epoch": DIGEST[:-1] + "2"}
+        )
+
+
+def test_activation_rejects_stale_hosted_prerequisites() -> None:
+    activation = _activation()
+    with pytest.raises(ValidationError, match="hosted rollback proof"):
+        MainLedgerActivation.model_validate({**activation.model_dump(), "freshness_cutoff": NOW})
+    stale_capability = _with_digest(
+        MainLedgerC8CapabilityEvidence,
+        {
+            **activation.c8_capability_evidence.model_dump(),
+            "observed_at": NOW - timedelta(minutes=3),
+        },
+        "evidence_digest",
+    )
+    with pytest.raises(ValidationError, match="C8 capability evidence"):
+        MainLedgerActivation.model_validate(
+            {
+                **activation.model_dump(),
+                "c8_capability_evidence": stale_capability,
+                "c8_capability_evidence_digest": stale_capability.evidence_digest,
+                "freshness_cutoff": NOW - timedelta(minutes=1),
+            }
         )
     with pytest.raises(ValidationError, match="identity mismatch"):
         MainLedgerSubmissionEnvelope.model_validate(
@@ -210,8 +241,8 @@ def test_accumulator_transition_rejects_gap_and_forged_outcome_binding() -> None
         {
             "activation_digest": activation.activation_digest,
             "last_scheduler_sequence": 10,
-            "streak": 11,
-            "successes": 11,
+            "streak": 0,
+            "successes": 0,
             "failures": 0,
             "boundary_violations": 0,
             "threshold_complete": False,
@@ -299,8 +330,8 @@ def test_excluded_submission_advances_cas_without_counting_or_resetting() -> Non
         {
             "activation_digest": activation.activation_digest,
             "last_scheduler_sequence": 10,
-            "streak": 11,
-            "successes": 11,
+            "streak": 0,
+            "successes": 0,
             "failures": 0,
             "boundary_violations": 0,
             "threshold_complete": False,
@@ -335,8 +366,8 @@ def test_excluded_submission_advances_cas_without_counting_or_resetting() -> Non
         {
             "activation_digest": activation.activation_digest,
             "last_scheduler_sequence": 11,
-            "streak": 11,
-            "successes": 11,
+            "streak": 0,
+            "successes": 0,
             "failures": 0,
             "boundary_violations": 0,
             "threshold_complete": False,
@@ -357,7 +388,7 @@ def test_excluded_submission_advances_cas_without_counting_or_resetting() -> Non
         "transition_digest",
     )
     assert transition.outcome is None
-    assert transition.resulting_state.streak == 11
+    assert transition.resulting_state.streak == 0
     package_probe = MainLedgerEvidencePackage.model_construct(
         activation=activation,
         submissions=[submission],
@@ -367,6 +398,33 @@ def test_excluded_submission_advances_cas_without_counting_or_resetting() -> Non
         final_state=result,
         package_digest=DIGEST,
     )
+    forged_prior = _with_digest(
+        MainLedgerAccumulatorState,
+        {
+            "activation_digest": activation.activation_digest,
+            "last_scheduler_sequence": 10,
+            "streak": 11,
+            "successes": 11,
+            "failures": 0,
+            "boundary_violations": 0,
+            "threshold_complete": False,
+        },
+        "state_digest",
+    )
+    forged_transition = transition.model_copy(
+        update={"prior_state": forged_prior, "prior_state_digest": forged_prior.state_digest}
+    )
+    forged_package = MainLedgerEvidencePackage.model_construct(
+        activation=activation,
+        submissions=[submission],
+        classifications=[classification],
+        outcomes=[],
+        transitions=[forged_transition],
+        final_state=result,
+        package_digest=DIGEST,
+    )
+    with pytest.raises(ValidationError, match="canonical genesis"):
+        MainLedgerEvidencePackage.model_validate(forged_package)
     package = MainLedgerEvidencePackage.model_validate(
         {
             **package_probe.model_dump(exclude={"package_digest"}),
@@ -376,3 +434,46 @@ def test_excluded_submission_advances_cas_without_counting_or_resetting() -> Non
         }
     )
     assert package.final_state.last_scheduler_sequence == 11
+
+
+def test_genesis_and_duplicate_delivery_are_closed_by_aggregate() -> None:
+    activation = _activation()
+    genesis = main_ledger_genesis_state(
+        activation.activation_digest, activation.scheduler_sequence_watermark
+    )
+    assert genesis.streak == 0
+    assert genesis.successes == genesis.failures == genesis.boundary_violations == 0
+    assert genesis.last_scheduler_sequence == activation.scheduler_sequence_watermark
+    submission = _submission(activation, 11)
+    duplicate = _submission(activation, 12, submission.submission_identity)
+    fake_classification = MainLedgerClassificationEvidence.model_construct(
+        activation_digest=activation.activation_digest,
+        submission_digest=DIGEST,
+        operation_id=DIGEST,
+        scheduler_sequence=11,
+        classification="excluded",
+        empty=True,
+        ordinary=True,
+        risk_class="ordinary",
+        paths=[],
+        path_manifest_digest=canonical_digest([]),
+        policy_digest=activation.policy_digest,
+        policy_epoch=activation.policy_epoch,
+        controller_authority=activation.controller_authority,
+        issuer_identity="ledger-controller",
+        issuer_authority_digest=DIGEST,
+        exclusion_reason="empty",
+        independent_exclusion_evidence_digest=DIGEST,
+        classification_digest=DIGEST,
+    )
+    forged_package = MainLedgerEvidencePackage.model_construct(
+        activation=activation,
+        submissions=[submission, duplicate],
+        classifications=[fake_classification, fake_classification],
+        outcomes=[],
+        transitions=[],
+        final_state=genesis,
+        package_digest=DIGEST,
+    )
+    with pytest.raises(ValidationError, match="duplicate scheduler"):
+        MainLedgerEvidencePackage.model_validate(forged_package)

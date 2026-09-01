@@ -7,6 +7,12 @@ activation and CAS protocol and remain historical wire contracts.
 These records are data-only.  JSON Schema describes the wire shape; the
 cross-record and digest rules are enforced by the Pydantic validators below
 and by the aggregate package validator.
+
+Parsed DTOs and their self-digests are not principal authentication.  A
+persistence or service adapter must invoke an injected, controller-rooted
+verifier for issuer/authority evidence before accepting these records; this
+module intentionally does not invent signature or cryptographic principal
+verification.
 """
 
 from __future__ import annotations
@@ -51,7 +57,11 @@ def _paths(value: list[str]) -> list[str]:
 
 
 class MainLedgerControllerAuthority(StrictModel):
-    """Self-contained controller root; callers cannot substitute a digest pointer."""
+    """Self-contained controller root, not an authentication primitive.
+
+    Persistence and service callers must supply an injected verifier that
+    authenticates this authority and its issuer before using this DTO.
+    """
 
     schema_version: Literal[2] = 2
     repository_digest: Sha256Digest
@@ -159,6 +169,7 @@ class MainLedgerActivation(StrictModel):
     threshold: Literal[12] = 12
     initial_streak: Literal[0] = 0
     scheduler_sequence_watermark: StrictInt = Field(ge=0)
+    freshness_cutoff: datetime
     controller_authority: MainLedgerControllerAuthority
     hosted_rollback_proof: MainLedgerHostedRollbackProof
     c8_capability_evidence: MainLedgerC8CapabilityEvidence
@@ -172,6 +183,7 @@ class MainLedgerActivation(StrictModel):
     deploy_performed: Literal[False] = False
 
     _aware_activated_at = field_validator("activated_at")(_aware)
+    _aware_freshness_cutoff = field_validator("freshness_cutoff")(_aware)
 
     @model_validator(mode="after")
     def validate_activation(self) -> MainLedgerActivation:
@@ -192,6 +204,8 @@ class MainLedgerActivation(StrictModel):
             raise ValueError("activation configuration differs from controller authority")
         if not authority.authorized_at <= self.activated_at <= authority.expires_at:
             raise ValueError("activation is outside controller authority window")
+        if not authority.authorized_at <= self.freshness_cutoff <= self.activated_at:
+            raise ValueError("activation freshness cutoff is outside authority window")
         proof = self.hosted_rollback_proof
         if (
             proof.proof_digest != self.hosted_rollback_proof_digest
@@ -201,7 +215,7 @@ class MainLedgerActivation(StrictModel):
             or proof.repository_digest != self.repository_digest
             or proof.target_ref != self.target_ref
             or proof.controller_authority_digest != authority.authority_digest
-            or not authority.authorized_at <= proof.completed_at <= self.activated_at
+            or not self.freshness_cutoff <= proof.completed_at <= self.activated_at
         ):
             raise ValueError("activation hosted rollback proof is not fresh and authority-bound")
         capability = self.c8_capability_evidence
@@ -210,7 +224,7 @@ class MainLedgerActivation(StrictModel):
             or capability.repository_digest != self.repository_digest
             or capability.target_ref != self.target_ref
             or capability.controller_authority_digest != authority.authority_digest
-            or not authority.authorized_at <= capability.observed_at <= self.activated_at
+            or not self.freshness_cutoff <= capability.observed_at <= self.activated_at
         ):
             raise ValueError("activation C8 capability evidence is not authority-bound")
         if self.activation_digest != canonical_digest(
@@ -430,6 +444,26 @@ class MainLedgerAccumulatorState(StrictModel):
         return self
 
 
+def main_ledger_genesis_state(
+    activation_digest: Sha256Digest, scheduler_sequence_watermark: int
+) -> MainLedgerAccumulatorState:
+    """Derive the only valid accumulator state at a frozen activation watermark."""
+
+    values = {
+        "schema_version": 2,
+        "activation_digest": activation_digest,
+        "last_scheduler_sequence": scheduler_sequence_watermark,
+        "streak": 0,
+        "successes": 0,
+        "failures": 0,
+        "boundary_violations": 0,
+        "threshold_complete": False,
+    }
+    return MainLedgerAccumulatorState.model_validate(
+        {**values, "state_digest": canonical_digest(values)}
+    )
+
+
 class MainLedgerAccumulatorTransition(StrictModel):
     """CAS transition for every submission, including an exclusion."""
 
@@ -551,6 +585,16 @@ class MainLedgerEvidencePackage(StrictModel):
         ordered = sorted(self.submissions, key=lambda item: item.scheduler_sequence)
         if ordered != self.submissions:
             raise ValueError("submissions must be in scheduler order")
+        identity_keys = [
+            (
+                item.activation_digest,
+                item.source_identity,
+                item.submission_identity,
+            )
+            for item in self.submissions
+        ]
+        if len(set(identity_keys)) != len(identity_keys):
+            raise ValueError("duplicate scheduler submission identity")
         expected = self.activation.scheduler_sequence_watermark + 1
         by_submission = {item.submission_digest: item for item in self.submissions}
         for submission, classification in zip(self.submissions, self.classifications, strict=True):
@@ -593,13 +637,21 @@ class MainLedgerEvidencePackage(StrictModel):
             raise ValueError("outcome references an unknown submission")
         if len(self.transitions) != len(self.submissions):
             raise ValueError("every scheduler submission requires one CAS transition")
+        genesis = main_ledger_genesis_state(
+            self.activation.activation_digest,
+            self.activation.scheduler_sequence_watermark,
+        )
         expected_state = self.activation.scheduler_sequence_watermark
         transitions_by_sequence = {
             item.classification.scheduler_sequence: item for item in self.transitions
         }
-        for transition in self.transitions:
+        for index, transition in enumerate(self.transitions):
             if transition.prior_state.last_scheduler_sequence != expected_state:
                 raise ValueError("CAS transitions are not contiguous")
+            if index == 0 and transition.prior_state != genesis:
+                raise ValueError("first CAS predecessor is not the canonical genesis state")
+            if index > 0 and transition.prior_state != self.transitions[index - 1].resulting_state:
+                raise ValueError("CAS predecessor differs from prior resulting state")
             expected_classification = self.classifications[
                 transition.classification.scheduler_sequence
                 - self.activation.scheduler_sequence_watermark
@@ -740,4 +792,5 @@ __all__ = [
     "MainSchedulerSubmissionEnvelope",
     "ThresholdAccumulatorStateV2",
     "ThresholdAccumulatorTransitionV2",
+    "main_ledger_genesis_state",
 ]

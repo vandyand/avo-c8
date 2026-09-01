@@ -197,6 +197,11 @@
           "title": "Deploy Performed",
           "type": "boolean"
         },
+        "freshness_cutoff": {
+          "format": "date-time",
+          "title": "Freshness Cutoff",
+          "type": "string"
+        },
         "hosted_rollback_artifact_digest": {
           "pattern": "^sha256:[0-9a-f]{64}$",
           "title": "Hosted Rollback Artifact Digest",
@@ -279,6 +284,7 @@
         "controller_issuer_identity",
         "controller_issuer_authority_digest",
         "scheduler_sequence_watermark",
+        "freshness_cutoff",
         "controller_authority",
         "hosted_rollback_proof",
         "c8_capability_evidence",
@@ -571,7 +577,7 @@
     },
     "MainLedgerControllerAuthority": {
       "additionalProperties": false,
-      "description": "Self-contained controller root; callers cannot substitute a digest pointer.",
+      "description": "Self-contained controller root, not an authentication primitive.\n\nPersistence and service callers must supply an injected verifier that\nauthenticates this authority and its issuer before using this DTO.",
       "properties": {
         "authority_digest": {
           "pattern": "^sha256:[0-9a-f]{64}$",

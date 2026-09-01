@@ -153,6 +153,7 @@ from avo_correlate.contracts.main_graduation_ledger import (
     MainLedgerTerminalOutcomeV2,
     ThresholdAccumulatorStateV2,
     ThresholdAccumulatorTransitionV2,
+    main_ledger_genesis_state,
 )
 from avo_correlate.contracts.policy import PolicyDecision
 from avo_correlate.contracts.prepublication import (
@@ -364,6 +365,7 @@ __all__ = [
     "VersionedComponentRef",
     "WorkspaceComparison",
     "campaign_package_bytes",
+    "main_ledger_genesis_state",
     "main_operation_id",
     "main_record_bytes",
     "main_record_digest",

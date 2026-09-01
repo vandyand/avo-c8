@@ -1,6 +1,6 @@
 {
   "additionalProperties": false,
-  "description": "Self-contained controller root; callers cannot substitute a digest pointer.",
+  "description": "Self-contained controller root, not an authentication primitive.\n\nPersistence and service callers must supply an injected verifier that\nauthenticates this authority and its issuer before using this DTO.",
   "properties": {
     "authority_digest": {
       "pattern": "^sha256:[0-9a-f]{64}$",
