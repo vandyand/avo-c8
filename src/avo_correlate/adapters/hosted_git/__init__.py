@@ -28,9 +28,11 @@ from .protected_main import (
     ProtectedMainRejected,
     ProtectedMainSnapshot,
 )
+from .github_transport import GitHubJsonTransport
 
 __all__ = [
     "GitHubCampaignProvider",
+    "GitHubJsonTransport",
     "GitHubEvidenceSnapshot",
     "GitHubIntegrationProvider",
     "GitHubProtectionPolicy",
