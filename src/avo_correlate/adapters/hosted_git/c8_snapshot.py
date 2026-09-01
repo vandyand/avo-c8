@@ -12,6 +12,7 @@ import hashlib
 import re
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
+from typing import NoReturn
 from urllib.parse import quote
 
 from avo_correlate.contracts.c8_hosted_preflight import (
@@ -26,6 +27,7 @@ from .github_transport import GitHubJsonTransport
 
 _SEGMENT = re.compile(r"^[A-Za-z0-9_.-]+$")
 _OBJECT = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
+_WORKFLOW = re.compile(r"^\.github/workflows/(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+$")
 
 
 class C8SnapshotUnverifiable(RuntimeError):
@@ -55,7 +57,7 @@ class C8GitHubSnapshotAdapter:
             raise ValueError("GitHub token is required")
         self._validate_repo_part(owner, "owner")
         self._validate_repo_part(repo, "repo")
-        if not workflow_path.startswith(".github/workflows/"):
+        if not _WORKFLOW.fullmatch(workflow_path):
             raise ValueError("workflow path is not allowlisted")
         if (
             ".." in workflow_path
@@ -98,7 +100,11 @@ class C8GitHubSnapshotAdapter:
                 "GET",
                 url,
                 None,
-                {"Accept": "application/vnd.github+json", "Authorization": "Bearer " + self._token},
+                {
+                    "Accept": "application/vnd.github+json",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                    "Authorization": "Bearer " + self._token,
+                },
             )
             if status < 200 or status >= 300:
                 raise C8SnapshotUnverifiable()
@@ -204,7 +210,10 @@ class C8GitHubSnapshotAdapter:
             main_tree=tree_sha,
             main_parents=parents,
         )
-        text = data.decode("utf-8", errors="replace")
+        try:
+            text = data.decode("utf-8", errors="strict")
+        except UnicodeDecodeError:
+            raise C8SnapshotUnverifiable() from None
         policy = canonical_digest(
             {
                 "path": self.workflow_path,
@@ -213,6 +222,18 @@ class C8GitHubSnapshotAdapter:
             }
         )
         identity = canonical_digest({"workflow_digest": workflow_digest})
+        checkout_blocks = re.findall(
+            r"(?ms)^\s*-?\s*uses:\s*actions/checkout@[^\n]+(?P<body>.*?)(?=^\s*-?\s*uses:|\Z)",
+            text,
+        )
+        exact_checkout = bool(checkout_blocks) and all(
+            re.search(
+                r"(?m)^\s*ref\s*:\s*(?:\$\{\{\s*github\.sha\s*\}\}|[0-9a-f]{40})\s*$",
+                block,
+            )
+            is not None
+            for block in checkout_blocks
+        )
         workflow_read = C8WorkflowRead(
             binding=binding,
             path=self.workflow_path,
@@ -221,11 +242,7 @@ class C8GitHubSnapshotAdapter:
             validation_check_identity_digest=identity,
             pull_request_event=bool(re.search(r"(?m)^\s*pull_request\s*:", text)),
             merge_group_event=bool(re.search(r"(?m)^\s*merge_group\s*:", text)),
-            exact_sha_checkout=bool(
-                re.search(
-                    r"(?m)^\s*ref\s*:\s*(?:\$\{\{\s*github\.sha\s*\}\}|[0-9a-f]{40})\s*$", text
-                )
-            ),
+            exact_sha_checkout=exact_checkout,
         )
         self._binding, self._captured = binding, (repo_read, workflow_read)
         return self._captured
@@ -241,7 +258,7 @@ class C8GitHubSnapshotAdapter:
     capture_snapshot = capture
     snapshot = capture
 
-    def _unsupported(self) -> None:
+    def _unsupported(self) -> NoReturn:
         raise C8SnapshotUnverifiable()
 
     observe_protection = _unsupported
