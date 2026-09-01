@@ -460,5 +460,17 @@ def test_authorization_expiry_before_dispatch_makes_zero_release_calls(tmp_path:
     assert result.state == "quarantined", result
     assert result.reason is not None and "expired" in result.reason
     assert provider.release_calls == 0
+    assert provider.release_observation_calls == 0
     assert expiring.read_release_authorization(MAIN_OPERATION) is not None
-    assert expiring.read_release_claim(MAIN_OPERATION) is not None
+    assert expiring.read_mutation_intent_by_operation_stage(
+        MAIN_OPERATION, "release_transition"
+    ) is None
+    assert expiring.read_release_transition(MAIN_OPERATION) is None
+    assert expiring.read_provider_receipt(MAIN_OPERATION) is None
+    assert expiring.read_reconciliation(MAIN_OPERATION) is None
+    authorization = expiring.read_release_authorization(MAIN_OPERATION)
+    assert authorization is not None
+    assert (
+        expiring.read_release_claim_for_authorization(MAIN_OPERATION, authorization[0])
+        is not None
+    )

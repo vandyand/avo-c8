@@ -358,6 +358,7 @@ class C4StageExecutor:
 
         self._check_prerequisites(intent)
         if existing_intent is None:
+            self._check_pre_intent_expiry(intent, request)
             try:
                 self.journal.record_mutation_intent(intent)
             except Exception as exc:
@@ -409,6 +410,32 @@ class C4StageExecutor:
         if receipt.outcome in {"ambiguous", "reconciliation_required"}:
             self._open_fence(intent, receipt)
         return receipt
+
+    def _check_pre_intent_expiry(
+        self, intent: MainMutationIntent, request: StageRequest
+    ) -> None:
+        """Reject an already-expired stage before journal intent creation.
+
+        The journal deliberately validates the complete phase chain and may
+        reject such an intent with a broad persistence error.  Expiry is a
+        safe, non-secret precondition known from the request/lease records, so
+        classify it before entering that boundary while leaving malformed or
+        unavailable journal reads on the generic failure path.
+        """
+
+        now = self.clock.now()
+        expiry = getattr(request, "authorization_expires_at", None)
+        if isinstance(expiry, datetime) and now >= expiry:
+            raise C4StageExecutionError("release authorization has expired")
+        lease_reader = getattr(self.journal, "read_lease_evidence_record", None)
+        if not callable(lease_reader):
+            return
+        try:
+            lease_value = lease_reader(intent.operation_id)
+        except Exception:
+            return
+        if lease_value is not None and now >= lease_value[0].expires_at:
+            raise C4StageExecutionError("main lease has expired")
 
     def _persist_ambiguous(
         self, intent: MainMutationIntent, error: Exception

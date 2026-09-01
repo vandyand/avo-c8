@@ -858,6 +858,24 @@ def test_rejection_expiry_stale_lease_and_existing_intent_fail_closed(tmp_path: 
     assert intent_only_provider.calls == 1
 
 
+def test_intent_persistence_failure_remains_generic_and_pre_dispatch(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    journal, intent, request, authority = _fixture(tmp_path)
+    provider = CandidateProvider()
+
+    def fail(_: Any) -> None:
+        raise MainGraduationJournalError("authorization expired: private detail")
+
+    monkeypatch.setattr(journal, "record_mutation_intent", fail)
+    with pytest.raises(
+        C4StageExecutionError, match="mutation intent was not durably recorded"
+    ) as error:
+        _executor(journal, provider, Clock(), Fence(), authority).execute(intent, request)
+    assert "private detail" not in str(error.value)
+    assert provider.calls == 0
+
+
 def test_transport_timeout_persists_ambiguity_and_fence(tmp_path: Path) -> None:
     journal, intent, request, authority = _fixture(tmp_path)
     provider = CandidateProvider(error=True)
