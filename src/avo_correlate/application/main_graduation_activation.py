@@ -1,65 +1,137 @@
-# pyright: reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnknownVariableType=false
-"""Prepare (but never activate) the hosted main-ledger activation artifact.
+"""Prepare a local, non-consumable inventory for a future C8 activation.
 
-This module is deliberately an application boundary, rather than a ledger
-service.  It consumes controller-observed, already typed evidence and writes
-one canonical activation draft.  It does not know how to contact a hosted
-provider, mutate the ledger journal, or count an attempt.  Authentication is
-also deliberately injected: the DTO self-digests prove integrity, while the
-verifiers prove provenance and authority.
+This module deliberately cannot prepare ``MainLedgerActivation``. Local files,
+parsed DTOs, and self-digests are candidate evidence only: they do not establish
+issuer authority, provider observations, CAS durability, freshness, or
+activation authority. A future service-owned boundary must obtain and verify
+those facts through its configured trust root before it can construct or record
+an activation.
 """
 
 from __future__ import annotations
 
 import hashlib
-import inspect
 import os
 import tempfile
-from collections.abc import Callable
+from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Literal, Protocol
 
+from pydantic import Field, model_validator
+
+from avo_correlate.contracts.base import (
+    ArtifactRef,
+    NonEmptyString,
+    NonNegativeInt,
+    Sha256Digest,
+    StrictModel,
+)
 from avo_correlate.contracts.main_graduation_ledger import (
-    MainLedgerActivation,
     MainLedgerC8CapabilityEvidence,
     MainLedgerControllerAuthority,
     MainLedgerHostedRollbackProof,
 )
 from avo_correlate.domain.canonical import canonical_bytes, canonical_digest
 
-MAX_ACTIVATION_BYTES = 8 * 1024 * 1024
+MAX_LOCAL_DRAFT_BYTES = 8 * 1024 * 1024
 _ZERO_DIGEST = "sha256:" + "0" * 64
-EvidenceT = TypeVar("EvidenceT")
-Verifier = Callable[[EvidenceT], object]
+_LOCAL_DRAFT_KIND = "avo.main.ledger.local-activation-preparation-draft.v1"
+_CANDIDATE_ROLES = (
+    "controller-authority-candidate",
+    "c8-capability-evidence-candidate",
+    "hosted-rollback-proof-candidate",
+)
 
 
 class MainGraduationActivationPreparationError(RuntimeError):
-    """The supplied observations cannot produce a safe activation draft."""
+    """Local candidate inventory cannot be safely prepared."""
+
+
+class LocalActivationCandidateArtifact(StrictModel):
+    """A local file inventory entry, explicitly not trusted evidence."""
+
+    schema_version: Literal[1] = 1
+    role: Literal[
+        "controller-authority-candidate",
+        "c8-capability-evidence-candidate",
+        "hosted-rollback-proof-candidate",
+    ]
+    artifact_digest: Sha256Digest
+    size_bytes: NonNegativeInt
+    media_type: NonEmptyString
+    canonical_json: Literal[True] = True
+
+
+class LocalMainLedgerActivationPreparationDraft(StrictModel):
+    """An unverified local handoff; it can never be sent to the ledger."""
+
+    schema_version: Literal[1] = 1
+    draft_kind: Literal["avo.main.ledger.local-activation-preparation-draft.v1"] = (
+        _LOCAL_DRAFT_KIND
+    )
+    prepared_only: Literal[True] = True
+    activation_consumable: Literal[False] = False
+    rooted_verification: Literal[False] = False
+    candidate_artifacts: tuple[LocalActivationCandidateArtifact, ...] = Field(
+        min_length=len(_CANDIDATE_ROLES), max_length=len(_CANDIDATE_ROLES)
+    )
+    draft_digest: Sha256Digest
+
+    @model_validator(mode="after")
+    def validate_local_draft(self) -> LocalMainLedgerActivationPreparationDraft:
+        if tuple(item.role for item in self.candidate_artifacts) != _CANDIDATE_ROLES:
+            raise ValueError("local activation draft candidates must use the fixed role order")
+        if self.draft_digest != canonical_digest(
+            self.model_dump(exclude={"draft_digest"}, mode="json")
+        ):
+            raise ValueError("local activation draft digest mismatch")
+        return self
+
+
+class MainLedgerActivationTrustRoot(Protocol):
+    """Future service seam for role-separated, CAS-backed verification.
+
+    This protocol is intentionally not accepted by the local preparer. Its
+    implementation must re-read immutable artifact bytes by ``ArtifactRef``,
+    authenticate the provider/controller identity for each role, and apply a
+    trusted clock before constructing ``MainLedgerActivation``.
+    """
+
+    def load_verified_controller_authority(
+        self, reference: ArtifactRef
+    ) -> MainLedgerControllerAuthority: ...
+
+    def load_verified_c8_capability(
+        self, reference: ArtifactRef
+    ) -> MainLedgerC8CapabilityEvidence: ...
+
+    def load_verified_hosted_rollback_proof(
+        self, reference: ArtifactRef
+    ) -> MainLedgerHostedRollbackProof: ...
 
 
 @dataclass(frozen=True, slots=True)
-class PreparedMainGraduationActivation:
-    """A canonical activation draft and its raw artifact identity."""
+class PreparedLocalMainLedgerActivationDraft:
+    """The local draft plus its raw on-disk artifact identity."""
 
-    activation: MainLedgerActivation
+    draft: LocalMainLedgerActivationPreparationDraft
     artifact_path: Path
     artifact_digest: str
 
     @property
     def semantic_digest(self) -> str:
-        """Return the activation's self-digest (distinct from raw bytes)."""
-        return self.activation.activation_digest
+        """Return the draft self-digest, distinct from its raw file digest."""
+        return self.draft.draft_digest
 
     @property
     def raw_digest(self) -> str:
-        """Return the digest of the canonical serialized artifact."""
+        """Return the digest of the canonical serialized draft."""
         return self.artifact_digest
 
     @property
     def path(self) -> Path:
-        """Compatibility alias for artifact consumers."""
+        """Compatibility convenience for local artifact consumers."""
         return self.artifact_path
 
 
@@ -102,32 +174,32 @@ def _raw_digest(data: bytes) -> str:
 
 
 def _write_create_once(path: Path, data: bytes) -> str:
-    """Atomically create the artifact; replay only an identical winner."""
-    if len(data) > MAX_ACTIVATION_BYTES:
-        raise MainGraduationActivationPreparationError("activation artifact exceeds size bound")
-    _safe_existing_path(path.parent, "activation output parent")
+    """Atomically create the local draft; replay only an identical winner."""
+    if len(data) > MAX_LOCAL_DRAFT_BYTES:
+        raise MainGraduationActivationPreparationError("local activation draft exceeds size bound")
+    _safe_existing_path(path.parent, "local activation draft output parent")
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         raise MainGraduationActivationPreparationError(
-            "activation output parent could not be created"
+            "local activation draft output parent could not be created"
         ) from exc
-    _safe_existing_path(path, "activation output")
+    _safe_existing_path(path, "local activation draft output")
     expected = _raw_digest(data)
     if path.exists():
         if path.is_symlink() or not path.is_file():
             raise MainGraduationActivationPreparationError(
-                "activation output must be a regular file"
+                "local activation draft output must be a regular file"
             )
         try:
             existing = path.read_bytes()
         except OSError as exc:
             raise MainGraduationActivationPreparationError(
-                "activation output is unreadable"
+                "local activation draft output is unreadable"
             ) from exc
         if existing != data:
             raise MainGraduationActivationPreparationError(
-                "conflicting activation artifact already exists"
+                "conflicting local activation draft already exists"
             )
         return expected
 
@@ -146,13 +218,13 @@ def _write_create_once(path: Path, data: bytes) -> str:
         except FileExistsError:
             if path.is_symlink() or not path.is_file() or path.read_bytes() != data:
                 raise MainGraduationActivationPreparationError(
-                    "conflicting activation artifact already exists"
+                    "conflicting local activation draft already exists"
                 ) from None
     except MainGraduationActivationPreparationError:
         raise
     except OSError as exc:
         raise MainGraduationActivationPreparationError(
-            "activation artifact could not be published"
+            "local activation draft could not be published"
         ) from exc
     finally:
         if temporary is not None:
@@ -160,241 +232,69 @@ def _write_create_once(path: Path, data: bytes) -> str:
     return expected
 
 
-def _revalidate[T](value: T, expected: type[T], label: str) -> T:
-    """Require an exact DTO instance and run its validators again."""
-    if type(value) is not expected:
+def _revalidate_candidate(value: object) -> LocalActivationCandidateArtifact:
+    if type(value) is not LocalActivationCandidateArtifact:
         raise MainGraduationActivationPreparationError(
-            f"{label} must be an exact {expected.__name__} instance"
+            "local activation candidate must be an exact LocalActivationCandidateArtifact"
         )
     try:
-        return expected.model_validate(value.model_dump(mode="json"))  # type: ignore[union-attr]
+        return LocalActivationCandidateArtifact.model_validate(value.model_dump(mode="json"))
     except (TypeError, ValueError) as exc:
         raise MainGraduationActivationPreparationError(
-            f"{label} failed contract validation"
+            "local activation candidate failed contract validation"
         ) from exc
 
 
-def _verify[T](
-    value: T,
-    verifier: object | None,
-    expected: type[T],
-    label: str,
-) -> None:
-    """Invoke one exact one-argument verifier and require literal ``True``."""
-    if verifier is None:
-        raise MainGraduationActivationPreparationError(f"{label} verifier is required")
-    candidate: object = verifier
-    if not callable(candidate):
-        method_names = {
-            "controller authority": ("verify_controller_authority", "verify_authority"),
-            "C8 capability": ("verify_c8_capability", "verify_capability"),
-            "hosted rollback": ("verify_hosted_rollback", "verify_rollback"),
-        }.get(label, ())
-        candidate = next(
-            (
-                getattr(verifier, name)
-                for name in method_names
-                if callable(getattr(verifier, name, None))
-            ),
-            None,
-        )
-    if not callable(candidate):
-        raise MainGraduationActivationPreparationError(f"{label} verifier is unavailable")
-    try:
-        signature = inspect.signature(candidate)
-    except (TypeError, ValueError) as exc:
-        raise MainGraduationActivationPreparationError(
-            f"{label} verifier signature is invalid"
-        ) from exc
-    parameters = tuple(signature.parameters.values())
-    if len(parameters) != 1 or parameters[0].kind not in (
-        inspect.Parameter.POSITIONAL_ONLY,
-        inspect.Parameter.POSITIONAL_OR_KEYWORD,
-    ):
-        raise MainGraduationActivationPreparationError(
-            f"{label} verifier signature must accept exactly one typed evidence argument"
-        )
-    # Requiring an exact runtime value here prevents a verifier from being
-    # handed an untrusted mapping or a caller-controlled boolean.
-    if type(value) is not expected:
-        raise MainGraduationActivationPreparationError(f"{label} evidence type is invalid")
-    try:
-        result = candidate(value)
-    except Exception as exc:
-        raise MainGraduationActivationPreparationError(
-            f"{label} verifier rejected evidence"
-        ) from exc
-    if result is not True:
-        raise MainGraduationActivationPreparationError(
-            f"{label} verifier did not return literal True"
-        )
-
-
-def _activation_values(
-    authority: MainLedgerControllerAuthority,
-    proof: MainLedgerHostedRollbackProof,
-    capability: MainLedgerC8CapabilityEvidence,
-    *,
-    scheduler_sequence_watermark: int,
-    freshness_cutoff: datetime,
-    activated_at: datetime,
-) -> dict[str, Any]:
-    values: dict[str, Any] = {
-        "repository_digest": authority.repository_digest,
-        "target_ref": authority.target_ref,
-        "protocol_digest": authority.protocol_digest,
-        "controller_config_digest": authority.controller_config_digest,
-        "policy_digest": authority.policy_digest,
-        "policy_epoch": authority.policy_epoch,
-        "controller_issuer_identity": authority.issuer_identity,
-        "controller_issuer_authority_digest": authority.issuer_authority_digest,
-        "scheduler_sequence_watermark": scheduler_sequence_watermark,
-        "freshness_cutoff": freshness_cutoff,
-        "controller_authority": authority,
-        "hosted_rollback_proof": proof,
-        "c8_capability_evidence": capability,
-        "hosted_rollback_proof_digest": proof.proof_digest,
-        "hosted_rollback_artifact_digest": proof.proof_artifact_digest,
-        "rollback_authority_identity": proof.rollback_authority_identity,
-        "rollback_authority_digest": proof.rollback_authority_digest,
-        "c8_capability_evidence_digest": capability.evidence_digest,
-        "activated_at": activated_at,
-        "deploy_performed": False,
-    }
-    stub = MainLedgerActivation.model_construct(**values, activation_digest=_ZERO_DIGEST)
-    values["activation_digest"] = canonical_digest(
-        stub.model_dump(exclude={"activation_digest"}, mode="json")
+def _draft_values(
+    candidate_artifacts: tuple[LocalActivationCandidateArtifact, ...],
+) -> dict[str, object]:
+    values: dict[str, object] = {"candidate_artifacts": candidate_artifacts}
+    stub = LocalMainLedgerActivationPreparationDraft.model_construct(
+        candidate_artifacts=candidate_artifacts, draft_digest=_ZERO_DIGEST
+    )
+    values["draft_digest"] = canonical_digest(
+        stub.model_dump(exclude={"draft_digest"}, mode="json")
     )
     return values
 
 
-def prepare_main_graduation_activation(
+def prepare_local_main_graduation_activation_draft(
     output_file: Path,
     *,
-    controller_authority: MainLedgerControllerAuthority,
-    c8_capability_evidence: MainLedgerC8CapabilityEvidence,
-    hosted_rollback_proof: MainLedgerHostedRollbackProof,
-    freshness_cutoff: datetime,
-    activated_at: datetime,
-    scheduler_sequence_watermark: int,
-    authority_verifier: object | None = None,
-    capability_verifier: object | None = None,
-    rollback_verifier: object | None = None,
-    verifier: object | None = None,
-    controller_verifier: object | None = None,
-) -> PreparedMainGraduationActivation:
-    """Prepare one canonical activation draft without invoking activation authority.
+    candidate_artifacts: Sequence[LocalActivationCandidateArtifact],
+) -> PreparedLocalMainLedgerActivationDraft:
+    """Write an explicitly non-consumable inventory of local candidate files.
 
-    ``activated_at`` is the controller-selected draft timestamp; this function
-    does not obtain a clock value or call a service.  The ledger service must
-    still perform the eventual activation, if separately authorized.
+    No verifier, authority DTO, clock, ledger, provider, or CAS reader is
+    accepted here. The future ``MainLedgerActivationTrustRoot`` service is
+    responsible for establishing those facts and is deliberately outside this
+    local preparation boundary.
     """
     if not isinstance(output_file, Path):  # pyright: ignore[reportUnnecessaryIsInstance]
         raise MainGraduationActivationPreparationError("output_file must be a Path")
-    authority = _revalidate(
-        controller_authority, MainLedgerControllerAuthority, "controller authority"
-    )
-    capability = _revalidate(
-        c8_capability_evidence,
-        MainLedgerC8CapabilityEvidence,
-        "C8 capability evidence",
-    )
-    proof = _revalidate(
-        hosted_rollback_proof, MainLedgerHostedRollbackProof, "hosted rollback proof"
-    )
-    if controller_verifier is not None:
-        if authority_verifier is not None:
-            raise MainGraduationActivationPreparationError(
-                "supply only one controller authority verifier"
-            )
-        authority_verifier = controller_verifier
-    if verifier is not None:
-        capability_verifier = capability_verifier or verifier
-        rollback_verifier = rollback_verifier or verifier
-        authority_verifier = authority_verifier or verifier
-
-    for label, value in (("freshness_cutoff", freshness_cutoff), ("activated_at", activated_at)):
-        if type(value) is not datetime or value.tzinfo is None or value.utcoffset() is None:
-            raise MainGraduationActivationPreparationError(f"{label} must be timezone-aware")
-    if type(scheduler_sequence_watermark) is not int:
+    if len(candidate_artifacts) != len(_CANDIDATE_ROLES):
         raise MainGraduationActivationPreparationError(
-            "scheduler_sequence_watermark must be an integer"
+            "local activation draft requires exactly three candidate artifacts"
         )
-    if scheduler_sequence_watermark < 0:
-        raise MainGraduationActivationPreparationError(
-            "scheduler_sequence_watermark must be non-negative"
-        )
-    if not authority.authorized_at <= freshness_cutoff <= activated_at <= authority.expires_at:
-        raise MainGraduationActivationPreparationError(
-            "activation window is outside controller authority"
-        )
-    if not freshness_cutoff <= capability.observed_at <= activated_at:
-        raise MainGraduationActivationPreparationError(
-            "C8 capability evidence is stale or future-dated"
-        )
-    if not freshness_cutoff <= proof.completed_at <= activated_at:
-        raise MainGraduationActivationPreparationError(
-            "hosted rollback proof is stale or future-dated"
-        )
-    if (
-        capability.repository_digest != authority.repository_digest
-        or capability.target_ref != authority.target_ref
-    ):
-        raise MainGraduationActivationPreparationError(
-            "C8 capability target differs from controller authority"
-        )
-    if capability.controller_authority_digest != authority.authority_digest:
-        raise MainGraduationActivationPreparationError(
-            "C8 capability is not bound to controller authority"
-        )
-    if (
-        proof.repository_digest != authority.repository_digest
-        or proof.target_ref != authority.target_ref
-    ):
-        raise MainGraduationActivationPreparationError(
-            "hosted rollback target differs from controller authority"
-        )
-    if proof.controller_authority_digest != authority.authority_digest:
-        raise MainGraduationActivationPreparationError(
-            "hosted rollback is not bound to controller authority"
-        )
-    _verify(authority, authority_verifier, MainLedgerControllerAuthority, "controller authority")
-    _verify(capability, capability_verifier, MainLedgerC8CapabilityEvidence, "C8 capability")
-    _verify(proof, rollback_verifier, MainLedgerHostedRollbackProof, "hosted rollback")
-    values = _activation_values(
-        authority,
-        proof,
-        capability,
-        scheduler_sequence_watermark=scheduler_sequence_watermark,
-        freshness_cutoff=freshness_cutoff,
-        activated_at=activated_at,
-    )
+    candidates = tuple(_revalidate_candidate(item) for item in candidate_artifacts)
+    values = _draft_values(candidates)
     try:
-        activation = MainLedgerActivation.model_validate(values)
+        draft = LocalMainLedgerActivationPreparationDraft.model_validate(values)
     except (TypeError, ValueError) as exc:
         raise MainGraduationActivationPreparationError(
-            "activation contract validation failed"
+            "local activation draft contract validation failed"
         ) from exc
-    data = canonical_bytes(activation.model_dump(mode="json"))
+    data = canonical_bytes(draft.model_dump(mode="json"))
     artifact_digest = _write_create_once(output_file, data)
-    return PreparedMainGraduationActivation(activation, output_file, artifact_digest)
+    return PreparedLocalMainLedgerActivationDraft(draft, output_file, artifact_digest)
 
-
-# Friendly aliases for callers that use the roadmap's shorter terminology.
-prepare_hosted_activation = prepare_main_graduation_activation
-prepare_activation = prepare_main_graduation_activation
-prepare_main_ledger_activation = prepare_main_graduation_activation
-MainGraduationActivationPreparation = PreparedMainGraduationActivation
-MainLedgerActivationArtifact = PreparedMainGraduationActivation
 
 __all__ = [
-    "MAX_ACTIVATION_BYTES",
-    "MainGraduationActivationPreparation",
+    "MAX_LOCAL_DRAFT_BYTES",
+    "LocalActivationCandidateArtifact",
+    "LocalMainLedgerActivationPreparationDraft",
     "MainGraduationActivationPreparationError",
-    "MainLedgerActivationArtifact",
-    "PreparedMainGraduationActivation",
-    "prepare_activation",
-    "prepare_hosted_activation",
-    "prepare_main_graduation_activation",
-    "prepare_main_ledger_activation",
+    "MainLedgerActivationTrustRoot",
+    "PreparedLocalMainLedgerActivationDraft",
+    "prepare_local_main_graduation_activation_draft",
 ]

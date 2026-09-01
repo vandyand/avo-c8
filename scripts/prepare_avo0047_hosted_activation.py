@@ -1,51 +1,48 @@
-# pyright: reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnknownVariableType=false
-"""Prepare a local-only AVO-004.7 hosted-ledger activation draft.
+"""Prepare a local, non-consumable AVO-004.7 activation candidate inventory.
 
-The input records are authenticated only by injected controller verifiers.  A
-CLI invocation therefore has to name local verifier callables explicitly; a
-JSON record, digest, or boolean is never treated as proof of capability.  The
-command writes a canonical draft and reports that no ledger activation or
-provider call occurred.
+This command never authenticates an authority, evaluates provider evidence,
+contacts a provider, or activates a ledger. It records only canonical local
+file identities for a future service-owned provider/CAS trust root to re-read
+and verify. Its output is intentionally incompatible with
+``MainLedgerActivation``.
 """
 
 from __future__ import annotations
 
 import argparse
-import importlib
+import hashlib
 import json
 import sys
-from collections.abc import Callable
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from avo_correlate.application.main_graduation_activation import (
+    LocalActivationCandidateArtifact,
     MainGraduationActivationPreparationError,
-    PreparedMainGraduationActivation,
-    prepare_main_graduation_activation,
-)
-from avo_correlate.contracts.main_graduation_ledger import (
-    MainLedgerC8CapabilityEvidence,
-    MainLedgerControllerAuthority,
-    MainLedgerHostedRollbackProof,
+    PreparedLocalMainLedgerActivationDraft,
+    prepare_local_main_graduation_activation_draft,
 )
 from avo_correlate.domain.canonical import canonical_bytes
 
 MAX_INPUT_BYTES = 8 * 1024 * 1024
+_CANDIDATE_SPECS = (
+    (
+        "controller-authority-candidate",
+        "application/vnd.avo.main-ledger-controller-authority+json",
+    ),
+    (
+        "c8-capability-evidence-candidate",
+        "application/vnd.avo.main-ledger-c8-capability-evidence+json",
+    ),
+    (
+        "hosted-rollback-proof-candidate",
+        "application/vnd.avo.main-ledger-hosted-rollback-proof+json",
+    ),
+)
 
 
 class HostedActivationPreparationError(RuntimeError):
     """The command-line inputs cannot produce a safe local draft."""
-
-
-def _parse_datetime(raw: str) -> datetime:
-    try:
-        result = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError("timestamp must be ISO-8601") from exc
-    if result.tzinfo is None or result.utcoffset() is None:
-        raise argparse.ArgumentTypeError("timestamp must include a timezone")
-    return result
 
 
 def _json_object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -57,7 +54,9 @@ def _json_object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
-def _load_record(path: Path, model_type: Any) -> Any:
+def _load_candidate(
+    path: Path, *, role: str, media_type: str
+) -> LocalActivationCandidateArtifact:
     try:
         if path.is_symlink() or not path.is_file():
             raise HostedActivationPreparationError(f"input record must be a regular file: {path}")
@@ -77,59 +76,41 @@ def _load_record(path: Path, model_type: Any) -> Any:
             raise HostedActivationPreparationError(
                 f"input record is not canonical JSON: {path}"
             )
-        return model_type.model_validate(values)
+        return LocalActivationCandidateArtifact.model_validate(
+            {
+                "role": role,
+                "artifact_digest": "sha256:" + hashlib.sha256(data).hexdigest(),
+                "size_bytes": len(data),
+                "media_type": media_type,
+            }
+        )
     except HostedActivationPreparationError:
         raise
     except (TypeError, ValueError) as exc:
         raise HostedActivationPreparationError(
-            f"input record failed contract validation: {path}"
+            f"input record cannot be inventoried: {path}"
         ) from exc
 
 
-def _load_verifier(spec: str, label: str) -> Callable[[Any], object]:
-    module_name, separator, attribute = spec.partition(":")
-    if not separator or not module_name or not attribute:
-        raise HostedActivationPreparationError(
-            f"{label} verifier must use module:callable syntax"
-        )
-    try:
-        candidate = getattr(importlib.import_module(module_name), attribute)
-    except (ImportError, AttributeError) as exc:
-        raise HostedActivationPreparationError(f"{label} verifier cannot be loaded") from exc
-    if not callable(candidate):
-        raise HostedActivationPreparationError(f"{label} verifier is not callable")
-    return candidate
-
-
-def prepare_hosted_activation_from_files(
+def prepare_local_activation_draft_from_files(
     controller_authority_file: Path,
     capability_evidence_file: Path,
     hosted_rollback_proof_file: Path,
     output_file: Path,
-    *,
-    freshness_cutoff: datetime,
-    activated_at: datetime,
-    scheduler_sequence_watermark: int,
-    authority_verifier: Callable[[Any], object],
-    capability_verifier: Callable[[Any], object],
-    rollback_verifier: Callable[[Any], object],
-) -> PreparedMainGraduationActivation:
-    """Load canonical typed records and delegate to the fail-closed builder."""
-    authority = _load_record(controller_authority_file, MainLedgerControllerAuthority)
-    capability = _load_record(capability_evidence_file, MainLedgerC8CapabilityEvidence)
-    proof = _load_record(hosted_rollback_proof_file, MainLedgerHostedRollbackProof)
+) -> PreparedLocalMainLedgerActivationDraft:
+    """Inventory three canonical local files without authenticating their claims."""
+    paths = (
+        controller_authority_file,
+        capability_evidence_file,
+        hosted_rollback_proof_file,
+    )
+    candidates = tuple(
+        _load_candidate(path, role=role, media_type=media_type)
+        for path, (role, media_type) in zip(paths, _CANDIDATE_SPECS, strict=True)
+    )
     try:
-        return prepare_main_graduation_activation(
-            output_file,
-            controller_authority=authority,
-            c8_capability_evidence=capability,
-            hosted_rollback_proof=proof,
-            freshness_cutoff=freshness_cutoff,
-            activated_at=activated_at,
-            scheduler_sequence_watermark=scheduler_sequence_watermark,
-            authority_verifier=authority_verifier,
-            capability_verifier=capability_verifier,
-            rollback_verifier=rollback_verifier,
+        return prepare_local_main_graduation_activation_draft(
+            output_file, candidate_artifacts=candidates
         )
     except MainGraduationActivationPreparationError as exc:
         raise HostedActivationPreparationError(str(exc)) from exc
@@ -141,25 +122,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--capability-evidence-file", type=Path, required=True)
     parser.add_argument("--hosted-rollback-proof-file", type=Path, required=True)
     parser.add_argument("--output-file", type=Path, required=True)
-    parser.add_argument("--freshness-cutoff", type=_parse_datetime, required=True)
-    parser.add_argument("--activated-at", type=_parse_datetime, required=True)
-    parser.add_argument("--scheduler-sequence-watermark", type=int, required=True)
-    parser.add_argument("--authority-verifier", required=True, metavar="MODULE:CALLABLE")
-    parser.add_argument("--capability-verifier", required=True, metavar="MODULE:CALLABLE")
-    parser.add_argument("--rollback-verifier", required=True, metavar="MODULE:CALLABLE")
     args = parser.parse_args(argv)
     try:
-        draft = prepare_hosted_activation_from_files(
+        draft = prepare_local_activation_draft_from_files(
             args.controller_authority_file,
             args.capability_evidence_file,
             args.hosted_rollback_proof_file,
             args.output_file,
-            freshness_cutoff=args.freshness_cutoff,
-            activated_at=args.activated_at,
-            scheduler_sequence_watermark=args.scheduler_sequence_watermark,
-            authority_verifier=_load_verifier(args.authority_verifier, "controller authority"),
-            capability_verifier=_load_verifier(args.capability_verifier, "C8 capability"),
-            rollback_verifier=_load_verifier(args.rollback_verifier, "hosted rollback"),
         )
     except (HostedActivationPreparationError, OSError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
@@ -167,13 +136,16 @@ def main(argv: list[str] | None = None) -> int:
     print(
         json.dumps(
             {
-                "status": "prepared",
+                "status": "local-activation-preparation-draft-prepared",
                 "prepared_only": True,
+                "activation_consumable": False,
+                "rooted_verification": False,
                 "ledger_activated": False,
                 "provider_calls": 0,
-                "activation_file": str(draft.artifact_path),
-                "activation_digest": draft.semantic_digest,
-                "activation_artifact_digest": draft.artifact_digest,
+                "draft_file": str(draft.artifact_path),
+                "draft_digest": draft.semantic_digest,
+                "draft_artifact_digest": draft.artifact_digest,
+                "candidate_artifact_count": len(draft.draft.candidate_artifacts),
             },
             sort_keys=True,
             separators=(",", ":"),

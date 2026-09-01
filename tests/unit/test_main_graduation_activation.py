@@ -1,138 +1,109 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
+import avo_correlate.application.main_graduation_activation as module
+from avo_correlate.adapters.artifacts.main_graduation_ledger_journal import (
+    MainGraduationLedgerJournal,
+    MainGraduationLedgerJournalError,
+)
 from avo_correlate.application.main_graduation_activation import (
+    LocalActivationCandidateArtifact,
     MainGraduationActivationPreparationError,
-    prepare_main_graduation_activation,
+    prepare_local_main_graduation_activation_draft,
 )
-from avo_correlate.contracts.main_graduation_ledger import (
-    MainLedgerC8CapabilityEvidence,
-    MainLedgerControllerAuthority,
-    MainLedgerHostedRollbackProof,
-)
-from avo_correlate.domain.canonical import canonical_bytes, canonical_digest
-
-D = "sha256:" + "a" * 64
-NOW = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
+from avo_correlate.contracts.main_graduation_ledger import MainLedgerActivation
+from avo_correlate.domain.canonical import canonical_bytes
 
 
-def _model(model_type: Any, values: dict[str, Any], digest_field: str) -> Any:
-    probe = model_type.model_construct(**values, **{digest_field: D})
-    return model_type.model_validate(
+def _candidate(role: str, digest_character: str) -> LocalActivationCandidateArtifact:
+    return LocalActivationCandidateArtifact.model_validate(
         {
-            **values,
-            digest_field: canonical_digest(
-                probe.model_dump(exclude={digest_field}, mode="json")
-            ),
+            "role": role,
+            "artifact_digest": "sha256:" + digest_character * 64,
+            "size_bytes": 17,
+            "media_type": "application/vnd.avo.local-candidate+json",
         }
     )
 
 
-def _evidence() -> tuple[Any, Any, Any]:
-    authority = _model(
-        MainLedgerControllerAuthority,
-        {
-            "repository_digest": D,
-            "protocol_digest": D,
-            "controller_config_digest": D,
-            "policy_digest": D,
-            "policy_epoch": D,
-            "issuer_identity": "controller",
-            "issuer_authority_digest": D,
-            "authorized_at": NOW - timedelta(minutes=5),
-            "expires_at": NOW + timedelta(hours=1),
-        },
-        "authority_digest",
+def _candidates() -> tuple[LocalActivationCandidateArtifact, ...]:
+    return (
+        _candidate("controller-authority-candidate", "a"),
+        _candidate("c8-capability-evidence-candidate", "b"),
+        _candidate("hosted-rollback-proof-candidate", "c"),
     )
-    proof = _model(
-        MainLedgerHostedRollbackProof,
-        {
-            "operation_id": D,
-            "repository_digest": D,
-            "proof_artifact_digest": D,
-            "controller_authority_digest": authority.authority_digest,
-            "rollback_authority_identity": "rollback",
-            "rollback_authority_digest": D,
-            "result_evidence_digest": D,
-            "completed_at": NOW - timedelta(minutes=1),
-        },
-        "proof_digest",
-    )
-    capability = _model(
-        MainLedgerC8CapabilityEvidence,
-        {
-            "repository_digest": D,
-            "controller_authority_digest": authority.authority_digest,
-            "hosting_authority_identity": "hosting",
-            "queue_configuration_digest": D,
-            "queue_generation_digest": D,
-            "release_issuer_identity": "release",
-            "release_issuer_app_id": 9001,
-            "release_issuer_authority_digest": D,
-            "observed_at": NOW - timedelta(minutes=1),
-        },
-        "evidence_digest",
-    )
-    return authority, capability, proof
 
 
 def _prepare(tmp_path: Path, **updates: Any) -> Any:
-    authority, capability, proof = _evidence()
     values: dict[str, Any] = {
-        "output_file": tmp_path / "activation.json",
-        "controller_authority": authority,
-        "c8_capability_evidence": capability,
-        "hosted_rollback_proof": proof,
-        "freshness_cutoff": NOW - timedelta(minutes=2),
-        "activated_at": NOW,
-        "scheduler_sequence_watermark": 0,
-        "authority_verifier": lambda _value: True,
-        "capability_verifier": lambda _value: True,
-        "rollback_verifier": lambda _value: True,
+        "output_file": tmp_path / "local-activation-draft.json",
+        "candidate_artifacts": _candidates(),
     }
     values.update(updates)
-    return prepare_main_graduation_activation(**values)
+    return prepare_local_main_graduation_activation_draft(**values)
 
 
-def test_valid_evidence_is_deterministic_and_create_once(tmp_path: Path) -> None:
+def test_local_draft_is_deterministic_create_once_and_explicitly_unconsumable(
+    tmp_path: Path,
+) -> None:
     draft = _prepare(tmp_path)
-    assert draft.artifact_path.read_bytes() == canonical_bytes(
-        draft.activation.model_dump(mode="json")
-    )
+    assert draft.artifact_path.read_bytes() == canonical_bytes(draft.draft.model_dump(mode="json"))
+    assert draft.draft.prepared_only is True
+    assert draft.draft.activation_consumable is False
+    assert draft.draft.rooted_verification is False
+    assert [item.role for item in draft.draft.candidate_artifacts] == [
+        "controller-authority-candidate",
+        "c8-capability-evidence-candidate",
+        "hosted-rollback-proof-candidate",
+    ]
+
     replay = _prepare(tmp_path)
     assert replay.artifact_digest == draft.artifact_digest
     assert replay.semantic_digest == draft.semantic_digest
 
 
-@pytest.mark.parametrize(
-    "name,value",
-    [
-        ("authority_verifier", None),
-        ("capability_verifier", lambda _value: 1),
-        ("rollback_verifier", lambda _value, _extra: True),
-    ],
-)
-def test_verifiers_are_required_exact_and_literal_true(
-    tmp_path: Path, name: str, value: Any
+def test_local_draft_is_rejected_by_activation_contract_and_ledger(tmp_path: Path) -> None:
+    draft = _prepare(tmp_path)
+    payload = draft.draft.model_dump(mode="json")
+
+    with pytest.raises(ValidationError):
+        MainLedgerActivation.model_validate(payload)
+    with pytest.raises(MainGraduationLedgerJournalError, match="malformed activation"):
+        MainGraduationLedgerJournal(tmp_path / "ledger").record_activation(draft.draft)
+
+
+def test_local_draft_rejects_bad_candidate_shape_order_and_conflicting_output(
+    tmp_path: Path,
 ) -> None:
-    with pytest.raises(MainGraduationActivationPreparationError, match="verifier"):
-        _prepare(tmp_path, **{name: value})
+    malformed = LocalActivationCandidateArtifact.model_construct(
+        role="controller-authority-candidate",
+        artifact_digest="not-a-digest",
+        size_bytes=17,
+        media_type="application/vnd.avo.local-candidate+json",
+    )
+    with pytest.raises(MainGraduationActivationPreparationError, match="contract validation"):
+        _prepare(tmp_path, candidate_artifacts=(malformed, *_candidates()[1:]))
+    with pytest.raises(MainGraduationActivationPreparationError, match="contract validation"):
+        _prepare(tmp_path, candidate_artifacts=tuple(reversed(_candidates())))
 
-
-def test_stale_or_tampered_evidence_and_output_fail_closed(tmp_path: Path) -> None:
-    _authority, capability, proof = _evidence()
-    stale = proof.model_copy(update={"completed_at": NOW - timedelta(hours=2)})
-    with pytest.raises(MainGraduationActivationPreparationError, match="rollback proof"):
-        _prepare(tmp_path, hosted_rollback_proof=stale)
-    forged = capability.model_copy(update={"repository_digest": D[:-1] + "b"})
-    with pytest.raises(MainGraduationActivationPreparationError, match="capability evidence"):
-        _prepare(tmp_path, c8_capability_evidence=forged)
     _prepare(tmp_path)
-    (tmp_path / "activation.json").write_bytes(b"tampered")
+    (tmp_path / "local-activation-draft.json").write_bytes(b"tampered")
     with pytest.raises(MainGraduationActivationPreparationError, match="conflicting"):
         _prepare(tmp_path)
+
+
+def test_legacy_activation_builders_and_generic_verifier_aliases_are_absent() -> None:
+    for name in (
+        "prepare_main_graduation_activation",
+        "prepare_main_ledger_activation",
+        "prepare_hosted_activation",
+        "prepare_activation",
+        "PreparedMainGraduationActivation",
+        "MainLedgerActivationArtifact",
+    ):
+        assert not hasattr(module, name)
