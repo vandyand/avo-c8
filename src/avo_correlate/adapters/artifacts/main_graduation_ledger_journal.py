@@ -169,8 +169,8 @@ class MainGraduationLedgerJournal:
 
     def record_submission(self, submission: MainLedgerSubmissionEnvelope) -> ArtifactRef:
         with _LOCK:
-            activation = self._require_activation(submission.activation_digest)
             record = self._parse_record("submission", submission)
+            activation = self._require_activation(record.activation_digest)
             self._validate_record_artifacts(record)
             self._verify("submission", record, activation)
             if (
@@ -192,21 +192,31 @@ class MainGraduationLedgerJournal:
                         "conflicting submission for scheduler sequence"
                     )
                 return self._reference(existing, "submission")
-            max_sequence = self._max_committed_sequence(
-                activation.activation_digest, activation.scheduler_sequence_watermark
-            )
+            max_sequence = self._max_committed_sequence(activation)
             if record.scheduler_sequence != max_sequence + 1:
                 raise MainGraduationLedgerJournalError("scheduler sequence has a gap")
-            for entry in self._all_entries(activation.activation_digest):
+            for entry in self._entries_for(activation):
                 old = self._read_entry_submission(entry, activation)
                 if (
                     old.source_identity == record.source_identity
                     and old.submission_identity == record.submission_identity
                 ):
                     raise MainGraduationLedgerRecordConflictError("duplicate submission identity")
+                if old.submission_digest == record.submission_digest:
+                    raise MainGraduationLedgerRecordConflictError(
+                        "duplicate physical submission content"
+                    )
             entry = self._new_entry(record, reference)
-            self._commit_entry(record.activation_digest, record.scheduler_sequence, entry)
-            return reference
+            self._commit_entry(
+                record.activation_digest,
+                record.scheduler_sequence,
+                entry,
+                create_only=True,
+            )
+            committed = self._sequence_entry(record.activation_digest, record.scheduler_sequence)
+            if committed is None:
+                raise MainGraduationLedgerJournalError("submission commit disappeared")
+            return self._reference(committed, "submission")
 
     record_scheduler_submission = record_submission
 
@@ -215,7 +225,7 @@ class MainGraduationLedgerJournal:
     ) -> tuple[MainLedgerSubmissionEnvelope, ArtifactRef] | None:
         with _LOCK:
             activation = self._require_activation_for_read()
-            for entry in self._all_entries(activation.activation_digest):
+            for entry in self._entries_for(activation):
                 submission = self._read_entry_submission(entry, activation)
                 if submission.operation_id == operation_id:
                     return submission, self._reference(entry, "submission")
@@ -226,18 +236,18 @@ class MainGraduationLedgerJournal:
     ) -> tuple[MainLedgerSubmissionEnvelope, ArtifactRef] | None:
         with _LOCK:
             activation = self._require_activation_for_read()
-            entry = self._sequence_entry(activation.activation_digest, scheduler_sequence)
-            if entry is None:
-                return None
-            submission = self._read_entry_submission(entry, activation)
-            return submission, self._reference(entry, "submission")
+            for entry in self._entries_for(activation):
+                if entry["scheduler_sequence"] == scheduler_sequence:
+                    submission = self._read_entry_submission(entry, activation)
+                    return submission, self._reference(entry, "submission")
+            return None
 
     def list_submissions(self) -> tuple[MainLedgerSubmissionEnvelope, ...]:
         with _LOCK:
             activation = self._require_activation_for_read()
             return tuple(
                 self._read_entry_submission(entry, activation)
-                for entry in self._all_entries(activation.activation_digest)
+                for entry in self._entries_for(activation)
             )
 
     list_scheduler_submissions = list_submissions
@@ -246,9 +256,10 @@ class MainGraduationLedgerJournal:
         self, classification: MainLedgerClassificationEvidence
     ) -> ArtifactRef:
         with _LOCK:
-            activation = self._require_activation(classification.activation_digest)
             record = self._parse_record("classification", classification)
+            activation = self._require_activation(record.activation_digest)
             self._validate_record_artifacts(record)
+            self._entries_for(activation)
             entry = self._require_entry(record.activation_digest, record.scheduler_sequence)
             submission = self._read_entry_submission(entry, activation)
             self._require_exact_classification_binding(record, activation, submission)
@@ -279,7 +290,7 @@ class MainGraduationLedgerJournal:
     ) -> tuple[MainLedgerClassificationEvidence, ArtifactRef] | None:
         with _LOCK:
             activation = self._require_activation_for_read()
-            entries = self._all_entries(activation.activation_digest)
+            entries = self._entries_for(activation)
             for entry in entries:
                 submission = self._read_entry_submission(entry, activation)
                 if isinstance(identity, int):
@@ -301,9 +312,10 @@ class MainGraduationLedgerJournal:
 
     def record_outcome(self, outcome: MainLedgerTerminalOutcome) -> ArtifactRef:
         with _LOCK:
-            activation = self._require_activation(outcome.activation_digest)
             record = self._parse_record("outcome", outcome)
+            activation = self._require_activation(record.activation_digest)
             self._validate_record_artifacts(record)
+            self._entries_for(activation)
             entry = self._require_entry(record.activation_digest, record.scheduler_sequence)
             submission = self._read_entry_submission(entry, activation)
             classification = self._require_classification(entry, activation, submission)
@@ -337,7 +349,7 @@ class MainGraduationLedgerJournal:
     ) -> tuple[MainLedgerTerminalOutcome, ArtifactRef] | None:
         with _LOCK:
             activation = self._require_activation_for_read()
-            for entry in self._all_entries(activation.activation_digest):
+            for entry in self._entries_for(activation):
                 submission = self._read_entry_submission(entry, activation)
                 if (isinstance(identity, int) and submission.scheduler_sequence != identity) or (
                     isinstance(identity, str) and submission.operation_id != identity
@@ -361,8 +373,9 @@ class MainGraduationLedgerJournal:
 
     def record_transition(self, transition: MainLedgerAccumulatorTransition) -> ArtifactRef:
         with _LOCK:
-            activation = self._require_activation(transition.activation_digest)
             record = self._parse_record("transition", transition)
+            activation = self._require_activation(record.activation_digest)
+            self._entries_for(activation)
             sequence = record.classification.scheduler_sequence
             entry = self._require_entry(record.activation_digest, sequence)
             submission = self._read_entry_submission(entry, activation)
@@ -410,7 +423,7 @@ class MainGraduationLedgerJournal:
     ) -> tuple[MainLedgerAccumulatorTransition, ArtifactRef] | None:
         with _LOCK:
             activation = self._require_activation_for_read()
-            for entry in self._all_entries(activation.activation_digest):
+            for entry in self._entries_for(activation):
                 submission = self._read_entry_submission(entry, activation)
                 if (isinstance(identity, int) and submission.scheduler_sequence != identity) or (
                     isinstance(identity, str) and submission.operation_id != identity
@@ -474,10 +487,11 @@ class MainGraduationLedgerJournal:
                 return None
             reference = self._read_reference(index, "boundary")
             evidence = self._read_record("boundary", reference, MainLedgerBoundaryViolationEvidence)
-            if evidence.activation_digest != activation.activation_digest:
-                raise MainGraduationLedgerJournalError(
-                    "boundary evidence activation differs from index"
-                )
+            if (
+                evidence.activation_digest != activation.activation_digest
+                or evidence.controller_authority != activation.controller_authority
+            ):
+                raise MainGraduationLedgerJournalError("boundary evidence differs from activation")
             self._verify("boundary", evidence, activation)
             return evidence, reference
 
@@ -573,15 +587,20 @@ class MainGraduationLedgerJournal:
                     reference = self._read_reference(candidate, "package")
                     package = self._read_record("package", reference, MainLedgerEvidencePackage)
                     if package.package_digest == activation_or_package_digest:
+                        activation = self._require_activation(package.activation.activation_digest)
+                        self._verify_package_closure(package, activation)
+                        self._verify("package", package)
                         matches.append((package, reference))
                 return matches[0] if len(matches) == 1 else None
             reference = self._read_reference(index, "package")
             package = self._read_record("package", reference, MainLedgerEvidencePackage)
+            if package.activation.activation_digest != activation_or_package_digest:
+                raise MainGraduationLedgerJournalError(
+                    "package index identity differs from package activation"
+                )
             activation = self._require_activation(package.activation.activation_digest)
             self._verify_package_closure(package, activation)
             self._verify("package", package)
-            if package.package_digest != reference.digest:
-                raise MainGraduationLedgerJournalError("package digest does not match CAS object")
             return package, reference
 
     read_evidence_package = read_package
@@ -589,7 +608,7 @@ class MainGraduationLedgerJournal:
     def list_sequences(self) -> tuple[int, ...]:
         with _LOCK:
             activation = self._require_activation_for_read()
-            entries = self._all_entries(activation.activation_digest)
+            entries = self._entries_for(activation)
             for entry in entries:
                 self._validate_entry(activation, entry)
             return tuple(entry["scheduler_sequence"] for entry in entries)
@@ -685,7 +704,14 @@ class MainGraduationLedgerJournal:
             "transition": None,
         }
 
-    def _commit_entry(self, activation_digest: str, sequence: int, entry: dict[str, Any]) -> None:
+    def _commit_entry(
+        self,
+        activation_digest: str,
+        sequence: int,
+        entry: dict[str, Any],
+        *,
+        create_only: bool = False,
+    ) -> None:
         if entry.get("schema_version") != _SEQUENCE_SCHEMA:
             raise MainGraduationLedgerJournalError("sequence index schema is unsupported")
         data = canonical_bytes(entry)
@@ -697,8 +723,24 @@ class MainGraduationLedgerJournal:
                 handle.write(data)
                 handle.flush()
                 os.fsync(handle.fileno())
-            os.replace(temporary, path)
+            if create_only:
+                try:
+                    # A hard-link install is an atomic create-once commit. It
+                    # cannot overwrite a submission committed by another runner.
+                    os.link(temporary, path)
+                except FileExistsError:
+                    existing = self._read_sequence_file(path, activation_digest, sequence)
+                    if canonical_bytes(existing) != data:
+                        raise MainGraduationLedgerRecordConflictError(
+                            "conflicting committed sequence entry"
+                        ) from None
+                finally:
+                    temporary.unlink(missing_ok=True)
+            else:
+                os.replace(temporary, path)
             _sync_directory(path.parent)
+        except MainGraduationLedgerRecordConflictError:
+            raise
         except OSError as exc:
             temporary.unlink(missing_ok=True)
             raise MainGraduationLedgerJournalError("sequence commit was not durable") from exc
@@ -720,6 +762,20 @@ class MainGraduationLedgerJournal:
             item["scheduler_sequence"] for item in entries
         ):
             raise MainGraduationLedgerJournalError("sequence index ordering is malformed")
+        return entries
+
+    def _entries_for(self, activation: MainLedgerActivation) -> list[dict[str, Any]]:
+        """Scan committed history and reject duplicate physical content."""
+        entries = self._all_entries(activation.activation_digest)
+        seen: dict[str, int] = {}
+        for entry in entries:
+            submission = self._read_entry_submission(entry, activation)
+            previous = seen.get(submission.submission_digest)
+            if previous is not None and previous != submission.scheduler_sequence:
+                raise MainGraduationLedgerRecordConflictError(
+                    "duplicate physical submission content"
+                )
+            seen[submission.submission_digest] = submission.scheduler_sequence
         return entries
 
     def _sequence_entry(self, activation_digest: str, sequence: int) -> dict[str, Any] | None:
@@ -763,11 +819,11 @@ class MainGraduationLedgerJournal:
     def _sequence_path(self, activation_digest: str, sequence: int) -> Path:
         return self._sequences / activation_digest.removeprefix("sha256:") / f"{sequence}.json"
 
-    def _max_committed_sequence(self, activation_digest: str, watermark: int) -> int:
-        entries = self._all_entries(activation_digest)
+    def _max_committed_sequence(self, activation: MainLedgerActivation) -> int:
+        entries = self._entries_for(activation)
         if not entries:
-            return watermark
-        expected = watermark + 1
+            return activation.scheduler_sequence_watermark
+        expected = activation.scheduler_sequence_watermark + 1
         for entry in entries:
             if entry["scheduler_sequence"] != expected:
                 raise MainGraduationLedgerJournalError("committed scheduler sequence has a gap")
@@ -781,7 +837,12 @@ class MainGraduationLedgerJournal:
             entry, "submission", MainLedgerSubmissionEnvelope, activation
         )
         if (
-            submission.scheduler_sequence != entry["scheduler_sequence"]
+            submission.activation_digest != activation.activation_digest
+            or submission.repository_digest != activation.repository_digest
+            or submission.target_ref != activation.target_ref
+            or submission.scheduler_sequence <= activation.scheduler_sequence_watermark
+            or submission.activation_digest != entry["activation_digest"]
+            or submission.scheduler_sequence != entry["scheduler_sequence"]
             or submission.operation_id != entry["operation_id"]
             or submission.source_identity != entry["source_identity"]
             or submission.submission_identity != entry["submission_identity"]
@@ -932,6 +993,12 @@ class MainGraduationLedgerJournal:
             self._read_external(
                 record.evidence_artifact, BOUNDARY_ARTIFACT_ROLE, BOUNDARY_ARTIFACT_MEDIA_TYPE
             )
+        elif isinstance(record, MainLedgerBoundaryResetTransition):
+            self._read_external(
+                record.violation.evidence_artifact,
+                BOUNDARY_ARTIFACT_ROLE,
+                BOUNDARY_ARTIFACT_MEDIA_TYPE,
+            )
 
     def _read_external(self, reference: ArtifactRef, role: str, media_type: str) -> bytes:
         if (
@@ -963,9 +1030,11 @@ class MainGraduationLedgerJournal:
         try:
             if path.stat().st_size > _MAX_INDEX_BYTES:
                 raise ValueError("index is too large")
-            return ArtifactRef.model_validate(
-                json.loads(path.read_text(encoding="utf-8"), object_pairs_hook=_strict_pairs)
-            )
+            data = path.read_bytes()
+            raw = json.loads(data.decode("utf-8"), object_pairs_hook=_strict_pairs)
+            if canonical_bytes(raw) != data:
+                raise ValueError("index is not canonical JSON")
+            return ArtifactRef.model_validate(raw)
         except (OSError, ValueError, TypeError, UnicodeError, json.JSONDecodeError) as exc:
             raise MainGraduationLedgerJournalError(f"malformed {kind} index") from exc
 
@@ -1125,9 +1194,12 @@ class MainGraduationLedgerJournal:
         ) != len(package.submissions):
             raise MainGraduationLedgerJournalError("package does not close every durable sequence")
         by_sequence = {
-            entry["scheduler_sequence"]: entry
-            for entry in self._all_entries(activation.activation_digest)
+            entry["scheduler_sequence"]: entry for entry in self._entries_for(activation)
         }
+        if len(package.submissions) != len(by_sequence) or {
+            item.scheduler_sequence for item in package.submissions
+        } != set(by_sequence):
+            raise MainGraduationLedgerJournalError("package does not close every durable sequence")
         for submission, classification in zip(
             package.submissions, package.classifications, strict=True
         ):
@@ -1140,6 +1212,13 @@ class MainGraduationLedgerJournal:
             if durable_submission != submission:
                 raise MainGraduationLedgerJournalError(
                     "package submission differs from durable record"
+                )
+            if (
+                submission.repository_digest != activation.repository_digest
+                or submission.target_ref != activation.target_ref
+            ):
+                raise MainGraduationLedgerJournalError(
+                    "package submission target differs from durable activation"
                 )
             durable_classification = self._require_classification(
                 entry, activation, durable_submission
