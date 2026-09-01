@@ -20,6 +20,7 @@ from avo_correlate.application.query_service import QueryService
 from avo_correlate.application.run_service import RunService
 from avo_correlate.application.runtime_service import RuntimeService
 from avo_correlate.contracts.base import StrictModel
+from avo_correlate.contracts.c8_hosted_preflight import HostedC8PreflightReport
 from avo_correlate.contracts.experiment import ExperimentSpec
 from avo_correlate.contracts.lifecycle import RunState
 from avo_correlate.contracts.operations import CheckStatus, DoctorCheck, DoctorReport
@@ -39,6 +40,7 @@ test_app = typer.Typer(help="Run the required validation layers.")
 api_app = typer.Typer(help="Run the authenticated local control API.")
 harness_app = typer.Typer(help="Inspect coding-agent runtime compatibility.")
 session_app = typer.Typer(help="Inspect and reconcile variation sessions.")
+c8_app = typer.Typer(help="Run diagnostic hosted C8 checks.")
 app.add_typer(platform_app, name="platform")
 app.add_typer(experiment_app, name="experiment")
 app.add_typer(run_app, name="run")
@@ -49,6 +51,7 @@ app.add_typer(test_app, name="test")
 app.add_typer(api_app, name="api")
 app.add_typer(harness_app, name="harness")
 app.add_typer(session_app, name="session")
+app.add_typer(c8_app, name="c8")
 
 
 class PolicyTestCase(StrictModel):
@@ -317,6 +320,55 @@ def _read_spec(path: Path) -> ExperimentSpec:
 def _emit(value: StrictModel | dict[str, object]) -> None:
     payload = value.model_dump(mode="json") if isinstance(value, StrictModel) else value
     typer.echo(json.dumps(payload, sort_keys=True))
+
+
+def _c8_unverifiable_report() -> HostedC8PreflightReport:
+    return HostedC8PreflightReport.build(
+        passed_codes=(),
+        blocker_codes=(),
+        unverifiable_codes=("c8_preflight_unverifiable",),
+        observation_digests={},
+    )
+
+
+@c8_app.command(
+    "preflight", context_settings={"ignore_unknown_options": True, "allow_extra_args": True}
+)
+def c8_preflight(
+    context: typer.Context,
+    owner: Annotated[str, typer.Option("--owner")],
+    repo: Annotated[str, typer.Option("--repo")],
+    workflow_path: Annotated[
+        str, typer.Option("--workflow-path")
+    ] = ".github/workflows/ci.yml",
+) -> None:
+    """Emit a sanitized, read-only hosted C8 preflight report."""
+    # Ignore and reject unknown options without allowing Click to echo a
+    # possible secret value supplied to an unsupported option.
+    if context.args:
+        _emit(_c8_unverifiable_report())
+        raise typer.Exit(code=2)
+    token = os.environ.get("GITHUB_TOKEN", "").strip()
+    report: HostedC8PreflightReport
+    if not token:
+        report = _c8_unverifiable_report()
+    else:
+        try:
+            from avo_correlate.adapters.hosted_git import GitHubC8PreflightSnapshot
+            from avo_correlate.application.c8_hosted_preflight import C8HostedPreflightService
+
+            observer = GitHubC8PreflightSnapshot(
+                owner=owner,
+                repo=repo,
+                workflow_path=workflow_path,
+                token=token,
+            )
+            report = C8HostedPreflightService(observer).run()
+        except Exception:
+            report = _c8_unverifiable_report()
+    _emit(report)
+    if report.result != "no_detected_configuration_blocker":
+        raise typer.Exit(code=2)
 
 
 @experiment_app.command("validate")

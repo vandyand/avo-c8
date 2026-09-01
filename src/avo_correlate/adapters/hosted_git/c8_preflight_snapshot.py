@@ -37,6 +37,10 @@ from .c8_phase2 import (
     parse_merge_queue_configuration,
     parse_required_checks,
 )
+from .c8_workflow_semantics import (
+    C8WorkflowSemanticsUnverifiable,
+    parse_c8_workflow_semantics,
+)
 from .github import JsonBody, JsonObject, JsonValue, github_repository_digest
 from .github_transport import GitHubJsonTransport
 
@@ -144,8 +148,9 @@ class GitHubC8PreflightSnapshot:
 
     def _get(self, path: str) -> JsonValue:
         # Every path is assembled internally from validated components.
+        response: tuple[int, JsonValue] | None = None
         try:
-            status, payload = self._transport(
+            response = self._transport(
                 "GET",
                 "https://api.github.com" + path,
                 None,
@@ -155,17 +160,19 @@ class GitHubC8PreflightSnapshot:
                     "Authorization": "Bearer " + self._token,
                 },
             )
-            if type(status) is not int or status < 200 or status >= 300:
-                raise C8PreflightSnapshotUnverifiable()
-            return copy.deepcopy(payload)
-        except C8PreflightSnapshotUnverifiable:
-            raise
         except Exception:
-            raise C8PreflightSnapshotUnverifiable() from None
+            response = None
+        if response is None:
+            raise C8PreflightSnapshotUnverifiable()
+        status, payload = response
+        if type(status) is not int or status < 200 or status >= 300:
+            raise C8PreflightSnapshotUnverifiable()
+        return copy.deepcopy(payload)
 
     def _graphql(self) -> JsonValue:
+        response: tuple[int, JsonValue] | None = None
         try:
-            status, payload = self._transport(
+            response = self._transport(
                 "POST",
                 "https://api.github.com/graphql",
                 {
@@ -179,13 +186,14 @@ class GitHubC8PreflightSnapshot:
                     "Authorization": "Bearer " + self._token,
                 },
             )
-            if type(status) is not int or status < 200 or status >= 300:
-                raise C8PreflightSnapshotUnverifiable()
-            return copy.deepcopy(payload)
-        except C8PreflightSnapshotUnverifiable:
-            raise
         except Exception:
-            raise C8PreflightSnapshotUnverifiable() from None
+            response = None
+        if response is None:
+            raise C8PreflightSnapshotUnverifiable()
+        status, payload = response
+        if type(status) is not int or status < 200 or status >= 300:
+            raise C8PreflightSnapshotUnverifiable()
+        return copy.deepcopy(payload)
 
     def capture(self) -> GitHubC8PreflightSnapshot:
         """Read all configuration once, then return this cached observer."""
@@ -198,13 +206,19 @@ class GitHubC8PreflightSnapshot:
                 return self
             if self._failed:
                 raise C8PreflightSnapshotUnverifiable()
+            failure: C8PreflightSnapshotUnverifiable | None = None
             try:
                 self._capture_locked()
             except Exception as exc:
                 self._failed = True
                 if isinstance(exc, C8PreflightSnapshotUnverifiable):
-                    raise
-                raise C8PreflightSnapshotUnverifiable() from None
+                    failure = exc
+                else:
+                    failure = C8PreflightSnapshotUnverifiable()
+            if failure is not None:
+                failure.__context__ = None
+                failure.__cause__ = None
+                raise failure
             return self
 
     def _configuration_pass(self, base: str) -> _ConfigurationPass:
@@ -244,12 +258,21 @@ class GitHubC8PreflightSnapshot:
         raw["protection"] = protection
         queue_response = self._graphql()
         raw["graphql"] = queue_response
+        parsed: (
+            tuple[EffectiveMainRules, RequiredChecksConfiguration, MergeQueueConfiguration]
+            | None
+        ) = None
         try:
-            rules = parse_effective_main_rules(effective, repo_rules, org_rules)
-            checks = parse_required_checks(protection)
-            queue = parse_merge_queue_configuration(queue_response)
+            parsed = (
+                parse_effective_main_rules(effective, repo_rules, org_rules),
+                parse_required_checks(protection),
+                parse_merge_queue_configuration(queue_response),
+            )
         except C8Phase2Error:
-            raise C8PreflightSnapshotUnverifiable() from None
+            parsed = None
+        if parsed is None:
+            raise C8PreflightSnapshotUnverifiable()
+        rules, checks, queue = parsed
         self._cross_bind_queue(effective, queue)
         return _ConfigurationPass(raw, rules, queue, checks)
 
@@ -333,10 +356,14 @@ class GitHubC8PreflightSnapshot:
             raise C8PreflightSnapshotUnverifiable()
         encoded = self._str(workflow, "content").replace("\n", "")
         blob_sha = self._git(self._str(workflow, "sha"))
+        decode_failure = False
         try:
             content = base64.b64decode(encoded, validate=True)
         except (ValueError, binascii.Error):
-            raise C8PreflightSnapshotUnverifiable() from None
+            decode_failure = True
+            content = b""
+        if decode_failure:
+            raise C8PreflightSnapshotUnverifiable()
         size = workflow.get("size")
         if type(size) is not int or size != len(content):
             raise C8PreflightSnapshotUnverifiable()
@@ -348,10 +375,17 @@ class GitHubC8PreflightSnapshot:
         )
         if blob_sha != expected_blob:
             raise C8PreflightSnapshotUnverifiable()
+        decode_failure = False
         try:
             content.decode("utf-8", errors="strict")
         except UnicodeDecodeError:
-            raise C8PreflightSnapshotUnverifiable() from None
+            decode_failure = True
+        if decode_failure:
+            raise C8PreflightSnapshotUnverifiable()
+        try:
+            workflow_semantics = parse_c8_workflow_semantics(content)
+        except C8WorkflowSemanticsUnverifiable:
+            workflow_semantics = None
 
         first_config = self._configuration_pass(base)
         second_config = self._configuration_pass(base)
@@ -435,9 +469,20 @@ class GitHubC8PreflightSnapshot:
             workflow_digest=workflow_digest,
             policy_digest=canonical_digest({"path": self.workflow_path, "blob_sha": blob_sha}),
             validation_check_identity_digest=None,
-            pull_request_event=None,
-            merge_group_event=None,
-            exact_sha_checkout=None,
+            pull_request_event=(
+                None if workflow_semantics is None else workflow_semantics.pull_request_event
+            ),
+            merge_group_event=(
+                None if workflow_semantics is None else workflow_semantics.merge_group_event
+            ),
+            exact_sha_checkout=(
+                None if workflow_semantics is None else workflow_semantics.exact_sha_checkout
+            ),
+            checkout_persist_credentials_false=(
+                None
+                if workflow_semantics is None
+                else workflow_semantics.checkout_persist_credentials_false
+            ),
         )
         self._observations = (
             repo_read,

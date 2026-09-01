@@ -129,6 +129,17 @@ class FakeTransport:
         return 200, self.values[path]
 
 
+class SecretFailingTransport:
+    def __init__(self) -> None:
+        self.authorization: str | None = None
+
+    def __call__(
+        self, method: str, url: str, body: Any, headers: dict[str, str]
+    ) -> tuple[int, Any]:
+        self.authorization = headers["Authorization"]
+        raise RuntimeError(f"transport-secret-canary {self.authorization}")
+
+
 def subject(fake: FakeTransport) -> GitHubC8PreflightSnapshot:
     return GitHubC8PreflightSnapshot(
         owner="avo-org",
@@ -154,6 +165,26 @@ def test_phase2_transaction_and_replay_are_single_flight() -> None:
     assert len(fake.calls) == count
 
 
+def test_transport_failure_does_not_retain_secret_exception_context() -> None:
+    token = "observer-token-canary"
+    transport = SecretFailingTransport()
+    observer = GitHubC8PreflightSnapshot(
+        owner="avo-org",
+        repo="avo",
+        workflow_path=".github/workflows/validation.yml",
+        token=token,
+        transport=transport,
+        clock=lambda: NOW,
+    )
+    with pytest.raises(C8PreflightSnapshotUnverifiable) as error:
+        observer.capture()
+    assert str(error.value) == "C8 hosted snapshot is unverifiable"
+    assert error.value.__cause__ is None
+    assert error.value.__context__ is None
+    assert transport.authorization == "Bearer " + token
+    assert token not in repr(error.value)
+
+
 def test_common_binding_and_facts() -> None:
     observer = subject(FakeTransport()).capture()
     values = [
@@ -163,10 +194,41 @@ def test_common_binding_and_facts() -> None:
         observer.observe_workflow(),
     ]
     assert len({item.binding for item in values}) == 1
-    assert observer.observe_workflow().validation_check_identity_digest is None
+    workflow = observer.observe_workflow()
+    assert workflow.validation_check_identity_digest is None
+    assert workflow.pull_request_event is None
+    assert workflow.merge_group_event is None
+    assert workflow.exact_sha_checkout is None
+    assert workflow.checkout_persist_credentials_false is None
     with pytest.raises(C8PreflightSnapshotUnverifiable):
         observer.observe_validation_identity()
     assert observer.observe_queue_configuration().available
+
+
+def test_valid_authenticated_workflow_fills_static_facts_without_identity_claim() -> None:
+    values = payloads()
+    content = (
+        b"name: validation\n"
+        b"on:\n  pull_request:\n  merge_group:\n    types: [checks_requested]\n"
+        b"jobs:\n  validate:\n    steps:\n      - uses: actions/checkout@"
+        + b"11d5960a326750d5838078e36cf38b85af677262\n"
+        b"        with:\n          ref: ${{ github.sha }}\n"
+        b"          persist-credentials: false\n"
+    )
+    blob = hashlib.sha1(f"blob {len(content)}\0".encode() + content).hexdigest()
+    workflow = values["/repos/avo-org/avo/contents/.github/workflows/validation.yml?ref=" + A]
+    workflow["content"] = base64.b64encode(content).decode()
+    workflow["size"] = len(content)
+    workflow["sha"] = blob
+    observer = subject(FakeTransport(values)).capture()
+    read = observer.observe_workflow()
+    assert read.pull_request_event is True
+    assert read.merge_group_event is True
+    assert read.exact_sha_checkout is True
+    assert read.checkout_persist_credentials_false is True
+    assert read.validation_check_identity_digest is None
+    with pytest.raises(C8PreflightSnapshotUnverifiable):
+        observer.observe_validation_identity()
 
 
 def test_concurrent_capture_is_single_flight() -> None:
@@ -251,6 +313,34 @@ def test_sha256_git_blob_oid_is_supported() -> None:
     )
     observer = subject(FakeTransport(values)).capture()
     assert observer.observe_workflow().workflow_digest is not None
+
+
+@pytest.mark.parametrize("kind", ["base64", "utf8"])
+def test_bad_workflow_bytes_do_not_retain_exception_context(kind: str) -> None:
+    values = payloads()
+    token = "workflow-token-canary"
+    key = "/repos/avo-org/avo/contents/.github/workflows/validation.yml?ref=" + A
+    workflow = values[key]
+    if kind == "base64":
+        workflow["content"] = "%%%workflow-content-canary%%%"
+    else:
+        content = b"\xffworkflow-content-canary"
+        workflow["content"] = base64.b64encode(content).decode()
+        workflow["size"] = len(content)
+        workflow["sha"] = hashlib.sha1(f"blob {len(content)}\0".encode() + content).hexdigest()
+    observer = GitHubC8PreflightSnapshot(
+        owner="avo-org",
+        repo="avo",
+        workflow_path=".github/workflows/validation.yml",
+        token=token,
+        transport=FakeTransport(values),
+        clock=lambda: NOW,
+    )
+    with pytest.raises(C8PreflightSnapshotUnverifiable) as error:
+        observer.capture()
+    assert error.value.__cause__ is None
+    assert error.value.__context__ is None
+    assert token not in repr(error.value)
 
 
 @pytest.mark.parametrize("field", ["effective", "protection", "queue"])

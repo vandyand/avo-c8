@@ -83,6 +83,7 @@ class Observer:
             pull_request_event=True,
             merge_group_event=True,
             exact_sha_checkout=True,
+            checkout_persist_credentials_false=True,
         )
 
     def observe_validation_identity(self) -> C8ValidationIdentityRead:
@@ -193,6 +194,7 @@ def test_strict_models_reject_extras_and_forged_digest() -> None:
             pull_request_event=True,
             merge_group_event=True,
             exact_sha_checkout=True,
+            checkout_persist_credentials_false=None,
             secret="must not cross boundary",  # type: ignore[call-arg]
         )
     with pytest.raises(ValidationError):
@@ -290,6 +292,7 @@ def test_mixed_or_stale_snapshot_is_unverifiable() -> None:
         pull_request_event=True,
         merge_group_event=True,
         exact_sha_checkout=True,
+        checkout_persist_credentials_false=None,
     )
     report = C8HostedPreflightService(observer).run()
     assert report.result == "unverifiable"
@@ -307,6 +310,7 @@ def test_mixed_or_stale_snapshot_is_unverifiable() -> None:
         pull_request_event=True,
         merge_group_event=True,
         exact_sha_checkout=True,
+        checkout_persist_credentials_false=None,
     )
     report = C8HostedPreflightService(observer).run()
     assert "workflow_read_unverifiable" in report.unverifiable_codes

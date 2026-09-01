@@ -177,6 +177,12 @@ class C8HostedPreflightService:
                 passed.append("workflow_exact_sha_checkout")
             elif workflow.exact_sha_checkout is False:
                 blockers.append("workflow_exact_sha_checkout_missing")
+            if workflow.checkout_persist_credentials_false is True:
+                passed.append("workflow_persist_credentials_disabled")
+            elif workflow.checkout_persist_credentials_false is False:
+                blockers.append("workflow_persist_credentials_enabled")
+            else:
+                unverifiable.append("workflow_persist_credentials_unverifiable")
 
         validation = self._read(
             "validation_identity",

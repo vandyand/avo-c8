@@ -268,6 +268,7 @@ class C8GitHubSnapshotAdapter:
             pull_request_event=None,
             merge_group_event=None,
             exact_sha_checkout=None,
+            checkout_persist_credentials_false=None,
         )
         self._binding, self._captured = binding, (repo_read, workflow_read)
         return self._captured

@@ -22,6 +22,11 @@ from .c8_preflight_snapshot import (
     GitHubC8PreflightSnapshot,
 )
 from .c8_snapshot import C8GitHubSnapshotAdapter, C8SnapshotUnverifiable, GitHubC8SnapshotAdapter
+from .c8_workflow_semantics import (
+    C8WorkflowSemantics,
+    C8WorkflowSemanticsUnverifiable,
+    parse_c8_workflow_semantics,
+)
 from .campaign import GitHubCampaignProvider
 from .github import (
     GitHubEvidenceSnapshot,
@@ -61,6 +66,8 @@ __all__ = [
     "C8PreflightSnapshotAdapter",
     "C8PreflightSnapshotUnverifiable",
     "C8SnapshotUnverifiable",
+    "C8WorkflowSemantics",
+    "C8WorkflowSemanticsUnverifiable",
     "EffectiveMainRules",
     "GitHubC8PreflightAdapter",
     "GitHubC8PreflightSnapshot",
@@ -93,6 +100,7 @@ __all__ = [
     "RequiredChecksConfiguration",
     "github_repository_digest",
     "parse_branch_protection_checks",
+    "parse_c8_workflow_semantics",
     "parse_effective_main_rules",
     "parse_merge_queue",
     "parse_merge_queue_configuration",

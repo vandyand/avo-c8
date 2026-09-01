@@ -97,6 +97,7 @@ class C8WorkflowRead(StrictModel):
     pull_request_event: StrictBool | None
     merge_group_event: StrictBool | None
     exact_sha_checkout: StrictBool | None
+    checkout_persist_credentials_false: StrictBool | None
 
 
 class C8ValidationIdentityRead(StrictModel):
