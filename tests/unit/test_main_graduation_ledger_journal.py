@@ -1,5 +1,6 @@
 """Real-filesystem durability tests for the C6 ledger journal."""
 
+import multiprocessing
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -224,6 +225,25 @@ def _attempt(call: Any) -> Any:
         return exc
 
 
+def _classification_process_worker(
+    root: str,
+    ready_queue: Any,
+    release: Any,
+    results: Any,
+    classification: MainLedgerClassificationEvidence,
+) -> None:
+    """Spawn target: independently open the same journal and race one stage."""
+    journal = MainGraduationLedgerJournal(Path(root), _Verifier())
+    ready_queue.put("ready")
+    release.wait(30)
+    try:
+        journal.record_classification(classification)
+    except MainGraduationLedgerJournalError as exc:
+        results.put(("conflict", str(exc)))
+    else:
+        results.put(("success", classification.classification_digest))
+
+
 def test_authority_is_mandatory_and_submission_is_gap_free(tmp_path: Path) -> None:
     activation = _activation()
     with pytest.raises(MainGraduationLedgerJournalError, match="verifier"):
@@ -393,6 +413,117 @@ def test_stage_sidecar_conflicts_race_without_last_writer_wins(tmp_path: Path) -
     restarted = MainGraduationLedgerJournal(tmp_path, _Verifier())
     durable_transition = restarted.read_transition(11)
     assert durable_transition is not None and durable_transition[0] == transition
+
+
+def test_windows_spawn_process_race_has_one_classification_winner(tmp_path: Path) -> None:
+    journal, activation, store = _journal(tmp_path)
+    submission = _submission(activation, store, 11)
+    journal.record_submission(submission)
+    classification_a = _classification(activation, submission, store, path="src/process-a.py")
+    classification_b = _classification(activation, submission, store, path="src/process-b.py")
+
+    context = multiprocessing.get_context("spawn")
+    ready_queue = context.Queue()
+    result_queue = context.Queue()
+    release = context.Event()
+    processes = [
+        context.Process(
+            target=_classification_process_worker,
+            args=(str(tmp_path), ready_queue, release, result_queue, classification_a),
+        ),
+        context.Process(
+            target=_classification_process_worker,
+            args=(str(tmp_path), ready_queue, release, result_queue, classification_b),
+        ),
+    ]
+    try:
+        for process in processes:
+            process.start()
+        assert ready_queue.get(timeout=15) == "ready"
+        assert ready_queue.get(timeout=15) == "ready"
+        release.set()
+        statuses = [result_queue.get(timeout=15)[0] for _ in processes]
+        assert sorted(statuses) == ["conflict", "success"]
+        for process in processes:
+            process.join(timeout=15)
+            assert process.exitcode == 0
+    finally:
+        release.set()
+        for process in processes:
+            if process.is_alive():
+                process.terminate()
+            process.join(timeout=15)
+        ready_queue.close()
+        result_queue.close()
+
+    restarted = MainGraduationLedgerJournal(tmp_path, _Verifier())
+    winner = restarted.read_classification(11)
+    assert winner is not None
+    assert winner[0] == classification_a or winner[0] == classification_b
+
+
+def test_stage_sidecar_noncanonical_and_missing_cas_fail_closed(tmp_path: Path) -> None:
+    journal, activation, store = _journal(tmp_path)
+    submission = _submission(activation, store, 11)
+    journal.record_submission(submission)
+    classification = _classification(activation, submission, store)
+    journal.record_classification(classification)
+    outcome = _outcome(activation, submission, classification, store)
+    journal.record_outcome(outcome)
+    prior = main_ledger_genesis_state(
+        activation.activation_digest, activation.scheduler_sequence_watermark
+    )
+    result = _with_digest(
+        MainLedgerAccumulatorState,
+        {
+            **prior.model_dump(exclude={"state_digest"}),
+            "last_scheduler_sequence": 11,
+            "failures": 1,
+            "streak": 0,
+        },
+        "state_digest",
+    )
+    transition = _with_digest(
+        MainLedgerAccumulatorTransition,
+        {
+            "activation_digest": activation.activation_digest,
+            "classification": classification,
+            "prior_state": prior,
+            "prior_state_digest": prior.state_digest,
+            "outcome": outcome,
+            "outcome_digest": outcome.outcome_digest,
+            "reset_applied": True,
+            "resulting_state": result,
+            "resulting_state_digest": result.state_digest,
+        },
+        "transition_digest",
+    )
+    journal.record_transition(transition)
+
+    reads = {
+        "classification": lambda fresh: fresh.read_classification(11),
+        "outcome": lambda fresh: fresh.read_outcome(11),
+        "transition": lambda fresh: fresh.read_transition(11),
+    }
+    for kind, read in reads.items():
+        stage_path = journal._stage_path(  # type: ignore[reportPrivateUsage]
+            activation, 11, kind
+        )
+        original_index = stage_path.read_bytes()
+        stage_path.write_bytes(original_index + b"\n")
+        with pytest.raises(MainGraduationLedgerJournalError, match="index"):
+            read(MainGraduationLedgerJournal(tmp_path, _Verifier()))
+        stage_path.write_bytes(original_index)
+
+        reference = journal._stage_reference(  # type: ignore[reportPrivateUsage]
+            activation, 11, kind
+        )
+        cas_path = store.path_for_digest(reference.digest)
+        cas_bytes = cas_path.read_bytes()
+        cas_path.unlink()
+        with pytest.raises(MainGraduationLedgerJournalError):
+            read(MainGraduationLedgerJournal(tmp_path, _Verifier()))
+        cas_path.write_bytes(cas_bytes)
 
 
 def test_cas_orphan_is_not_discoverable_and_restart_finds_commit(tmp_path: Path) -> None:
