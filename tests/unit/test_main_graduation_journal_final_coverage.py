@@ -26,6 +26,7 @@ from avo_correlate.adapters.artifacts.main_graduation_journal import (
     MainGraduationRecordConflictError,
     _check_digest,
     _strict_pairs,
+    _write_exclusive_durable,
 )
 from avo_correlate.contracts.base import ArtifactRef, StrictModel
 from avo_correlate.contracts.main_graduation import (
@@ -67,6 +68,32 @@ from tests.unit.test_main_graduation_journal_coverage import (
 
 # These tests intentionally exercise private durable seams.
 # pyright: reportPrivateUsage=false, reportArgumentType=false, reportUnknownArgumentType=false, reportUnknownLambdaType=false
+
+
+def test_exclusive_durable_handles_long_identity_path_without_replacing_winner(
+    tmp_path: Path,
+) -> None:
+    """Keep temp publication below Windows MAX_PATH for long identity indexes."""
+
+    target_parent = tmp_path
+    fixed_parent = Path("main-graduation-index") / "mutation-dispatch-owner-identity"
+    while len(str(target_parent / fixed_parent)) < 180:
+        target_parent /= "x" * 10
+    target_parent /= fixed_parent
+    target_parent.mkdir(parents=True)
+    target = target_parent / ("a" * 64 + ".json")
+    target_length = len(str(target))
+    assert 240 <= target_length < 260
+    old_temp_length = len(str(target_parent)) + 1 + len(f".{target.name}.") + 8 + len(".tmp")
+    new_temp_length = len(str(target_parent)) + 1 + len(".tmp-") + 8
+    assert old_temp_length >= 260
+    assert new_temp_length < 260
+
+    _write_exclusive_durable(target, b"winner")
+    assert target.read_bytes() == b"winner"
+    with pytest.raises(FileExistsError):
+        _write_exclusive_durable(target, b"loser")
+    assert target.read_bytes() == b"winner"
 
 
 def _chain(journal: MainGraduationJournal) -> tuple[Any, dict[str, Any]]:

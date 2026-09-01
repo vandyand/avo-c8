@@ -4585,7 +4585,13 @@ def _write_exclusive_durable(path: Path, payload: bytes) -> None:
     """Publish a complete file without exposing an empty create-once path."""
 
     descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
+        # The destination may already be close to Windows' legacy MAX_PATH
+        # limit (identity digests make filenames long).  mkstemp's unique
+        # suffix is sufficient for create-once publication; repeating the
+        # destination filename here can make the temporary source exceed that
+        # limit before the hard-link publication gets a chance to run.
+        prefix=".tmp-",
+        dir=str(path.parent),
     )
     temporary = Path(temporary_name)
     try:
