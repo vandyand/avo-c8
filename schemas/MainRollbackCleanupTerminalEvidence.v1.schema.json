@@ -1,0 +1,115 @@
+{
+  "additionalProperties": false,
+  "description": "Terminal proof that rollback candidate resources are absent.",
+  "properties": {
+    "candidate_commit": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Candidate Commit",
+      "type": "string"
+    },
+    "candidate_ref": {
+      "minLength": 1,
+      "title": "Candidate Ref",
+      "type": "string"
+    },
+    "cleanup_intent_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Cleanup Intent Digest",
+      "type": "string"
+    },
+    "cleanup_receipt_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Cleanup Receipt Digest",
+      "type": "string"
+    },
+    "deploy_performed": {
+      "const": false,
+      "default": false,
+      "title": "Deploy Performed",
+      "type": "boolean"
+    },
+    "evidence_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Evidence Digest",
+      "type": "string"
+    },
+    "observed_at": {
+      "format": "date-time",
+      "title": "Observed At",
+      "type": "string"
+    },
+    "operation_id": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Operation Id",
+      "type": "string"
+    },
+    "outcome": {
+      "enum": [
+        "absent",
+        "already_absent"
+      ],
+      "title": "Outcome",
+      "type": "string"
+    },
+    "provider_api_version": {
+      "minLength": 1,
+      "title": "Provider Api Version",
+      "type": "string"
+    },
+    "provider_identity": {
+      "minLength": 1,
+      "title": "Provider Identity",
+      "type": "string"
+    },
+    "pull_request_number": {
+      "exclusiveMinimum": 0,
+      "title": "Pull Request Number",
+      "type": "integer"
+    },
+    "pull_request_url": {
+      "minLength": 1,
+      "title": "Pull Request Url",
+      "type": "string"
+    },
+    "repository_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Repository Digest",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "target_ref": {
+      "const": "refs/heads/main",
+      "default": "refs/heads/main",
+      "title": "Target Ref",
+      "type": "string"
+    },
+    "terminal": {
+      "const": true,
+      "default": true,
+      "title": "Terminal",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "repository_digest",
+    "operation_id",
+    "cleanup_intent_digest",
+    "cleanup_receipt_digest",
+    "candidate_ref",
+    "candidate_commit",
+    "pull_request_number",
+    "pull_request_url",
+    "outcome",
+    "provider_identity",
+    "provider_api_version",
+    "observed_at",
+    "evidence_digest"
+  ],
+  "title": "MainRollbackCleanupTerminalEvidence",
+  "type": "object"
+}

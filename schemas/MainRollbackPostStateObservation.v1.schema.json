@@ -1,0 +1,127 @@
+{
+  "additionalProperties": false,
+  "description": "Authenticated read-after-write state for the final protected result.",
+  "properties": {
+    "attempt_manifest_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Attempt Manifest Digest",
+      "type": "string"
+    },
+    "authoritative": {
+      "const": true,
+      "default": true,
+      "title": "Authoritative",
+      "type": "boolean"
+    },
+    "current_main_commit": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Current Main Commit",
+      "type": "string"
+    },
+    "deploy_performed": {
+      "const": false,
+      "default": false,
+      "title": "Deploy Performed",
+      "type": "boolean"
+    },
+    "inverse_tree": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Inverse Tree",
+      "type": "string"
+    },
+    "observation_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Observation Digest",
+      "type": "string"
+    },
+    "observed_at": {
+      "format": "date-time",
+      "title": "Observed At",
+      "type": "string"
+    },
+    "operation_id": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Operation Id",
+      "type": "string"
+    },
+    "provider_api_version": {
+      "minLength": 1,
+      "title": "Provider Api Version",
+      "type": "string"
+    },
+    "provider_identity": {
+      "minLength": 1,
+      "title": "Provider Identity",
+      "type": "string"
+    },
+    "repository_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Repository Digest",
+      "type": "string"
+    },
+    "response_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Response Digest",
+      "type": "string"
+    },
+    "result_commit": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Result Commit",
+      "type": "string"
+    },
+    "result_parents": {
+      "items": {
+        "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+        "type": "string"
+      },
+      "title": "Result Parents",
+      "type": "array"
+    },
+    "result_receipt_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Result Receipt Digest",
+      "type": "string"
+    },
+    "result_tree": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Result Tree",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "source_operation_id": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Source Operation Id",
+      "type": "string"
+    },
+    "target_ref": {
+      "const": "refs/heads/main",
+      "default": "refs/heads/main",
+      "title": "Target Ref",
+      "type": "string"
+    }
+  },
+  "required": [
+    "repository_digest",
+    "operation_id",
+    "source_operation_id",
+    "attempt_manifest_digest",
+    "result_receipt_digest",
+    "inverse_tree",
+    "current_main_commit",
+    "result_commit",
+    "result_tree",
+    "result_parents",
+    "provider_identity",
+    "provider_api_version",
+    "response_digest",
+    "observed_at",
+    "observation_digest"
+  ],
+  "title": "MainRollbackPostStateObservation",
+  "type": "object"
+}

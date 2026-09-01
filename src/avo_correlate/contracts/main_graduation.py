@@ -595,8 +595,7 @@ class MainGraduationPlan(MainBound):
         if (
             self.composition_proof_artifact.digest != canonical_digest(proof)
             or self.composition_proof_artifact.size_bytes != len(proof_bytes)
-            or self.composition_proof_artifact.role
-            != "main-graduation-composition-proof"
+            or self.composition_proof_artifact.role != "main-graduation-composition-proof"
             or self.composition_proof_artifact.media_type
             != "application/vnd.avo.main-graduation-composition-proof+json"
         ):
@@ -655,8 +654,7 @@ class MainGraduationIntent(MainBound):
             or lease.lease_epoch_digest != self.lease_epoch_digest
             or lease.policy_epoch != self.policy_epoch
             or isinstance(self.lease_evidence, MainLeaseEvidence)
-            or self.lease_evidence_artifact.role
-            != "main-graduation-lease-evidence-record"
+            or self.lease_evidence_artifact.role != "main-graduation-lease-evidence-record"
             or self.lease_evidence_artifact.media_type
             != "application/vnd.avo.main-graduation-lease-evidence-record+json"
             or self.lease_evidence_artifact.digest != canonical_digest(lease)
@@ -1217,18 +1215,14 @@ class MainCompletionPackage(MainBound):
             or self.transition_receipt.hold_run_id != claimed.hold_run_id
             or self.transition_receipt.hold_nonce != claimed.hold_nonce
             or self.transition_receipt.issuer_identity != claimed.issuer_identity
-            or self.transition_receipt.release_issuer_app_id
-            != claimed.release_issuer_app_id
-            or self.transition_receipt.issuer_isolation_digest
-            != claimed.issuer_isolation_digest
+            or self.transition_receipt.release_issuer_app_id != claimed.release_issuer_app_id
+            or self.transition_receipt.issuer_isolation_digest != claimed.issuer_isolation_digest
         ):
             raise ValueError("legacy transition observation is not claim-bound")
         if (
             release_intent.stage != "release_transition"
             or release_intent.intent_digest
-            != canonical_digest(
-                release_intent.model_dump(exclude={"intent_digest"}, mode="json")
-            )
+            != canonical_digest(release_intent.model_dump(exclude={"intent_digest"}, mode="json"))
             or release_intent.release_authorization_digest
             != self.release_authorization.authorization_digest
             or release_intent.release_claim_digest != claim.claim_digest
@@ -1377,11 +1371,10 @@ class MainCompletionPackage(MainBound):
             raise ValueError("C4 completion requires a dispatched release mutation")
         if claimed.outcome not in {"transitioned", "already_transitioned"}:
             raise ValueError("completion requires terminal claimed release transition")
-        if (
-            mutation.outcome in {"applied", "already_applied"}
-            and self.transition_receipt.outcome
-            not in {"transitioned", "already_transitioned"}
-        ):
+        if mutation.outcome in {
+            "applied",
+            "already_applied",
+        } and self.transition_receipt.outcome not in {"transitioned", "already_transitioned"}:
             raise ValueError("completion requires terminal release transition")
         if self.provider_receipt.outcome != "observed":
             raise ValueError("completion requires an observed provider result")
@@ -1914,8 +1907,7 @@ class MainRollbackCleanupReceipt(MainBound):
     @model_validator(mode="after")
     def validate_cleanup_receipt(self) -> MainRollbackCleanupReceipt:
         if (
-            self.outcome
-            in {"applied", "already_applied", "ambiguous", "reconciliation_required"}
+            self.outcome in {"applied", "already_applied", "ambiguous", "reconciliation_required"}
             and not self.dispatch_started
         ):
             raise ValueError("cleanup outcome requires a dispatched request")
@@ -1954,6 +1946,269 @@ class MainRollbackCleanupObservation(MainBound):
             self.model_dump(exclude={"observation_digest"}, mode="json")
         ):
             raise ValueError("rollback cleanup observation digest mismatch")
+        return self
+
+
+class MainRollbackAttemptAuthority(MainBound):
+    """Durable, controller-derived identity for one rollback attempt.
+
+    The operation id is deliberately derived from immutable rollback facts and
+    an explicit nonce.  Operational metadata (leases, provider responses, and
+    timestamps) is intentionally absent from this identity manifest so replay
+    cannot accidentally create a second operation for the same attempt.
+    """
+
+    schema_version: Literal[1] = 1
+    operation_id: Sha256Digest
+    attempt_nonce: NonEmptyString
+    source_operation_id: Sha256Digest
+    completion_package_digest: Sha256Digest
+    repository_digest: Sha256Digest
+    target_ref: MainRef = "refs/heads/main"
+    current_main_commit: GitObject
+    current_main_tree: GitObject
+    current_main_parent_commit: GitObject
+    original_delta_digest: Sha256Digest
+    inverse_delta_digest: Sha256Digest
+    inverse_delta_artifact_digest: Sha256Digest
+    inverse_tree: GitObject
+    candidate_commit: GitObject
+    candidate_tree: GitObject
+    candidate_parent_commit: GitObject
+    candidate_ref: NonEmptyString
+    policy_epoch: Sha256Digest
+    controller_config_digest: Sha256Digest
+    release_issuer_identity: NonEmptyString
+    release_issuer_app_id: StrictInt = Field(gt=0)
+    issuer_isolation_digest: Sha256Digest
+    manifest_digest: Sha256Digest
+    deploy_performed: Literal[False] = False
+
+    @model_validator(mode="after")
+    def validate_attempt_authority(self) -> MainRollbackAttemptAuthority:
+        if self.source_operation_id == self.operation_id:
+            raise ValueError("rollback attempt must differ from source graduation")
+        if self.candidate_parent_commit != self.current_main_commit:
+            raise ValueError("rollback attempt candidate parent must equal current main")
+        if self.candidate_commit == self.current_main_commit:
+            raise ValueError("rollback attempt candidate must be new")
+        if self.candidate_tree != self.inverse_tree:
+            raise ValueError("rollback attempt candidate tree differs from inverse tree")
+        if self.candidate_ref != _main_rollback_candidate_ref(self.operation_id):
+            raise ValueError("rollback attempt candidate ref is outside controller namespace")
+        if self.release_issuer_app_id == 15368:
+            raise ValueError("validation App 15368 cannot be the rollback issuer")
+        # The ref name is a deterministic namespace projection of the
+        # operation id, so including it would create an impossible hash
+        # fixed-point.  Candidate object identity remains bound below.
+        identity = self.model_dump(
+            exclude={"operation_id", "manifest_digest", "candidate_ref"}, mode="json"
+        )
+        expected_operation = main_rollback_operation_id(**identity)
+        if self.operation_id != expected_operation:
+            raise ValueError("rollback attempt operation identity mismatch")
+        if self.manifest_digest != canonical_digest(
+            self.model_dump(exclude={"manifest_digest"}, mode="json")
+        ):
+            raise ValueError("rollback attempt manifest digest mismatch")
+        return self
+
+
+# Naming used by early C5 design notes; keep both spellings as the same strict
+# wire model so callers cannot create divergent identity authorities.
+MainRollbackAttemptManifest = MainRollbackAttemptAuthority
+
+
+class MainRollbackPostStateObservation(MainBound):
+    """Authenticated read-after-write state for the final protected result."""
+
+    schema_version: Literal[1] = 1
+    operation_id: Sha256Digest
+    source_operation_id: Sha256Digest
+    attempt_manifest_digest: Sha256Digest
+    result_receipt_digest: Sha256Digest
+    inverse_tree: GitObject
+    current_main_commit: GitObject
+    result_commit: GitObject
+    result_tree: GitObject
+    result_parents: list[GitObject]
+    provider_identity: NonEmptyString
+    provider_api_version: NonEmptyString
+    response_digest: Sha256Digest
+    observed_at: datetime
+    authoritative: Literal[True] = True
+    observation_digest: Sha256Digest
+    deploy_performed: Literal[False] = False
+
+    _aware_observed_at = field_validator("observed_at")(_aware)
+
+    @model_validator(mode="after")
+    def validate_rollback_post_state(self) -> MainRollbackPostStateObservation:
+        if len(self.result_parents) != 1:
+            raise ValueError("rollback post-state requires exactly one parent")
+        if self.result_parents != [self.current_main_commit]:
+            raise ValueError("rollback post-state parent differs from pre-rollback main")
+        if self.result_tree != self.inverse_tree or self.result_commit == self.current_main_commit:
+            raise ValueError("rollback post-state topology differs from inverse")
+        if self.observation_digest != canonical_digest(
+            self.model_dump(exclude={"observation_digest"}, mode="json")
+        ):
+            raise ValueError("rollback post-state observation digest mismatch")
+        return self
+
+
+class MainRollbackCleanupTerminalEvidence(MainBound):
+    """Terminal proof that rollback candidate resources are absent."""
+
+    schema_version: Literal[1] = 1
+    operation_id: Sha256Digest
+    cleanup_intent_digest: Sha256Digest
+    cleanup_receipt_digest: Sha256Digest
+    candidate_ref: NonEmptyString
+    candidate_commit: GitObject
+    pull_request_number: StrictInt = Field(gt=0)
+    pull_request_url: NonEmptyString
+    outcome: Literal["absent", "already_absent"]
+    provider_identity: NonEmptyString
+    provider_api_version: NonEmptyString
+    observed_at: datetime
+    terminal: Literal[True] = True
+    evidence_digest: Sha256Digest = Field(
+        validation_alias=AliasChoices("evidence_digest", "terminal_digest", "observation_digest")
+    )
+    deploy_performed: Literal[False] = False
+
+    _aware_observed_at = field_validator("observed_at")(_aware)
+
+    @model_validator(mode="after")
+    def validate_cleanup_terminal(self) -> MainRollbackCleanupTerminalEvidence:
+        if not self.pull_request_url.startswith("https://"):
+            raise ValueError("rollback cleanup URL must use HTTPS")
+        if self.evidence_digest != canonical_digest(
+            self.model_dump(exclude={"evidence_digest"}, mode="json")
+        ):
+            raise ValueError("rollback cleanup terminal evidence digest mismatch")
+        return self
+
+
+MainRollbackCleanupTerminalObservation = MainRollbackCleanupTerminalEvidence
+MainRollbackFinalPostStateObservation = MainRollbackPostStateObservation
+MainRollbackTerminalCleanupEvidence = MainRollbackCleanupTerminalEvidence
+
+
+class MainRollbackCompletionPackage(MainBound):
+    """Content-addressed terminal closure for one rollback attempt."""
+
+    schema_version: Literal[1] = 1
+    operation_id: Sha256Digest
+    attempt_authority: MainRollbackAttemptAuthority = Field(
+        validation_alias=AliasChoices("attempt_authority", "attempt_manifest", "attempt")
+    )
+    source_completion: MainCompletionPackage = Field(
+        validation_alias=AliasChoices(
+            "source_completion", "source_completion_package", "source_package"
+        )
+    )
+    inverse_delta: MainInverseDeltaArtifact
+    rollback_authorization: MainRollbackAuthorization = Field(
+        validation_alias=AliasChoices("rollback_authorization", "authorization")
+    )
+    rollback_intent: MainRollbackIntent = Field(
+        validation_alias=AliasChoices("rollback_intent", "intent")
+    )
+    rollback_result: MainRollbackResultReceipt = Field(
+        validation_alias=AliasChoices("rollback_result", "result")
+    )
+    post_state: MainRollbackPostStateObservation = Field(
+        validation_alias=AliasChoices("post_state", "post_state_observation")
+    )
+    cleanup_intent: MainRollbackCleanupIntent
+    cleanup_receipt: MainRollbackCleanupReceipt
+    cleanup_terminal: MainRollbackCleanupTerminalEvidence = Field(
+        validation_alias=AliasChoices(
+            "cleanup_terminal", "cleanup_terminal_evidence", "cleanup_observation"
+        )
+    )
+    artifacts: list[ArtifactRef] = Field(min_length=1)
+    completion_digest: Sha256Digest = Field(
+        validation_alias=AliasChoices("completion_digest", "terminal_digest")
+    )
+    deploy_performed: Literal[False] = False
+
+    @model_validator(mode="after")
+    def validate_rollback_completion(self) -> MainRollbackCompletionPackage:
+        records = (
+            self.attempt_authority,
+            self.inverse_delta,
+            self.rollback_authorization,
+            self.rollback_intent,
+            self.rollback_result,
+            self.post_state,
+            self.cleanup_intent,
+            self.cleanup_receipt,
+            self.cleanup_terminal,
+        )
+        if any(
+            getattr(record, "operation_id", self.operation_id) != self.operation_id
+            for record in records
+        ):
+            raise ValueError("rollback completion child operation IDs differ")
+        attempt = self.attempt_authority
+        source = self.source_completion
+        if (
+            self.repository_digest != source.repository_digest
+            or self.target_ref != source.target_ref
+            or attempt.source_operation_id != source.operation_id
+            or attempt.completion_package_digest != canonical_digest(source)
+            or attempt.original_delta_digest != source.delta.delta_digest
+            or self.inverse_delta.source_operation_id != source.operation_id
+            or self.inverse_delta.completion_package_digest != canonical_digest(source)
+            or self.rollback_result.source_operation_id != source.operation_id
+            or self.rollback_result.completion_package_digest != canonical_digest(source)
+            or self.rollback_authorization.source_operation_id != source.operation_id
+            or self.rollback_authorization.completion_package_digest != canonical_digest(source)
+            or self.rollback_intent.source_operation_id != source.operation_id
+            or self.rollback_intent.completion_package_digest != canonical_digest(source)
+        ):
+            raise ValueError("rollback completion source binding differs")
+        if self.cleanup_intent.result_receipt_digest != self.rollback_result.receipt_digest:
+            raise ValueError("rollback completion cleanup binding differs")
+        if (
+            self.post_state.result_receipt_digest != self.rollback_result.receipt_digest
+            or self.post_state.attempt_manifest_digest != attempt.manifest_digest
+            or self.post_state.result_tree != attempt.inverse_tree
+            or self.rollback_result.outcome not in {"applied", "already_applied"}
+            or self.rollback_result.result_tree != attempt.inverse_tree
+            or self.rollback_result.result_parents != [attempt.current_main_commit]
+            or self.cleanup_receipt.intent_digest != self.cleanup_intent.intent_digest
+            or self.cleanup_receipt.authorization_digest
+            != self.cleanup_intent.authorization_digest
+            or self.cleanup_terminal.cleanup_intent_digest != self.cleanup_intent.intent_digest
+            or self.cleanup_terminal.cleanup_receipt_digest != self.cleanup_receipt.receipt_digest
+            or self.cleanup_terminal.outcome not in {"absent", "already_absent"}
+        ):
+            raise ValueError("rollback completion terminal evidence is incomplete")
+        roles = [item.role for item in self.artifacts]
+        if len(roles) != len(set(roles)):
+            raise ValueError("rollback completion artifact roles must be unique")
+        required_roles = {
+            "main-rollback-attempt-authority",
+            "main-rollback-source-completion",
+            "main-rollback-inverse-delta",
+            "main-rollback-authorization",
+            "main-rollback-intent",
+            "main-rollback-result",
+            "main-rollback-post-state-observation",
+            "main-rollback-cleanup-intent",
+            "main-rollback-cleanup-receipt",
+            "main-rollback-cleanup-terminal",
+        }
+        if set(roles) != required_roles:
+            raise ValueError("rollback completion artifact closure is incomplete")
+        if self.completion_digest != canonical_digest(
+            self.model_dump(exclude={"completion_digest"}, mode="json")
+        ):
+            raise ValueError("rollback completion digest mismatch")
         return self
 
 
@@ -2043,6 +2298,39 @@ def main_operation_id(**identity: object) -> Sha256Digest:
     return canonical_digest(identity)
 
 
+def main_rollback_operation_id(**identity: object) -> Sha256Digest:
+    """Return the domain-separated identity for one rollback attempt."""
+    # ``candidate_ref`` is a projection of this digest (and therefore cannot
+    # participate in the digest without requiring a hash fixed point).
+    identity = {
+        key: value
+        for key, value in identity.items()
+        if key
+        not in {
+            "operation_id",
+            "manifest_digest",
+            "candidate_ref",
+            "recorded_at",
+            "authorized_at",
+            "expires_at",
+            "observed_at",
+            "lease_digest",
+            "lease_epoch_digest",
+            "lease_identity",
+            "run_id",
+            "run_nonce",
+            "pull_request_number",
+            "pull_request_url",
+            "provider_identity",
+            "provider_api_version",
+            "response_digest",
+        }
+    }
+    return canonical_digest(
+        {"domain": "avo.main.rollback.attempt-authority.v1", "identity": identity}
+    )
+
+
 def main_record_bytes(record: StrictModel) -> bytes:
     """Canonical wire bytes used for every content-addressed main record."""
     return canonical_bytes(record)
@@ -2080,18 +2368,27 @@ __all__ = [
     "MainReleaseHoldObservation",
     "MainReleaseIssuerBinding",
     "MainReleaseTransitionReceipt",
+    "MainRollbackAttemptAuthority",
+    "MainRollbackAttemptManifest",
     "MainRollbackAuthorization",
     "MainRollbackCleanupIntent",
     "MainRollbackCleanupObservation",
     "MainRollbackCleanupReceipt",
+    "MainRollbackCleanupTerminalEvidence",
+    "MainRollbackCleanupTerminalObservation",
+    "MainRollbackCompletionPackage",
+    "MainRollbackFinalPostStateObservation",
     "MainRollbackIntent",
+    "MainRollbackPostStateObservation",
     "MainRollbackPreparationAuthorization",
     "MainRollbackResultReceipt",
+    "MainRollbackTerminalCleanupEvidence",
     "MainSourcePackageBinding",
     "MainValidationIdentity",
     "main_operation_id",
     "main_record_bytes",
     "main_record_digest",
+    "main_rollback_operation_id",
 ]
 
 # Phase-A records remain in a separate module to keep the established evidence
@@ -2119,6 +2416,7 @@ from avo_correlate.contracts.main_graduation_phase_a import (  # noqa: E402
 # established contract module acyclic during class definition.
 MainGraduationIntent.model_rebuild()
 MainCompletionPackage.model_rebuild()
+MainRollbackCompletionPackage.model_rebuild()
 
 __all__ += [
     "MainClaimedReleaseTransitionReceipt",

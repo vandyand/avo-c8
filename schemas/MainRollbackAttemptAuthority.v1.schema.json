@@ -1,0 +1,160 @@
+{
+  "additionalProperties": false,
+  "description": "Durable, controller-derived identity for one rollback attempt.\n\nThe operation id is deliberately derived from immutable rollback facts and\nan explicit nonce.  Operational metadata (leases, provider responses, and\ntimestamps) is intentionally absent from this identity manifest so replay\ncannot accidentally create a second operation for the same attempt.",
+  "properties": {
+    "attempt_nonce": {
+      "minLength": 1,
+      "title": "Attempt Nonce",
+      "type": "string"
+    },
+    "candidate_commit": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Candidate Commit",
+      "type": "string"
+    },
+    "candidate_parent_commit": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Candidate Parent Commit",
+      "type": "string"
+    },
+    "candidate_ref": {
+      "minLength": 1,
+      "title": "Candidate Ref",
+      "type": "string"
+    },
+    "candidate_tree": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Candidate Tree",
+      "type": "string"
+    },
+    "completion_package_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Completion Package Digest",
+      "type": "string"
+    },
+    "controller_config_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Controller Config Digest",
+      "type": "string"
+    },
+    "current_main_commit": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Current Main Commit",
+      "type": "string"
+    },
+    "current_main_parent_commit": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Current Main Parent Commit",
+      "type": "string"
+    },
+    "current_main_tree": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Current Main Tree",
+      "type": "string"
+    },
+    "deploy_performed": {
+      "const": false,
+      "default": false,
+      "title": "Deploy Performed",
+      "type": "boolean"
+    },
+    "inverse_delta_artifact_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Inverse Delta Artifact Digest",
+      "type": "string"
+    },
+    "inverse_delta_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Inverse Delta Digest",
+      "type": "string"
+    },
+    "inverse_tree": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Inverse Tree",
+      "type": "string"
+    },
+    "issuer_isolation_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Issuer Isolation Digest",
+      "type": "string"
+    },
+    "manifest_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Manifest Digest",
+      "type": "string"
+    },
+    "operation_id": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Operation Id",
+      "type": "string"
+    },
+    "original_delta_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Original Delta Digest",
+      "type": "string"
+    },
+    "policy_epoch": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Policy Epoch",
+      "type": "string"
+    },
+    "release_issuer_app_id": {
+      "exclusiveMinimum": 0,
+      "title": "Release Issuer App Id",
+      "type": "integer"
+    },
+    "release_issuer_identity": {
+      "minLength": 1,
+      "title": "Release Issuer Identity",
+      "type": "string"
+    },
+    "repository_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Repository Digest",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "source_operation_id": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Source Operation Id",
+      "type": "string"
+    },
+    "target_ref": {
+      "const": "refs/heads/main",
+      "default": "refs/heads/main",
+      "title": "Target Ref",
+      "type": "string"
+    }
+  },
+  "required": [
+    "repository_digest",
+    "operation_id",
+    "attempt_nonce",
+    "source_operation_id",
+    "completion_package_digest",
+    "current_main_commit",
+    "current_main_tree",
+    "current_main_parent_commit",
+    "original_delta_digest",
+    "inverse_delta_digest",
+    "inverse_delta_artifact_digest",
+    "inverse_tree",
+    "candidate_commit",
+    "candidate_tree",
+    "candidate_parent_commit",
+    "candidate_ref",
+    "policy_epoch",
+    "controller_config_digest",
+    "release_issuer_identity",
+    "release_issuer_app_id",
+    "issuer_isolation_digest",
+    "manifest_digest"
+  ],
+  "title": "MainRollbackAttemptAuthority",
+  "type": "object"
+}

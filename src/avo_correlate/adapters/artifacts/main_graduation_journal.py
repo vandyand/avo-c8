@@ -62,11 +62,15 @@ from avo_correlate.contracts.main_graduation import (
     MainReleaseHoldObservation,
     MainReleaseIssuerBinding,
     MainReleaseTransitionReceipt,
+    MainRollbackAttemptAuthority,
     MainRollbackAuthorization,
     MainRollbackCleanupIntent,
     MainRollbackCleanupObservation,
     MainRollbackCleanupReceipt,
+    MainRollbackCleanupTerminalEvidence,
+    MainRollbackCompletionPackage,
     MainRollbackIntent,
+    MainRollbackPostStateObservation,
     MainRollbackPreparationAuthorization,
     MainRollbackResultReceipt,
     MainSourcePackageBinding,
@@ -105,9 +109,7 @@ class _ReadOwner:
     active: bool = True
 
 
-_ReadTraversal = tuple[
-    _ReadOwner, dict[tuple[str, str], tuple[StrictModel, ArtifactRef]]
-]
+_ReadTraversal = tuple[_ReadOwner, dict[tuple[str, str], tuple[StrictModel, ArtifactRef]]]
 
 
 class _MainBaseReader(Protocol):
@@ -180,6 +182,20 @@ class MainRollbackAuthorityVerifier(Protocol):
     def verify_rollback_cleanup_observation(
         self,
         observation: MainRollbackCleanupObservation,
+        intent: MainRollbackCleanupIntent,
+        receipt: MainRollbackCleanupReceipt,
+    ) -> None: ...
+
+    def verify_rollback_post_state(
+        self,
+        observation: MainRollbackPostStateObservation,
+        result: MainRollbackResultReceipt,
+        attempt: MainRollbackAttemptAuthority,
+    ) -> None: ...
+
+    def verify_rollback_cleanup_terminal(
+        self,
+        evidence: MainRollbackCleanupTerminalEvidence,
         intent: MainRollbackCleanupIntent,
         receipt: MainRollbackCleanupReceipt,
     ) -> None: ...
@@ -308,11 +324,15 @@ _MODELS: dict[str, type[StrictModel]] = {
     "reconciliation": MainReconciliation,
     "inverse-delta": MainInverseDeltaArtifact,
     "rollback-authorization": MainRollbackAuthorization,
+    "rollback-attempt-authority": MainRollbackAttemptAuthority,
     "rollback-intent": MainRollbackIntent,
     "rollback-result": MainRollbackResultReceipt,
     "rollback-cleanup-intent": MainRollbackCleanupIntent,
     "rollback-cleanup-receipt": MainRollbackCleanupReceipt,
     "rollback-cleanup-observation": MainRollbackCleanupObservation,
+    "rollback-cleanup-terminal": MainRollbackCleanupTerminalEvidence,
+    "rollback-post-state-observation": MainRollbackPostStateObservation,
+    "rollback-completion": MainRollbackCompletionPackage,
     "attempt": MainGraduationAttempt,
     "eligibility": MainGraduationEligibilityRecord,
     "completion": MainCompletionPackage,
@@ -339,6 +359,7 @@ _STANDARD_ROLE_SUFFIXES: dict[str, str] = {
 
 def _standard_artifact_role(kind: str) -> str:
     return f"main-graduation-{_STANDARD_ROLE_SUFFIXES.get(kind, kind)}"
+
 
 _PHASE_A_KINDS = frozenset(
     {
@@ -525,6 +546,10 @@ class MainGraduationJournal:
                 self._require_inverse_source(cast(MainInverseDeltaArtifact, checked))
             elif kind == "rollback-authorization":
                 self._require_rollback_intent(cast(MainRollbackAuthorization, checked))
+            elif kind == "rollback-attempt-authority":
+                self._require_rollback_attempt_authority(
+                    cast(MainRollbackAttemptAuthority, checked)
+                )
             elif kind == "rollback-intent":
                 self._require_inverse_delta(cast(MainRollbackIntent, checked))
             elif kind == "rollback-result":
@@ -537,6 +562,14 @@ class MainGraduationJournal:
                 self._require_rollback_cleanup_observation(
                     cast(MainRollbackCleanupObservation, checked)
                 )
+            elif kind == "rollback-post-state-observation":
+                self._require_rollback_post_state(cast(MainRollbackPostStateObservation, checked))
+            elif kind == "rollback-cleanup-terminal":
+                self._require_rollback_cleanup_terminal(
+                    cast(MainRollbackCleanupTerminalEvidence, checked)
+                )
+            elif kind == "rollback-completion":
+                self._materialize_rollback_children(cast(MainRollbackCompletionPackage, checked))
             if kind == "completion":
                 self._materialize_children(cast(MainCompletionPackage, checked))
         except (TypeError, ValueError, json.JSONDecodeError) as exc:
@@ -632,11 +665,7 @@ class MainGraduationJournal:
         """
         execution = self._read_owner()
         state = self._read_state.get()
-        if (
-            state is not None
-            and state[0].active
-            and state[0].execution == execution
-        ):
+        if state is not None and state[0].active and state[0].execution == execution:
             return state, False
         return (_ReadOwner(execution), {}), True
 
@@ -674,17 +703,15 @@ class MainGraduationJournal:
                 raise ValueError("main graduation artifact metadata mismatch")
             data = self._store.read_bytes(reference)
             validated_cache = self._validated_cache()
-            cached = (
-                validated_cache.get((kind, key))
-                if validated_cache is not None
-                else None
-            )
+            cached = validated_cache.get((kind, key)) if validated_cache is not None else None
             if cached is not None and _same_artifact_ref(cached[1], reference):
                 # ``read_bytes`` verifies the complete content-addressed
                 # object on every hit. The cached model was already parsed and
                 # recursively validated against this immutable digest.
                 if kind == "completion":
                     self._verify_children(cast(MainCompletionPackage, cached[0]))
+                elif kind == "rollback-completion":
+                    self._verify_rollback_children(cast(MainRollbackCompletionPackage, cached[0]))
                 return cached[0], reference
             parsed = json.loads(data.decode("utf-8"), object_pairs_hook=_strict_pairs)
             if canonical_bytes(parsed) != data:
@@ -736,6 +763,8 @@ class MainGraduationJournal:
                 self._require_inverse_source(cast(MainInverseDeltaArtifact, record))
             elif kind == "rollback-authorization":
                 self._require_rollback_intent(cast(MainRollbackAuthorization, record))
+            elif kind == "rollback-attempt-authority":
+                self._require_rollback_attempt_authority(cast(MainRollbackAttemptAuthority, record))
             elif kind == "rollback-intent":
                 self._require_inverse_delta(cast(MainRollbackIntent, record))
             elif kind == "rollback-result":
@@ -748,8 +777,16 @@ class MainGraduationJournal:
                 self._require_rollback_cleanup_observation(
                     cast(MainRollbackCleanupObservation, record)
                 )
+            elif kind == "rollback-post-state-observation":
+                self._require_rollback_post_state(cast(MainRollbackPostStateObservation, record))
+            elif kind == "rollback-cleanup-terminal":
+                self._require_rollback_cleanup_terminal(
+                    cast(MainRollbackCleanupTerminalEvidence, record)
+                )
             if kind == "completion":
                 self._verify_children(cast(MainCompletionPackage, record))
+            if kind == "rollback-completion":
+                self._verify_rollback_children(cast(MainRollbackCompletionPackage, record))
             if _operation_id(record) != key:
                 raise MainGraduationRecordConflictError(
                     "main graduation identity does not match index"
@@ -809,9 +846,9 @@ class MainGraduationJournal:
             }
         )
         if package.release_transition_fence_resolution is not None:
-            values[
-                "main-graduation-mutation-fence-resolution"
-            ] = package.release_transition_fence_resolution
+            values["main-graduation-mutation-fence-resolution"] = (
+                package.release_transition_fence_resolution
+            )
         return values
 
     def _materialize_children(self, package: MainCompletionPackage) -> None:
@@ -879,6 +916,97 @@ class MainGraduationJournal:
                 raise MainGraduationJournalError(
                     f"completion child artifact contents mismatch: {role}"
                 )
+
+    @staticmethod
+    def _rollback_child_values(package: MainRollbackCompletionPackage) -> dict[str, StrictModel]:
+        return {
+            "main-rollback-attempt-authority": package.attempt_authority,
+            "main-rollback-source-completion": package.source_completion,
+            "main-rollback-inverse-delta": package.inverse_delta,
+            "main-rollback-authorization": package.rollback_authorization,
+            "main-rollback-intent": package.rollback_intent,
+            "main-rollback-result": package.rollback_result,
+            "main-rollback-post-state-observation": package.post_state,
+            "main-rollback-cleanup-intent": package.cleanup_intent,
+            "main-rollback-cleanup-receipt": package.cleanup_receipt,
+            "main-rollback-cleanup-terminal": package.cleanup_terminal,
+        }
+
+    def _materialize_rollback_children(self, package: MainRollbackCompletionPackage) -> None:
+        self._verify_rollback_completion_prerequisites(package)
+        references = {item.role: item for item in package.artifacts}
+        values = self._rollback_child_values(package)
+        if set(references) != set(values):
+            raise MainGraduationJournalError("rollback completion child artifacts are incomplete")
+        for role, value in values.items():
+            expected = references[role]
+            payload = canonical_bytes(value)
+            if (
+                expected.role != role
+                or expected.media_type != f"application/vnd.avo.{role}+json"
+                or expected.digest != _digest_bytes(payload)
+                or expected.size_bytes != len(payload)
+            ):
+                raise MainGraduationJournalError(
+                    f"rollback completion child artifact is not content-bound: {role}"
+                )
+            stored = self._store.put_bytes(
+                payload,
+                media_type=expected.media_type,
+                role=expected.role,
+                max_bytes=self._max,
+            )
+            if stored.digest != expected.digest:
+                raise MainGraduationJournalError(
+                    f"rollback completion child artifact metadata mismatch: {role}"
+                )
+            try:
+                read_back = self._store.read_bytes(expected)
+            except (OSError, RuntimeError, ValueError) as exc:
+                raise MainGraduationJournalError(
+                    f"rollback completion child artifact is unreadable: {role}"
+                ) from exc
+            if read_back != payload:
+                raise MainGraduationJournalError(
+                    f"rollback completion child artifact contents mismatch: {role}"
+                )
+
+    def _verify_rollback_children(self, package: MainRollbackCompletionPackage) -> None:
+        self._verify_rollback_completion_prerequisites(package)
+        references = {item.role: item for item in package.artifacts}
+        values = self._rollback_child_values(package)
+        if set(references) != set(values):
+            raise MainGraduationJournalError("rollback completion child artifacts are incomplete")
+        for role, value in values.items():
+            expected = references[role]
+            if expected.role != role or expected.media_type != f"application/vnd.avo.{role}+json":
+                raise MainGraduationJournalError(
+                    f"rollback completion child artifact metadata mismatch: {role}"
+                )
+            try:
+                data = self._store.read_bytes(expected)
+            except (OSError, RuntimeError, ValueError) as exc:
+                raise MainGraduationJournalError(
+                    f"rollback completion child artifact is unreadable: {role}"
+                ) from exc
+            if data != canonical_bytes(value) or expected.digest != _digest_bytes(data):
+                raise MainGraduationJournalError(
+                    f"rollback completion child artifact contents mismatch: {role}"
+                )
+
+    def _verify_rollback_completion_prerequisites(
+        self, package: MainRollbackCompletionPackage
+    ) -> None:
+        self._require_exact("completion", package.source_completion)
+        self._require_exact("inverse-delta", package.inverse_delta)
+        self._require_exact("rollback-authorization", package.rollback_authorization)
+        self._require_exact("rollback-intent", package.rollback_intent)
+        self._require_exact("rollback-attempt-authority", package.attempt_authority)
+        self._require_exact("rollback-result", package.rollback_result)
+        self._require_exact("rollback-post-state-observation", package.post_state)
+        self._require_exact("rollback-cleanup-intent", package.cleanup_intent)
+        self._require_exact("rollback-cleanup-receipt", package.cleanup_receipt)
+        self._require_exact("rollback-cleanup-terminal", package.cleanup_terminal)
 
     # ------------------------------------------------------------------
     # Phase-A journal records
@@ -1070,9 +1198,7 @@ class MainGraduationJournal:
                 traversal[0].active = False
             self._read_state.reset(token)
 
-    def _read_phase_a_impl(
-        self, kind: str, key: str
-    ) -> tuple[StrictModel, ArtifactRef] | None:
+    def _read_phase_a_impl(self, kind: str, key: str) -> tuple[StrictModel, ArtifactRef] | None:
         path = self._phase_local_path(kind, key)
         if not path.is_file():
             return None
@@ -1085,11 +1211,7 @@ class MainGraduationJournal:
             ):
                 raise ValueError("phase-A artifact hash mismatch")
             validated_cache = self._validated_cache()
-            cached = (
-                validated_cache.get((kind, key))
-                if validated_cache is not None
-                else None
-            )
+            cached = validated_cache.get((kind, key)) if validated_cache is not None else None
             if cached is not None and _same_artifact_ref(cached[1], envelope.reference):
                 # The artifact store has verified the immutable bytes above;
                 # reuse only the model whose full predecessor chain was
@@ -1240,9 +1362,7 @@ class MainGraduationJournal:
                 ) from exc
             if current.fence_digest == record.fence_digest:
                 return
-            raise MainGraduationRecordConflictError(
-                "target mutation fence raced"
-            ) from None
+            raise MainGraduationRecordConflictError("target mutation fence raced") from None
 
         # Claim the directory exclusively, then publish record.json with an
         # atomic create-only link.  The directory itself can briefly be empty
@@ -1271,9 +1391,7 @@ class MainGraduationJournal:
                 reservation.operation_id != record.operation_id
                 or reservation.intent_digest != record.intent_digest
             ):
-                raise MainGraduationRecordConflictError(
-                    "target mutation reservation differs"
-                )
+                raise MainGraduationRecordConflictError("target mutation reservation differs")
         try:
             _write_exclusive_durable(record_path, payload)
             _sync_directory(path)
@@ -1332,7 +1450,8 @@ class MainGraduationJournal:
             if self._target_fence_record_path(path).is_file():
                 try:
                     active = self._read_target_fence_envelope(
-                        path, MainBound(
+                        path,
+                        MainBound(
                             repository_digest=intent.repository_digest,
                             target_ref=intent.target_ref,
                         ),
@@ -1359,9 +1478,7 @@ class MainGraduationJournal:
                     and active_record.intent_digest == intent.intent_digest
                 ):
                     return
-                raise MainGraduationRecordConflictError(
-                    "target has an unresolved mutation fence"
-                )
+                raise MainGraduationRecordConflictError("target has an unresolved mutation fence")
             if not reservation_path.is_file():
                 # A process can die after creating the directory but before
                 # publishing its reservation file.  An empty directory has no
@@ -1411,8 +1528,7 @@ class MainGraduationJournal:
                     exact = (
                         current.operation_id == intent.operation_id
                         and current.intent_digest == intent.intent_digest
-                        and self._store.read_bytes(current.reference)
-                        == canonical_bytes(intent)
+                        and self._store.read_bytes(current.reference) == canonical_bytes(intent)
                     )
                 except (
                     MainGraduationJournalError,
@@ -1448,9 +1564,7 @@ class MainGraduationJournal:
         """
 
         path = self._target_fence_path(intent)
-        expected_scope = main_target_scope_digest(
-            intent.repository_digest, intent.target_ref
-        )
+        expected_scope = main_target_scope_digest(intent.repository_digest, intent.target_ref)
         record_path: Path
         if path.is_dir():
             record_path = self._target_fence_record_path(path)
@@ -1540,9 +1654,7 @@ class MainGraduationJournal:
                 raise MainGraduationJournalError(
                     "closed target mutation fence lacks durable resolution"
                 )
-            self._verify_fence_authority(
-                resolution[0], self._source_receipt(resolution[0])
-            )
+            self._verify_fence_authority(resolution[0], self._source_receipt(resolution[0]))
             self._close_target_fence_if_resolved(resolution[0])
             return
 
@@ -1591,9 +1703,7 @@ class MainGraduationJournal:
                 and _same_artifact_ref(current.reference, reference)
             ):
                 return
-            raise MainGraduationRecordConflictError(
-                "ambiguous mutation target reservation differs"
-            )
+            raise MainGraduationRecordConflictError("ambiguous mutation target reservation differs")
         try:
             _write_exclusive_durable(reservation_path, canonical_bytes(envelope))
             _sync_directory(path)
@@ -1623,9 +1733,7 @@ class MainGraduationJournal:
 
     def _release_claim_key_path(self, claim_key: str) -> Path:
         _check_digest(claim_key)
-        return self._indexes / "release-claim-key" / (
-            f"{claim_key.removeprefix('sha256:')}.json"
-        )
+        return self._indexes / "release-claim-key" / (f"{claim_key.removeprefix('sha256:')}.json")
 
     def _cas_global_envelope(
         self, path: Path, envelope: StrictModel, record: StrictModel, description: str
@@ -1813,18 +1921,16 @@ class MainGraduationJournal:
             "external object identity",
         )
 
-    def _read_target_fence_envelope(
-        self, path: Path, expected: MainBound
-    ) -> _TargetFenceEnvelope:
+    def _read_target_fence_envelope(self, path: Path, expected: MainBound) -> _TargetFenceEnvelope:
         try:
             raw = self._target_fence_record_path(path).read_bytes()
             envelope = _TargetFenceEnvelope.model_validate(
                 json.loads(raw.decode("utf-8"), object_pairs_hook=_strict_pairs)
             )
-            if (
-                canonical_bytes(envelope) != raw
-                or envelope.target_scope_digest
-                != main_target_scope_digest(expected.repository_digest, expected.target_ref)
+            if canonical_bytes(
+                envelope
+            ) != raw or envelope.target_scope_digest != main_target_scope_digest(
+                expected.repository_digest, expected.target_ref
             ):
                 raise ValueError("target fence index is noncanonical")
             current = MainUnresolvedMutationFence.model_validate_json(
@@ -1916,9 +2022,7 @@ class MainGraduationJournal:
         if envelope.fence_digest != record.fence_digest:
             raise MainGraduationRecordConflictError("target mutation fence digest differs")
 
-    def _assert_closed_fence(
-        self, record: MainUnresolvedMutationFence, closed: Path
-    ) -> None:
+    def _assert_closed_fence(self, record: MainUnresolvedMutationFence, closed: Path) -> None:
         if not closed.is_dir():
             raise MainGraduationJournalError("closed target mutation fence is missing")
         envelope = self._read_target_fence_envelope(closed, record)
@@ -2042,18 +2146,14 @@ class MainGraduationJournal:
         if kind == "mutation-intent":
             intent = cast(MainMutationIntent, record)
             prep_prior = self._read("preparation-authorization", intent.operation_id)
-            rollback_prep = self._read(
-                "rollback-preparation-authorization", intent.operation_id
-            )
+            rollback_prep = self._read("rollback-preparation-authorization", intent.operation_id)
             rollback_auth = self._read("rollback-authorization", intent.operation_id)
             if rollback_prep is not None or rollback_auth is not None:
                 if rollback_prep is None or rollback_auth is None or prep_prior is not None:
                     raise MainGraduationJournalError(
                         "rollback mutation intent has an ambiguous preparation branch"
                     )
-                rollback_preparation = cast(
-                    MainRollbackPreparationAuthorization, rollback_prep[0]
-                )
+                rollback_preparation = cast(MainRollbackPreparationAuthorization, rollback_prep[0])
                 lease_prior = self._read("lease-evidence-record", intent.operation_id)
                 if lease_prior is None:
                     raise MainGraduationJournalError(
@@ -2102,9 +2202,7 @@ class MainGraduationJournal:
                     "mutation-intent", intent.parent_intent_digest or ""
                 )
                 if parent_intent_prior is None:
-                    raise MainGraduationJournalError(
-                        "mutation intent parent intent is not durable"
-                    )
+                    raise MainGraduationJournalError("mutation intent parent intent is not durable")
                 self._verify_mutation_receipt(
                     intent.parent_receipt,
                     cast(MainMutationIntent, parent_intent_prior[0]),
@@ -2168,8 +2266,7 @@ class MainGraduationJournal:
                     or external.repository_digest != intent.repository_digest
                     or external.target_ref != intent.target_ref
                     or external.stage != "release_transition"
-                    or external.queue_generation_digest
-                    != durable_claim.queue_generation_digest
+                    or external.queue_generation_digest != durable_claim.queue_generation_digest
                     or external.external_key != expected_external_key
                     or external.identity_digest != expected_external_identity
                 ):
@@ -2489,8 +2586,7 @@ class MainGraduationJournal:
             claim = cast(MainReleaseClaim, claim_prior[0])
             if (
                 intent.release_authorization_digest != release.authorization_digest
-                or release.preparation_authorization_digest
-                != preparation.authorization_digest
+                or release.preparation_authorization_digest != preparation.authorization_digest
                 or release.package_digest != preparation.package_digest
                 or release.composition_digest != preparation.composition_digest
                 or release.lease_digest != lease.lease_digest
@@ -2996,9 +3092,7 @@ class MainGraduationJournal:
         if (
             self._read("rollback-authorization", preparation.operation_id) is not None
             or self._read("rollback-intent", preparation.operation_id) is not None
-            or self._read(
-                "rollback-preparation-authorization", preparation.operation_id
-            )
+            or self._read("rollback-preparation-authorization", preparation.operation_id)
             is not None
         ):
             raise MainGraduationJournalError(
@@ -3072,9 +3166,7 @@ class MainGraduationJournal:
             )
         if self._durable_index_present(
             "plan", preparation.operation_id
-        ) or self._durable_index_present(
-            "preparation-authorization", preparation.operation_id
-        ):
+        ) or self._durable_index_present("preparation-authorization", preparation.operation_id):
             raise MainGraduationJournalError(
                 "rollback preparation conflicts with graduation authority"
             )
@@ -3109,7 +3201,9 @@ class MainGraduationJournal:
             or auth.policy_epoch != lease.policy_epoch
             or preparation.policy_epoch != auth.policy_epoch
             or not (
-                auth.authorized_at <= intent.recorded_at <= preparation.authorized_at
+                auth.authorized_at
+                <= intent.recorded_at
+                <= preparation.authorized_at
                 < auth.expires_at
             )
             or not (
@@ -3119,9 +3213,7 @@ class MainGraduationJournal:
             )
         ):
             raise MainGraduationJournalError("rollback preparation authority binding differs")
-        if re.fullmatch(
-            r"refs/heads/avo/main-rollback/[0-9a-f]{64}", intent.candidate_ref
-        ) is None:
+        if re.fullmatch(r"refs/heads/avo/main-rollback/[0-9a-f]{64}", intent.candidate_ref) is None:
             raise MainGraduationJournalError(
                 "rollback preparation candidate ref is outside controller namespace"
             )
@@ -3150,16 +3242,12 @@ class MainGraduationJournal:
         plan = self._read("plan", operation_id)
         if plan is not None:
             return "graduation"
-        raise MainGraduationJournalError(
-            "admission requires durable queue authority"
-        )
+        raise MainGraduationJournalError("admission requires durable queue authority")
 
     def _durable_index_present(self, kind: str, operation_id: str) -> bool:
         """Check a branch index without parsing an artifact from the other branch."""
 
-        return (
-            self._indexes / kind / f"{operation_id.removeprefix('sha256:')}.json"
-        ).is_file()
+        return (self._indexes / kind / f"{operation_id.removeprefix('sha256:')}.json").is_file()
 
     def _require_queue_admission(self, admission: MainQueueAdmissionObservation) -> None:
         """Admission closes the pre-enqueue queue configuration snapshot."""
@@ -3170,12 +3258,7 @@ class MainGraduationJournal:
         queue_configuration = self._read("queue-configuration", admission.operation_id)
         protection = self._read("protection", admission.operation_id)
         preparation = self._read("preparation-authorization", admission.operation_id)
-        if (
-            plan is None
-            or queue_configuration is None
-            or protection is None
-            or preparation is None
-        ):
+        if plan is None or queue_configuration is None or protection is None or preparation is None:
             raise MainGraduationJournalError(
                 "admission requires durable queue configuration preparation chain"
             )
@@ -3224,16 +3307,12 @@ class MainGraduationJournal:
         ):
             raise MainGraduationJournalError("admission queue issuer differs")
 
-    def _require_rollback_queue_admission(
-        self, admission: MainQueueAdmissionObservation
-    ) -> None:
+    def _require_rollback_queue_admission(self, admission: MainQueueAdmissionObservation) -> None:
         """Validate the historical admission wire against rollback authority."""
 
         queue_prior = self._read("queue-configuration", admission.operation_id)
         protection_prior = self._read("protection", admission.operation_id)
-        preparation_prior = self._read(
-            "rollback-preparation-authorization", admission.operation_id
-        )
+        preparation_prior = self._read("rollback-preparation-authorization", admission.operation_id)
         auth_prior = self._read("rollback-authorization", admission.operation_id)
         if any(
             value is None
@@ -3407,15 +3486,12 @@ class MainGraduationJournal:
     ) -> None:
         """Close a rollback admission with exact singleton group evidence."""
 
-        preparation_prior = self._read(
-            "rollback-preparation-authorization", hold.operation_id
-        )
+        preparation_prior = self._read("rollback-preparation-authorization", hold.operation_id)
         auth_prior = self._read("rollback-authorization", hold.operation_id)
         intent_prior = self._read("rollback-intent", hold.operation_id)
         lease_prior = self._read("lease-evidence-record", hold.operation_id)
         if any(
-            value is None
-            for value in (preparation_prior, auth_prior, intent_prior, lease_prior)
+            value is None for value in (preparation_prior, auth_prior, intent_prior, lease_prior)
         ):
             raise MainGraduationJournalError(
                 "rollback hold requires durable rollback preparation authority"
@@ -3561,8 +3637,7 @@ class MainGraduationJournal:
         if (
             authorization.hold_observation_digest != canonical_digest(hold)
             or authorization.admission_observation_digest != canonical_digest(admission)
-            or authorization.preparation_authorization_digest
-            != canonical_digest(preparation)
+            or authorization.preparation_authorization_digest != canonical_digest(preparation)
             or authorization.package_digest != preparation.package_digest
             or authorization.composition_digest != preparation.composition_digest
             or authorization.repository_digest != preparation.repository_digest
@@ -3749,9 +3824,7 @@ class MainGraduationJournal:
                 "claimed-release-transition", reconciliation.claimed_transition_receipt_digest
             )
             if claimed_prior is None:
-                raise MainGraduationJournalError(
-                    "reconciliation claimed transition is missing"
-                )
+                raise MainGraduationJournalError("reconciliation claimed transition is missing")
             claimed_transition = cast(MainClaimedReleaseTransitionReceipt, claimed_prior[0])
             if (
                 claimed_transition.receipt_digest
@@ -3759,8 +3832,7 @@ class MainGraduationJournal:
                 or claimed_transition.operation_id != reconciliation.operation_id
                 or claimed_transition.repository_digest != reconciliation.repository_digest
                 or claimed_transition.target_ref != reconciliation.target_ref
-                or claimed_transition.outcome
-                not in {"transitioned", "already_transitioned"}
+                or claimed_transition.outcome not in {"transitioned", "already_transitioned"}
             ):
                 raise MainGraduationJournalError(
                     "reconciliation claimed transition binding differs"
@@ -3821,11 +3893,7 @@ class MainGraduationJournal:
             or intent.target_ref != authorization.target_ref
             or intent.lease_identity != authorization.lease_identity
             or intent.lease_digest != authorization.lease_digest
-            or not (
-                authorization.authorized_at
-                <= intent.recorded_at
-                < authorization.expires_at
-            )
+            or not (authorization.authorized_at <= intent.recorded_at < authorization.expires_at)
         ):
             raise MainGraduationJournalError("rollback intent binding differs from authorization")
         lease_prior = self._read("lease-evidence-record", authorization.operation_id)
@@ -3860,8 +3928,7 @@ class MainGraduationJournal:
             authorization.completion_package_digest != canonical_digest(completion)
             or authorization.current_main_commit != completion.reconciliation.main_commit
             or authorization.current_main_tree != completion.reconciliation.main_tree
-            or authorization.current_main_parent_commit
-            != completion.reconciliation.main_parents[0]
+            or authorization.current_main_parent_commit != completion.reconciliation.main_parents[0]
             or authorization.current_main_parent_commit != completion.composition.base_commit
             or authorization.original_delta_digest != completion.delta.delta_digest
             or authorization.policy_epoch != completion.plan.policy_epoch
@@ -3926,14 +3993,10 @@ class MainGraduationJournal:
     def _require_inverse_source(self, inverse: MainInverseDeltaArtifact) -> None:
         """Require an inverse to name and match one exact completed source."""
         if inverse.source_operation_id == inverse.operation_id:
-            raise MainGraduationJournalError(
-                "rollback operation must differ from source operation"
-            )
+            raise MainGraduationJournalError("rollback operation must differ from source operation")
         source_prior = self._read("completion", inverse.source_operation_id)
         if source_prior is None:
-            raise MainGraduationJournalError(
-                "rollback inverse requires durable source completion"
-            )
+            raise MainGraduationJournalError("rollback inverse requires durable source completion")
         completion = cast(MainCompletionPackage, source_prior[0])
         if self._policy_epoch is not None and inverse.policy_epoch != self._policy_epoch:
             raise MainGraduationJournalError("rollback inverse policy epoch is stale")
@@ -3942,8 +4005,7 @@ class MainGraduationJournal:
             or inverse.original_delta_digest != completion.delta.delta_digest
             or inverse.current_main_commit != completion.reconciliation.main_commit
             or inverse.current_main_tree != completion.reconciliation.main_tree
-            or inverse.current_main_parent_commit
-            != completion.reconciliation.main_parents[0]
+            or inverse.current_main_parent_commit != completion.reconciliation.main_parents[0]
             or inverse.current_main_parent_commit != completion.composition.base_commit
             or inverse.inverse_changed_paths != completion.delta.changed_paths
             or inverse.inverse_tree != completion.composition.base_tree
@@ -3971,6 +4033,114 @@ class MainGraduationJournal:
             or intent.recorded_at >= lease.expires_at
         ):
             raise MainGraduationJournalError("rollback intent lease binding differs")
+
+    def _require_rollback_attempt_authority(self, attempt: MainRollbackAttemptAuthority) -> None:
+        if any(
+            self._durable_index_present(kind, attempt.operation_id)
+            for kind in ("plan", "intent", "preparation-authorization")
+        ):
+            raise MainGraduationJournalError(
+                "rollback attempt authority conflicts with graduation authority"
+            )
+        source_prior = self._read("completion", attempt.source_operation_id)
+        inverse_prior = self._read("inverse-delta", attempt.operation_id)
+        auth_prior = self._read("rollback-authorization", attempt.operation_id)
+        intent_prior = self._read("rollback-intent", attempt.operation_id)
+        if any(value is None for value in (source_prior, inverse_prior, auth_prior, intent_prior)):
+            raise MainGraduationJournalError(
+                "rollback attempt authority requires durable source, inverse, intent, "
+                "and authorization"
+            )
+        assert source_prior is not None
+        assert inverse_prior is not None
+        assert auth_prior is not None
+        assert intent_prior is not None
+        source = cast(MainCompletionPackage, source_prior[0])
+        inverse = cast(MainInverseDeltaArtifact, inverse_prior[0])
+        auth = cast(MainRollbackAuthorization, auth_prior[0])
+        intent = cast(MainRollbackIntent, intent_prior[0])
+        if (
+            attempt.repository_digest != source.repository_digest
+            or attempt.target_ref != source.target_ref
+            or attempt.completion_package_digest != canonical_digest(source)
+            or attempt.inverse_delta_digest != inverse.inverse_delta_digest
+            or attempt.inverse_delta_artifact_digest != canonical_digest(inverse)
+            or attempt.current_main_commit != auth.current_main_commit
+            or attempt.current_main_tree != auth.current_main_tree
+            or attempt.current_main_parent_commit != auth.current_main_parent_commit
+            or attempt.original_delta_digest != inverse.original_delta_digest
+            or attempt.original_delta_digest != source.delta.delta_digest
+            or attempt.inverse_tree != inverse.inverse_tree
+            or attempt.candidate_commit != intent.candidate_commit
+            or attempt.candidate_tree != intent.candidate_tree
+            or attempt.candidate_parent_commit != intent.candidate_parent_commit
+            or attempt.candidate_ref != intent.candidate_ref
+            or attempt.policy_epoch != auth.policy_epoch
+            or attempt.policy_epoch != intent.policy_epoch
+            or attempt.controller_config_digest != auth.controller_config_digest
+            or attempt.release_issuer_identity != auth.release_issuer_identity
+            or attempt.release_issuer_app_id != auth.release_issuer_app_id
+            or attempt.issuer_isolation_digest != auth.issuer_isolation_digest
+            or intent.operation_id != attempt.operation_id
+        ):
+            raise MainGraduationJournalError("rollback attempt authority binding differs")
+
+    def _require_rollback_post_state(self, observation: MainRollbackPostStateObservation) -> None:
+        attempt_prior = self._read("rollback-attempt-authority", observation.operation_id)
+        result_prior = self._read("rollback-result", observation.operation_id)
+        if attempt_prior is None or result_prior is None:
+            raise MainGraduationJournalError(
+                "rollback post-state requires durable attempt authority and result"
+            )
+        attempt = cast(MainRollbackAttemptAuthority, attempt_prior[0])
+        result = cast(MainRollbackResultReceipt, result_prior[0])
+        if (
+            observation.source_operation_id != attempt.source_operation_id
+            or observation.attempt_manifest_digest != attempt.manifest_digest
+            or observation.result_receipt_digest != result.receipt_digest
+            or observation.current_main_commit != attempt.current_main_commit
+            or observation.inverse_tree != attempt.inverse_tree
+            or observation.result_commit != result.result_commit
+            or observation.result_tree != result.result_tree
+            or observation.result_parents != result.result_parents
+            or observation.provider_identity != result.provider_identity
+            or observation.provider_api_version != result.provider_api_version
+            or observation.response_digest != result.response_digest
+            or observation.observed_at < result.observed_at
+            or result.outcome not in {"applied", "already_applied"}
+            or observation.repository_digest != attempt.repository_digest
+            or observation.target_ref != attempt.target_ref
+        ):
+            raise MainGraduationJournalError("rollback post-state binding differs")
+        self._verify_rollback_post_state_authority(observation, result, attempt)
+
+    def _require_rollback_cleanup_terminal(
+        self, evidence: MainRollbackCleanupTerminalEvidence
+    ) -> None:
+        intent_prior = self._read("rollback-cleanup-intent", evidence.operation_id)
+        receipt_prior = self._read("rollback-cleanup-receipt", evidence.operation_id)
+        if intent_prior is None or receipt_prior is None:
+            raise MainGraduationJournalError(
+                "rollback cleanup terminal evidence requires durable intent and receipt"
+            )
+        intent = cast(MainRollbackCleanupIntent, intent_prior[0])
+        receipt = cast(MainRollbackCleanupReceipt, receipt_prior[0])
+        if (
+            evidence.cleanup_intent_digest != intent.intent_digest
+            or evidence.cleanup_receipt_digest != receipt.receipt_digest
+            or evidence.candidate_ref != intent.candidate_ref
+            or evidence.candidate_commit != intent.candidate_commit
+            or evidence.pull_request_number != intent.pull_request_number
+            or evidence.pull_request_url != intent.pull_request_url
+            or evidence.provider_identity != intent.provider_identity
+            or evidence.provider_api_version != intent.provider_api_version
+            or evidence.repository_digest != intent.repository_digest
+            or evidence.target_ref != intent.target_ref
+            or evidence.observed_at < receipt.observed_at
+            or receipt.outcome not in {"applied", "already_applied"}
+        ):
+            raise MainGraduationJournalError("rollback cleanup terminal binding differs")
+        self._verify_rollback_cleanup_terminal_authority(evidence, intent, receipt)
 
     def _require_rollback_result(self, result: MainRollbackResultReceipt) -> None:
         intent_prior = self._read("rollback-intent", result.operation_id)
@@ -4108,9 +4278,7 @@ class MainGraduationJournal:
             )
         ):
             raise MainGraduationJournalError("rollback cleanup observation binding differs")
-        self._verify_rollback_cleanup_observation_authority(
-            observation, intent, receipt
-        )
+        self._verify_rollback_cleanup_observation_authority(observation, intent, receipt)
 
     def _verify_rollback_result_authority(
         self,
@@ -4165,9 +4333,7 @@ class MainGraduationJournal:
                 "rollback cleanup intent requires an injected authority verifier"
             )
         try:
-            verifier.verify_rollback_cleanup_intent(
-                intent, rollback_intent, result, authorization
-            )
+            verifier.verify_rollback_cleanup_intent(intent, rollback_intent, result, authorization)
         except MainGraduationJournalError:
             raise
         except Exception as exc:
@@ -4193,6 +4359,62 @@ class MainGraduationJournal:
         except Exception as exc:
             raise MainGraduationJournalError(
                 "rollback cleanup observation authority verification failed"
+            ) from exc
+
+    def _verify_rollback_post_state_authority(
+        self,
+        observation: MainRollbackPostStateObservation,
+        result: MainRollbackResultReceipt,
+        attempt: MainRollbackAttemptAuthority,
+    ) -> None:
+        verifier = self._rollback_authority_verifier
+        if verifier is None:
+            raise MainGraduationJournalError(
+                "rollback post-state requires an injected authority verifier"
+            )
+        try:
+            verify = getattr(verifier, "verify_rollback_post_state", None)
+            if verify is None:
+                verify = getattr(verifier, "verify_rollback_post_state_observation", None)
+            if verify is None:
+                raise MainGraduationJournalError(
+                    "rollback post-state verifier capability is missing"
+                )
+            verify(observation, result, attempt)
+        except MainGraduationJournalError:
+            raise
+        except Exception as exc:
+            raise MainGraduationJournalError(
+                "rollback post-state authority verification failed"
+            ) from exc
+
+    def _verify_rollback_cleanup_terminal_authority(
+        self,
+        evidence: MainRollbackCleanupTerminalEvidence,
+        intent: MainRollbackCleanupIntent,
+        receipt: MainRollbackCleanupReceipt,
+    ) -> None:
+        verifier = self._rollback_authority_verifier
+        if verifier is None:
+            raise MainGraduationJournalError(
+                "rollback cleanup terminal evidence requires an injected authority verifier"
+            )
+        try:
+            verify = getattr(verifier, "verify_rollback_cleanup_terminal", None)
+            if verify is None:
+                verify = getattr(
+                    verifier, "verify_rollback_cleanup_terminal_evidence", None
+                )
+            if verify is None:
+                raise MainGraduationJournalError(
+                    "rollback cleanup terminal verifier capability is missing"
+                )
+            verify(evidence, intent, receipt)
+        except MainGraduationJournalError:
+            raise
+        except Exception as exc:
+            raise MainGraduationJournalError(
+                "rollback cleanup terminal authority verification failed"
             ) from exc
 
     def _require_attempt_eligibility(self, attempt: MainGraduationAttempt) -> None:
@@ -4888,9 +5110,7 @@ class MainGraduationJournal:
     read_release_claim_by_authorization = read_release_claim_for_authorization
     recover_release_claim_by_authorization = recover_release_claim_for_authorization
     read_release_claim_by_operation_authorization = read_release_claim_for_authorization
-    recover_release_claim_by_operation_authorization = (
-        recover_release_claim_for_authorization
-    )
+    recover_release_claim_by_operation_authorization = recover_release_claim_for_authorization
 
     def record_unresolved_mutation_fence(self, record: MainUnresolvedMutationFence) -> ArtifactRef:
         return self._record("unresolved-mutation-fence", record)
@@ -5024,7 +5244,9 @@ class MainGraduationJournal:
                     raise MainGraduationRecordConflictError("target reservation binding differs")
                 receipt = self._read_receipt_for_intent(reservation.intent_digest)
                 if receipt is not None and receipt[0].outcome in {
-                    "applied", "already_applied", "rejected"
+                    "applied",
+                    "already_applied",
+                    "rejected",
                 }:
                     return
         except (OSError, ValueError, TypeError, UnicodeError, json.JSONDecodeError) as exc:
@@ -5051,9 +5273,7 @@ class MainGraduationJournal:
         self._verify_mutation_receipt(receipt, self._source_intent(receipt))
         return receipt, envelope.reference
 
-    def _source_receipt(
-        self, resolution: MainMutationFenceResolution
-    ) -> MainMutationReceipt:
+    def _source_receipt(self, resolution: MainMutationFenceResolution) -> MainMutationReceipt:
         prior = self._read("mutation-receipt", resolution.resolved_receipt_digest)
         if prior is None:
             raise MainGraduationJournalError("mutation resolution receipt is missing")
@@ -5320,14 +5540,10 @@ class MainGraduationJournal:
     def read_composition_proof(self, operation_id: str) -> tuple[StrictModel, ArtifactRef] | None:
         return self._read("composition-proof", operation_id)
 
-    def record_queue_configuration(
-        self, record: MainQueueConfigurationObservation
-    ) -> ArtifactRef:
+    def record_queue_configuration(self, record: MainQueueConfigurationObservation) -> ArtifactRef:
         return self._record("queue-configuration", record)
 
-    def read_queue_configuration(
-        self, operation_id: str
-    ) -> tuple[StrictModel, ArtifactRef] | None:
+    def read_queue_configuration(self, operation_id: str) -> tuple[StrictModel, ArtifactRef] | None:
         return self._read("queue-configuration", operation_id)
 
     def record_queue_observation(self, record: MainQueueObservation) -> ArtifactRef:
@@ -5468,6 +5684,19 @@ class MainGraduationJournal:
     ) -> tuple[StrictModel, ArtifactRef] | None:
         return self._read("rollback-authorization", operation_id)
 
+    def record_rollback_attempt_authority(
+        self, record: MainRollbackAttemptAuthority
+    ) -> ArtifactRef:
+        return self._record("rollback-attempt-authority", record)
+
+    def read_rollback_attempt_authority(
+        self, operation_id: str
+    ) -> tuple[MainRollbackAttemptAuthority, ArtifactRef] | None:
+        return cast(
+            tuple[MainRollbackAttemptAuthority, ArtifactRef] | None,
+            self._read("rollback-attempt-authority", operation_id),
+        )
+
     def record_inverse_delta(self, record: MainInverseDeltaArtifact) -> ArtifactRef:
         return self._record("inverse-delta", record)
 
@@ -5526,6 +5755,35 @@ class MainGraduationJournal:
             self._read("rollback-cleanup-observation", operation_id),
         )
 
+    def record_rollback_post_state_observation(
+        self, record: MainRollbackPostStateObservation
+    ) -> ArtifactRef:
+        return self._record("rollback-post-state-observation", record)
+
+    def read_rollback_post_state_observation(
+        self, operation_id: str
+    ) -> tuple[MainRollbackPostStateObservation, ArtifactRef] | None:
+        return cast(
+            tuple[MainRollbackPostStateObservation, ArtifactRef] | None,
+            self._read("rollback-post-state-observation", operation_id),
+        )
+
+    def record_rollback_cleanup_terminal(
+        self, record: MainRollbackCleanupTerminalEvidence
+    ) -> ArtifactRef:
+        return self._record("rollback-cleanup-terminal", record)
+
+    def read_rollback_cleanup_terminal(
+        self, operation_id: str
+    ) -> tuple[MainRollbackCleanupTerminalEvidence, ArtifactRef] | None:
+        return cast(
+            tuple[MainRollbackCleanupTerminalEvidence, ArtifactRef] | None,
+            self._read("rollback-cleanup-terminal", operation_id),
+        )
+
+    record_rollback_cleanup_terminal_evidence = record_rollback_cleanup_terminal
+    read_rollback_cleanup_terminal_evidence = read_rollback_cleanup_terminal
+
     def record_attempt(self, record: MainGraduationAttempt) -> ArtifactRef:
         return self._record("attempt", record)
 
@@ -5543,6 +5801,17 @@ class MainGraduationJournal:
 
     def read_completion(self, operation_id: str) -> tuple[StrictModel, ArtifactRef] | None:
         return self._read("completion", operation_id)
+
+    def record_rollback_completion(self, record: MainRollbackCompletionPackage) -> ArtifactRef:
+        return self._record("rollback-completion", record)
+
+    def read_rollback_completion(
+        self, operation_id: str
+    ) -> tuple[MainRollbackCompletionPackage, ArtifactRef] | None:
+        return cast(
+            tuple[MainRollbackCompletionPackage, ArtifactRef] | None,
+            self._read("rollback-completion", operation_id),
+        )
 
     record_package = record_completion
     read_package = read_completion
