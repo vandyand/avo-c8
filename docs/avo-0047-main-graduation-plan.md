@@ -1,7 +1,7 @@
 # AVO-004.7 protected-main graduation implementation plan
 
-Status: implementation plan; C4 Phase A complete on 2026-08-30 at HEAD
-`0cb20c50c43cd78f75b23da025e3bbe4e0f5ee78` with Terra approval; hosted `main` mutation blocked
+Status: implementation plan; C4 complete on 2026-09-01 at HEAD
+`82ace056cf9f0453b43c71845179c437914a041b` with Terra approval; hosted `main` mutation blocked
 pending organization-hosting/merge-queue (max-one-entry plus admission/hold) capability
 and explicit isolated release-hold issuer authority.
 
@@ -22,12 +22,12 @@ containment, multi-host coordination, and any widening of integration-only contr
 providers. Human authority remains available for exceptions and constitutional changes,
 not routine approvals.
 
-## C4 Phase A — contract-first coordinator boundary
+## C4 — coordinator and recovery
 
-Phase A is complete at the recorded HEAD; see the [Phase A result](avo-0047-c4-phase-a-result.md).
-This closes only the contract/journal gate. The next ready gate is the live coordinator/provider
-executor, including the required end-to-end on-disk recovery fixture as P2 coverage. It does not
-establish live executor readiness or complete AVO-004.7.
+C4 is complete at the recorded HEAD; see the [final C4 result](avo-0047-c4-result.md). The
+historical [Phase A result](avo-0047-c4-phase-a-result.md) remains immutable. The next ready gate
+is C5 main rollback authority. C4 is offline evidence and does not establish hosted/live readiness
+or complete AVO-004.7.
 
 Phase A freezes the coordinator and recovery contracts before any provider implementation.
 It is documentation, schema, journal, and test-contract work only: it creates no candidate,

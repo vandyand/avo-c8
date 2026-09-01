@@ -1,5 +1,9 @@
 # AVO-004.7 C4 Phase A contract and journal result
 
+Historical record: this immutable Phase A result is superseded for overall C4 status by the
+[final C4 coordinator and recovery result](avo-0047-c4-result.md). The facts below describe only
+the earlier contract/journal gate and are intentionally preserved.
+
 Status: complete as of 2026-08-30; live coordinator/provider executor remains the next
 ready implementation gate.
 

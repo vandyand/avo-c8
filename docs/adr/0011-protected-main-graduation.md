@@ -1,14 +1,13 @@
 # ADR 0011: Protected-main graduation boundary
 
-Status: accepted for the AVO-004.7 architecture; implementation and hosted gate in progress.
+Status: accepted for the AVO-004.7 architecture; C4 complete, implementation and hosted gate in progress.
 Live `main` mutation is blocked by current GitHub hosting capability and missing isolated
 release-hold authority.
 
-C4 Phase A contract/journal gate: complete on 2026-08-30 at code HEAD
-`0cb20c50c43cd78f75b23da025e3bbe4e0f5ee78`, with Terra approval. This records no live
-coordinator/provider executor readiness and does not complete AVO-004.7; the next ready gate
-is the live executor implementation using these contracts, including the required P2
-end-to-end on-disk recovery fixture.
+C4 coordinator and recovery gate: complete on 2026-09-01 at code HEAD
+`82ace056cf9f0453b43c71845179c437914a041b`, with Terra approval. See the [final C4 result](../avo-0047-c4-result.md).
+This records offline authority and recovery evidence only, does not authorize hosted/live
+mutation, and does not complete AVO-004.7. C5 main rollback authority is the next ready gate.
 
 ## Context
 

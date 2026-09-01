@@ -1,8 +1,8 @@
 # AVO Roadmap
 
-Status date: 2026-08-30.
+Status date: 2026-09-01.
 
-Review date: 2026-08-30.
+Review date: 2026-09-01.
 
 Authority: This file is AVO's sole authority for outcomes, priority, sequencing, milestone status, and decision gates.
 
@@ -59,11 +59,12 @@ production authority outside the proposing agent's control.
   PR #47, PR #48, and PR #49. The C3 boundary authenticates native
   merge-group webhooks, resolves effective repository/organization rulesets, reads complete
   exact-SHA checks, and durably binds queue generation, PR identity, delivery identity, and
-  isolated-App transition evidence. C4 Phase A contract/journal is complete at code HEAD
-  `0cb20c50c43cd78f75b23da025e3bbe4e0f5ee78`, with Terra approval; this is not live
-  coordinator/provider executor readiness. The next ready gate is implementation of that live
-  executor using the Phase-A contracts, including the required end-to-end on-disk recovery
-  fixture for P2 coverage. The preregistered 12-success threshold remains future work.
+  isolated-App transition evidence. C4 coordinator and recovery is complete at code HEAD
+  `82ace056cf9f0453b43c71845179c437914a041b`, with Terra approval and the final offline
+  acceptance matrix. The [durable C4 result](avo-0047-c4-result.md) records 358 passed tests,
+  green Ruff, clean scoped production Pyright, schema parity, and roadmap validation. This is
+  not hosted or live readiness. C5 main rollback authority is the next ready gate; the
+  preregistered 12-success threshold remains future work.
   Live `main` mutation is currently blocked on both required capabilities: the preferred
   merge-queue protocol needs an organization-owned repository with max-one-entry queue and
   exact admission/hold capability, while the current public repository is user-owned, and no
@@ -111,8 +112,8 @@ approving every ordinary patch.
 | C1 — main contracts and journal | complete | Protected PR #47; strict contracts, schemas, controller-rooted issuer binding, lease evidence, and duplicate-context rejection pass. See the [implementation plan](avo-0047-main-graduation-plan.md). |
 | C2 — deterministic composition | complete | Protected PR #48; exact sole-parent delta composition and durable controller-rooted composition proof pass. See the [implementation plan](avo-0047-main-graduation-plan.md). |
 | C3 — protected-main provider and attester | complete | Protected PR #49; signed merge-group provenance, effective ruleset/bypass verification, complete check pagination, exact PR/queue/topology binding, durable delivery replay protection, and isolated-App transition observation pass independent Terra review and hosted Ubuntu/Windows checks. See the [runbook](avo-0047-main-graduation-runbook.md). |
-| C4 — coordinator and recovery | in_progress | Phase A contract/journal gate complete at HEAD `0cb20c50c43cd78f75b23da025e3bbe4e0f5ee78` with Terra approval. Next ready gate: implement the live coordinator/provider executor against those contracts, including the required end-to-end on-disk recovery fixture for P2 coverage; this is not live readiness or full C4 completion. [Result](avo-0047-c4-phase-a-result.md) |
-| C5 — main rollback authority | planned | Begins only after C4 passes its authority and recovery gate. |
+| C4 — coordinator and recovery | complete | Final offline coordinator/recovery acceptance passed at HEAD `82ace056cf9f0453b43c71845179c437914a041b` with Terra approval: 358 passed, 0 failed, filesystem recovery and replay covered, Ruff/scoped production Pyright/schema parity/roadmap validation green. No hosted or live mutation occurred. [Result](avo-0047-c4-result.md) |
+| C5 — main rollback authority | ready | Begins next after C4 passed its authority and recovery gate; no hosted `main` mutation is authorized while C8 prerequisites remain blocked. |
 | C6 — campaign runner and eligibility ledger | planned | Begins only after C4 and C5 pass. |
 | C7 — deterministic offline gate | planned | Begins only after C1–C6 pass. |
 | C8 — hosted organization/queue/release gate | blocked | Requires explicit organization-hosting/max-one merge-queue capability and isolated admission/hold issuer authority; no live `main` mutation is authorized. |
@@ -124,10 +125,10 @@ adversarial review and protected Ubuntu/Windows CI before merging. AVO-004.5 the
 sanitized live promotion to the protected integration branch without changing `main`. AVO-004.6
 then completed deterministic failure injection and a real failed-soak/authorized-rollback cycle
 with immutable exact-SHA evidence. AVO-004.7 C1–C3 are now complete through protected PRs
-#47–#49; C4 Phase A is complete at HEAD `0cb20c50c43cd78f75b23da025e3bbe4e0f5ee78` with Terra
-approval. The live coordinator/provider executor and required P2 end-to-end on-disk recovery
-fixture are the next ready gate; Phase A does not establish live readiness and AVO-004.7 is not
-complete. The clean-run threshold
+#47–#49; C4 coordinator and recovery is complete at HEAD
+`82ace056cf9f0453b43c71845179c437914a041b` with Terra approval and the final offline acceptance
+matrix. C5 main rollback authority is the next ready gate; C4 does not establish hosted/live
+readiness and AVO-004.7 remains in progress. The clean-run threshold
 and main-specific rollback evidence remain preregistered in the linked ADR, plan, and runbook. The
 later live gate is blocked by two hosting/authority prerequisites: the preferred required merge queue
 with max one entry per group and exact PR-head admission/group-hold capability is available for

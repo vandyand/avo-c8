@@ -1,15 +1,15 @@
 # Implementation status against Draft 3
 
-Status date: 2026-08-30. This is a development-complete v1 reference implementation, not a production or hostile-code security approval. Current priority, sequencing, and milestone status are governed by the [authoritative roadmap](roadmap.md); this document is an evidence snapshot.
+Status date: 2026-09-01. This is a development-complete v1 reference implementation, not a production or hostile-code security approval. Current priority, sequencing, and milestone status are governed by the [authoritative roadmap](roadmap.md); this document is an evidence snapshot.
 
 ## AVO-004.7 C4 status
 
-C4 Phase A contract/journal work is complete at code HEAD
-`0cb20c50c43cd78f75b23da025e3bbe4e0f5ee78`, with Terra approval. See the [durable Phase A
-result](avo-0047-c4-phase-a-result.md). This closes only the contract/journal gate: it is not
-live coordinator/provider executor readiness and does not complete AVO-004.7. The next ready
-gate is the live executor implementation using the Phase-A contracts, with the required
-end-to-end on-disk recovery fixture as P2 coverage; hosted `main` mutation remains blocked.
+C4 coordinator and recovery is complete at code HEAD
+`82ace056cf9f0453b43c71845179c437914a041b`, with Terra approval. See the [durable C4
+result](avo-0047-c4-result.md). The offline acceptance matrix passed 358 tests with 0 failures;
+Ruff, scoped production Pyright, schema parity, and roadmap validation passed. This does not
+establish hosted/live readiness or complete AVO-004.7. C5 main rollback authority is the next
+ready gate; C8 remains blocked and hosted `main` mutation remains unauthorized.
 
 ## Roadmap coverage
 
