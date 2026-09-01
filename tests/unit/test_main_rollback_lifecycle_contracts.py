@@ -322,10 +322,35 @@ class _AllowRollbackAuthority:
         return None
 
 
-def _journal_with_records(tmp_path: Path, records: dict[str, Any]) -> MainGraduationJournal:
-    journal = MainGraduationJournal(
-        tmp_path, policy_epoch=D, rollback_authority_verifier=_AllowRollbackAuthority()
-    )
+class _RecordingRollbackAuthority(_AllowRollbackAuthority):
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def verify_rollback_result(self, *_args: Any) -> None:
+        self.calls.append("result")
+
+    def verify_rollback_cleanup_intent(self, *_args: Any) -> None:
+        self.calls.append("cleanup-intent")
+
+    def verify_rollback_cleanup_receipt(self, *_args: Any) -> None:
+        self.calls.append("cleanup-receipt")
+
+    def verify_rollback_cleanup_observation(self, *_args: Any) -> None:
+        self.calls.append("cleanup-observation")
+
+
+_DEFAULT_AUTHORITY = object()
+
+
+def _journal_with_records(
+    tmp_path: Path, records: dict[str, Any], authority: Any = _DEFAULT_AUTHORITY
+) -> MainGraduationJournal:
+    kwargs: dict[str, Any] = {}
+    if authority is not _DEFAULT_AUTHORITY:
+        kwargs["rollback_authority_verifier"] = authority
+    else:
+        kwargs["rollback_authority_verifier"] = _AllowRollbackAuthority()
+    journal = MainGraduationJournal(tmp_path, policy_epoch=D, **kwargs)
     journal._read = lambda kind, _key: (records[kind], _ref()) if kind in records else None  # type: ignore[method-assign]
     return journal
 
@@ -560,3 +585,181 @@ def test_fresh_journal_rejects_missing_or_tampered_dependencies_on_restart(tmp_p
     fresh = _journal_with_records(tmp_path / "tampered", tampered)
     with pytest.raises(MainGraduationJournalError, match="authority binding"):
         fresh._require_rollback_result(result)  # type: ignore[attr-defined]
+
+
+def _lifecycle_records() -> tuple[
+    Any,
+    MainRollbackIntent,
+    MainRollbackAuthorization,
+    MainInverseDeltaArtifact,
+    MainRollbackResultReceipt,
+    MainRollbackCleanupIntent,
+    MainRollbackCleanupReceipt,
+    MainRollbackCleanupObservation,
+]:
+    source, inverse, intent, auth, _lease_record, result = _rollback_fixture()
+    cleanup = _cleanup_intent(intent, auth, result)
+    receipt = _cleanup_receipt(cleanup)
+    observation = _cleanup_observation(cleanup, receipt)
+    return source, intent, auth, inverse, result, cleanup, receipt, observation
+
+
+def test_missing_rollback_authority_verifier_rejects_each_durable_evidence_record(
+    tmp_path: Path,
+) -> None:
+    source, intent, auth, inverse, result, cleanup, receipt, observation = _lifecycle_records()
+    dependency_maps = {
+        "rollback-result": {
+            "rollback-intent": intent,
+            "rollback-authorization": auth,
+            "inverse-delta": inverse,
+            "completion": source,
+        },
+        "rollback-cleanup-intent": {
+            "rollback-result": result,
+            "rollback-intent": intent,
+            "rollback-authorization": auth,
+        },
+        "rollback-cleanup-receipt": {
+            "rollback-cleanup-intent": cleanup,
+            "rollback-result": result,
+        },
+        "rollback-cleanup-observation": {
+            "rollback-cleanup-receipt": receipt,
+            "rollback-cleanup-intent": cleanup,
+        },
+    }
+    records = {
+        "rollback-result": result,
+        "rollback-cleanup-intent": cleanup,
+        "rollback-cleanup-receipt": receipt,
+        "rollback-cleanup-observation": observation,
+    }
+    for index, (kind, dependencies) in enumerate(dependency_maps.items()):
+        journal = _journal_with_records(tmp_path / str(index), dependencies, authority=None)
+        with pytest.raises(MainGraduationJournalError, match="injected authority verifier"):
+            getattr(journal, f"record_{kind.replace('-', '_')}")(records[kind])
+
+
+def test_injected_rollback_authority_is_called_on_record_and_restart_reads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, intent, auth, inverse, result, cleanup, receipt, observation = _lifecycle_records()
+    dependencies = {
+        "rollback-intent": intent,
+        "rollback-authorization": auth,
+        "inverse-delta": inverse,
+        "completion": source,
+        "rollback-result": result,
+        "rollback-cleanup-intent": cleanup,
+        "rollback-cleanup-receipt": receipt,
+    }
+    authority = _RecordingRollbackAuthority()
+    journal = _journal_with_records(tmp_path, dependencies, authority=authority)
+    journal.record_rollback_result(result)
+    journal.record_rollback_cleanup_intent(cleanup)
+    journal.record_rollback_cleanup_receipt(receipt)
+    journal.record_rollback_cleanup_observation(observation)
+    assert authority.calls == [
+        "result",
+        "cleanup-intent",
+        "cleanup-receipt",
+        "cleanup-observation",
+    ]
+
+    restart_records = dict(dependencies)
+    restart_records["rollback-cleanup-observation"] = observation
+    for target_kind, _target in (
+        ("rollback-result", result),
+        ("rollback-cleanup-intent", cleanup),
+        ("rollback-cleanup-receipt", receipt),
+        ("rollback-cleanup-observation", observation),
+    ):
+        restarted = MainGraduationJournal(
+            tmp_path,
+            policy_epoch=D,
+            rollback_authority_verifier=authority,
+        )
+        original_impl = restarted._read_impl
+
+        def read_impl(
+            kind: str,
+            key: str,
+            *,
+            _target_kind: str = target_kind,
+            _original_impl: Any = original_impl,
+        ) -> Any:
+            if kind == _target_kind:
+                return _original_impl(kind, key)
+            if kind in restart_records:
+                return restart_records[kind], _ref()
+            return _original_impl(kind, key)
+
+        monkeypatch.setattr(restarted, "_read_impl", read_impl)
+        getattr(restarted, f"read_{target_kind.replace('-', '_')}")(RB)
+    assert authority.calls == [
+        "result",
+        "cleanup-intent",
+        "cleanup-receipt",
+        "cleanup-observation",
+        "result",
+        "cleanup-intent",
+        "cleanup-receipt",
+        "cleanup-observation",
+    ]
+
+
+def test_tampered_or_mismatched_rollback_evidence_fails_before_authority_verifier(
+    tmp_path: Path,
+) -> None:
+    source, intent, auth, inverse, result, cleanup, receipt, observation = _lifecycle_records()
+    cases = (
+        (
+            "rollback-result",
+            result,
+            {
+                "rollback-intent": intent,
+                "rollback-authorization": auth,
+                "inverse-delta": inverse,
+                "completion": source,
+            },
+            result.model_copy(update={"result_tree": BASE}),
+        ),
+        (
+            "rollback-cleanup-receipt",
+            receipt,
+            {"rollback-cleanup-intent": cleanup, "rollback-result": result},
+            _signed(
+                MainRollbackCleanupReceipt,
+                {
+                    **receipt.model_dump(mode="json"),
+                    "intent_digest": D2,
+                },
+                "receipt_digest",
+            ),
+        ),
+        (
+            "rollback-cleanup-observation",
+            observation,
+            {
+                "rollback-cleanup-receipt": receipt,
+                "rollback-cleanup-intent": cleanup,
+            },
+            _signed(
+                MainRollbackCleanupObservation,
+                {
+                    **observation.model_dump(mode="json"),
+                    "receipt_digest": D2,
+                },
+                "observation_digest",
+            ),
+        ),
+    )
+    for index, (kind, _original, dependencies, tampered) in enumerate(cases):
+        authority = _RecordingRollbackAuthority()
+        journal = _journal_with_records(
+            tmp_path / str(index), dependencies, authority=authority
+        )
+        with pytest.raises(MainGraduationJournalError):
+            getattr(journal, f"record_{kind.replace('-', '_')}")(tampered)
+        assert authority.calls == []
