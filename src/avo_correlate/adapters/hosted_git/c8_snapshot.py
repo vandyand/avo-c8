@@ -12,7 +12,7 @@ import hashlib
 import re
 from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
-from typing import NoReturn
+from typing import Literal, NoReturn, cast
 from urllib.parse import quote
 
 from avo_correlate.contracts.c8_hosted_preflight import (
@@ -136,9 +136,10 @@ class C8GitHubSnapshotAdapter:
         if full_name != f"{self.owner}/{self.repo}":
             raise C8SnapshotUnverifiable()
         owner_obj = self._obj(repository_raw.get("owner"))
-        owner_type = self._string(owner_obj, "type")
-        if owner_type not in {"Organization", "User", "Bot", "Unknown"}:
+        owner_type_raw = self._string(owner_obj, "type")
+        if owner_type_raw not in {"Organization", "User", "Bot", "Unknown"}:
             raise C8SnapshotUnverifiable()
+        owner_type = cast(Literal["Organization", "User", "Bot", "Unknown"], owner_type_raw)
         ref = self._obj(self._get(base + "/git/ref/heads/main"))
         if self._string(ref, "ref") != "refs/heads/main":
             raise C8SnapshotUnverifiable()
