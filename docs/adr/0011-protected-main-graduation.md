@@ -18,9 +18,13 @@ C6's offline result remains recorded in [the durable result](../avo-0047-c6-resu
 C8 local Wave 1/2 foundations are Terra-approved through commits `ecd773c`, `935363c`, and
 `49fb84e`; the bounded pinned/no-redirect GitHub transport is now the actual provider default,
 and controller-rooted activation with raw-proof CAS/legacy-compatible ledger schema support is
-implemented locally. The local rollback and activation preparers are explicitly non-consumable
-drafts. These foundations are not a trust root, live adapter, or runner: no concrete instance
-exists and no hosted mutation occurred. See the [C8 local-foundations result](../avo-0047-c8-local-foundations-result.md).
+implemented locally. Phase 1 is accepted at `daeff01` through `f38840d`: a single-flight,
+immutable diagnostic snapshot performs five authenticated GETs (repository, main ref, commit,
+workflow blob, final main fence), verifies blob binding, and has 52 focused tests. It does not
+verify workflow semantics/check identity, protection/queue configuration, isolated issuer, or
+rollback ACL. The local rollback and activation preparers are explicitly non-consumable drafts.
+There is no CLI/live execution, concrete trust root, authority-bearing adapter, runner, readiness,
+or hosted mutation. See the [C8 local-foundations result](../avo-0047-c8-local-foundations-result.md).
 
 ## Context
 

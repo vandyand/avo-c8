@@ -13,9 +13,13 @@ C8 local Wave 1/2 foundations are Terra-approved through commits `ecd773c`, `935
 `49fb84e`; see the [local-foundations result](avo-0047-c8-local-foundations-result.md).
 Exact-SHA/clean-WSL CI checks are hardened, bounded pinned/no-redirect GitHub transport is the
 actual provider default, and controller-rooted activation with raw-proof CAS/legacy-compatible
-schema support is locally implemented. Local rollback and activation preparers are explicitly
-non-consumable drafts. No concrete trust root, live adapter, or runner exists, and no hosted
-mutation occurred.
+schema support is locally implemented. Phase 1 is Terra-approved at `daeff01` through `f38840d`:
+its single-flight immutable diagnostic snapshot performs five authenticated GETs for repository,
+main ref, commit, workflow blob, and final main fence; verifies blob binding; and has 52 focused
+tests. It does not establish workflow semantics/check identity, protection/queue/issuer/rollback
+ACL, authority, or readiness. Local rollback and activation preparers are explicitly
+non-consumable drafts. No CLI/live execution, concrete trust root, live adapter, runner, or
+hosted mutation occurred.
 
 This runbook operationalizes [ADR 0011](adr/0011-protected-main-graduation.md) and the
 [implementation plan](avo-0047-main-graduation-plan.md). It is limited to the declared
@@ -27,6 +31,16 @@ exact frozen case/vector entries; replay returned the exact same result with `ex
 `clock_calls=0`, and `deploy_performed=false`. See the [durable C7 result](avo-0047-c7-result.md).
 No provider or `main` mutation is authorized by this status. C8 remains blocked pending
 organization-hosting/merge-queue capability and isolated release-hold authority.
+
+## 1A. Local Phase 1 diagnostic boundary
+
+The Phase 1 snapshot may be run only as a bounded authenticated diagnostic read. It issues the
+fixed five-GET sequence (repository, `main` ref, pointed-to commit, workflow blob at that commit,
+then final `main` ref fence), verifies the Git blob binding, binds all responses to one canonical
+observation, and caches one result under a single-flight lock. It has no CLI/live execution path,
+writer capability, activation authority, or readiness meaning. Workflow semantics and check
+identity, effective protection and queue configuration, isolated issuer, and rollback namespace
+ACL remain unverifiable until the tested Phase 2 parsers and atomic snapshot are delivered.
 
 The GitHub REST ref-delete endpoint provides no expected-SHA CAS precondition. Before hosted
 use, protect the `avo/main-rollback/*` namespace with exclusive ACL/ruleset authority. Cleanup

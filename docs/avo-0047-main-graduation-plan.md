@@ -16,8 +16,13 @@ C8 local Wave 1/2 foundations are Terra-approved through commits `ecd773c`, `935
 `49fb84e`; see the [local-foundations result](avo-0047-c8-local-foundations-result.md).
 The bounded pinned/no-redirect GitHub transport is now the actual provider default, and
 controller-rooted activation plus raw-proof CAS/legacy-compatible ledger schema support are
-implemented locally. The rollback and activation preparers are explicitly non-consumable drafts;
-there is no concrete trust root, live adapter, or runner, and no hosted mutation.
+implemented locally. Phase 1 is now also accepted at `daeff01` through `f38840d`: its immutable
+single-flight snapshot performs five authenticated GETs (repository, main ref, commit, workflow
+blob, final main fence), verifies blob binding, and has 52 focused tests. This remains diagnostic
+only: workflow semantics/check identity and protection/queue/issuer/rollback ACL remain
+unverifiable. The rollback and activation preparers are explicitly non-consumable drafts; there
+is no CLI/live execution, concrete trust root, authority-bearing adapter, runner, readiness, or
+hosted mutation.
 
 This plan is subordinate to the [authoritative roadmap](roadmap.md) and
 [ADR 0011](adr/0011-protected-main-graduation.md). It describes implementation-ready
@@ -114,7 +119,7 @@ accepted and its write scope is reviewed.
 | AVO-004.7-C5 | Main rollback authority | AVO-004.7-C1, AVO-004.7-C3, AVO-004.7-C4 | New `MainRollbackAuthority`, inverse-delta contracts, and tests. No reset, force update, or direct ref update. | Offline acceptance complete at HEAD `e38d0b826f94f3f559fb2e3ef0b26d1d17128c53`: Terra APPROVE, combined 24 passed. Covers aggregate orchestration, terminal cleanup/closure, crash/replay, and adversarial recovery. No hosted/provider/main/deploy mutation. [Result](avo-0047-c5-result.md) |
 | AVO-004.7-C6 | Campaign runner and eligibility ledger | AVO-004.7-C4, AVO-004.7-C5 | New runner, frozen activation record, eligibility ledger, threshold accumulator, and evidence package writer. | Complete for offline acceptance at `e6db424`; [result](avo-0047-c6-result.md). Enforces gap-free scheduler sequence after watermark, exactly one next-sequence admission with no speculative tail, ordinary nonempty eligibility from submission, terminal upstream failure/reset, and exact unresolved-tail closure. Hosted activation remains gated by C8 prerequisites and a fresh hosted rollback drill. |
 | AVO-004.7-C7 | Deterministic offline gate | AVO-004.7-C1 through AVO-004.7-C6 | Offline harness, fault matrix, and result artifact only. No hosted mutation. | Complete at code HEAD `9c70c36074810606692f8c2030b25ce83c10a1e4`: 47 exact frozen case/vector entries passed, replay returned the exact same result with `executor_calls=0` and `clock_calls=0`, and `deploy_performed=false`. Two truthful failed-closed dry attempts exposed datetime-canonicalization and semantic-versus-artifact verifier bugs; both were remediated and reviewed. [Result](avo-0047-c7-result.md) |
-| AVO-004.7-C8 | Hosted organization/queue/release gate | AVO-004.7-C7 | Terra-approved local Wave 1/2 foundations plus hosted workflow/configuration and operator-controlled state root only after explicit authority. | Local foundations are recorded in the [C8 result](avo-0047-c8-local-foundations-result.md); they do not provide a concrete trust root, live adapter, or runner. Final protocol still requires an organization-owned required merge queue with max entries per group=1, a separate isolated issuer (not App 15368), exclusive controller create/delete authority for `avo/main-rollback/*`, a fresh hosted main rollback drill, then ledger activation and 12 consecutive eligible successes with 0 failures/boundary violations. Until those prerequisites exist this leaf is blocked and may not mutate current `main`. |
+| AVO-004.7-C8 | Hosted organization/queue/release gate | AVO-004.7-C7 | Terra-approved local Wave 1/2 foundations plus hosted workflow/configuration and operator-controlled state root only after explicit authority. | Phase 1 diagnostic snapshot is accepted at `daeff01` through `f38840d` with 52 focused tests: five authenticated GETs, final main fence, blob binding, and single-flight caching. It does not verify workflow semantics/check identity, protection/queue configuration, issuer, or rollback ACL, and provides no CLI/live execution, authority, or readiness. Final protocol still requires an organization-owned required merge queue with max entries per group=1, a separate isolated issuer (not App 15368), exclusive controller create/delete authority for `avo/main-rollback/*`, a fresh hosted main rollback drill, then ledger activation and 12 consecutive eligible successes with 0 failures/boundary violations. Until those prerequisites exist this leaf is blocked and may not mutate current `main`. |
 
 ## Contract and evidence boundary
 
