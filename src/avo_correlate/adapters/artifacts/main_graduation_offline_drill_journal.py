@@ -826,6 +826,16 @@ class MainGraduationOfflineDrillJournal:
             if activation_digest != authority.activation_digest:
                 raise ValueError("native evidence activation differs from authority")
 
+        # Boundary and accumulator records carry the activation directly
+        # rather than embedding ``MainLedgerActivation``.  They are not safe
+        # C7 evidence unless that direct identity is pinned to this exact
+        # authority.  Do not infer this binding from their self-digests.
+        if kind in {
+            MainGraduationOfflineEvidenceKind.C6_BOUNDARY,
+            MainGraduationOfflineEvidenceKind.C6_THRESHOLD,
+        } and getattr(native, "activation_digest", None) != authority.activation_digest:
+            raise ValueError("native evidence activation differs from authority")
+
         controller_authority = getattr(native, "controller_authority", None)
         if controller_authority is not None and (
             controller_authority.repository_digest != authority.repository_digest

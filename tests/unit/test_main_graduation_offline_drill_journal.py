@@ -16,6 +16,7 @@ from avo_correlate.adapters.artifacts.main_graduation_offline_drill_journal impo
 )
 from avo_correlate.contracts.base import ArtifactRef
 from avo_correlate.contracts.main_graduation import MainReconciliation
+from avo_correlate.contracts.main_graduation_ledger import MainLedgerAccumulatorState
 from avo_correlate.contracts.main_graduation_offline_drill import (
     FROZEN_OFFLINE_DRILL_CASE_IDS,
     FROZEN_OFFLINE_DRILL_VECTOR_IDS,
@@ -691,6 +692,32 @@ def test_native_c4_recovery_is_typed_and_case_operation_bound(tmp_path: Path) ->
             authority,
             report,
             case=case,
+        )
+
+
+def test_native_c6_threshold_is_bound_to_exact_activation(tmp_path: Path) -> None:
+    _journal, _plan, authority, _authority_ref, report, _report_ref, _store = _setup(tmp_path)
+    values = {
+        "schema_version": 2,
+        "activation_digest": "sha256:" + "f" * 64,
+        "last_scheduler_sequence": 0,
+        "streak": 0,
+        "successes": 0,
+        "failures": 0,
+        "boundary_violations": 0,
+        "threshold_complete": False,
+    }
+    state = MainLedgerAccumulatorState.model_validate(
+        {**values, "state_digest": canonical_digest(values)}
+    )
+    with pytest.raises(ValueError, match="activation differs"):
+        MainGraduationOfflineDrillJournal._bind_native_identity(  # type: ignore[reportPrivateUsage]
+            MainGraduationOfflineEvidenceKind.C6_THRESHOLD,
+            state,
+            authority,
+            report,
+            None,
+            None,
         )
 
 

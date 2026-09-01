@@ -42,6 +42,7 @@ CaseId = Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9-]{1,63}$")]
 VectorId = Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9-]{1,95}$")]
 
 OFFLINE_PROOF_CLASS = "deterministic-offline-proof"
+_ZERO_SHA256 = "sha256:" + "0" * 64
 
 # This tuple is part of the protocol.  Do not derive it from an input matrix.
 FROZEN_OFFLINE_DRILL_CASE_IDS: tuple[str, ...] = (
@@ -395,6 +396,8 @@ class MainGraduationOfflineExecutionAuthority(StrictModel):
     def validate_authority(self) -> MainGraduationOfflineExecutionAuthority:
         if self.expires_at <= self.authorized_at:
             raise ValueError("offline execution authority expiry must be after authorization")
+        if self.environment_identity_digest == _ZERO_SHA256 or self.uv_digest == _ZERO_SHA256:
+            raise ValueError("offline execution identity digests cannot use a zero sentinel")
         expected = _frozen_node_specs()
         actual = tuple((n.node_id, n.parameter_id, n.case_id, n.vector_id) for n in self.nodes)
         if actual != expected or len({item[0] for item in actual}) != len(actual):
@@ -427,6 +430,12 @@ class MainGraduationOfflineWorkspaceIdentity(StrictModel):
     toolchain_digest: Sha256Digest
     environment_identity_digest: Sha256Digest
     uv_digest: Sha256Digest
+
+    @model_validator(mode="after")
+    def validate_execution_identity(self) -> MainGraduationOfflineWorkspaceIdentity:
+        if self.environment_identity_digest == _ZERO_SHA256 or self.uv_digest == _ZERO_SHA256:
+            raise ValueError("workspace identity digests cannot use a zero sentinel")
+        return self
 
 
 class MainGraduationOfflineNodeObservation(StrictModel):

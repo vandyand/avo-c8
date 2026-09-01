@@ -419,6 +419,14 @@ def _authority() -> MainGraduationOfflineExecutionAuthority:
     return MainGraduationOfflineExecutionAuthority.model_validate(values)
 
 
+@pytest.mark.parametrize("field", ["environment_identity_digest", "uv_digest"])
+def test_execution_authority_rejects_zero_identity_sentinels(field: str) -> None:
+    values = _authority().model_dump(mode="json")
+    values[field] = "sha256:" + "0" * 64
+    with pytest.raises(ValidationError, match="zero sentinel"):
+        MainGraduationOfflineExecutionAuthority.model_validate(values)
+
+
 def _execution_report(
     authority: MainGraduationOfflineExecutionAuthority,
 ) -> MainGraduationOfflineExecutionReport:
