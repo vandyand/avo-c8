@@ -1,3 +1,4 @@
+# pyright: reportUnusedFunction=false
 """Read-only, bounded identity checks for the C7 hermetic executor.
 
 The authority is supplied by a controller.  This module never creates or
@@ -10,8 +11,10 @@ from __future__ import annotations
 
 import importlib.metadata
 import importlib.util
+import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -19,6 +22,7 @@ import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
+from typing import Any
 
 from avo_correlate.contracts.main_graduation_offline_drill import (
     FROZEN_OFFLINE_EXECUTION_NODE_IDS,
@@ -30,6 +34,8 @@ from avo_correlate.domain.canonical import canonical_digest, file_digest, source
 FROZEN_OFFLINE_EXECUTION_ARGV: tuple[str, ...] = (
     "uv",
     "run",
+    "--locked",
+    "--offline",
     "pytest",
     "--disable-warnings",
     "-q",
@@ -60,6 +66,43 @@ class C7WorkspaceIdentity:
     pytest_digest: str
     plugin_set_digest: str
     toolchain_digest: str
+    environment_identity_digest: str = "sha256:" + "0" * 64
+    uv_digest: str = "sha256:" + "0" * 64
+
+
+_SAFE_CHILD_ENV_KEYS = frozenset(
+    {
+        "PATH",
+        "SystemRoot",
+        "SYSTEMROOT",
+        "TEMP",
+        "TMP",
+        "TMPDIR",
+        "LANG",
+        "LC_ALL",
+        "PYTHONIOENCODING",
+        "PYTHONUTF8",
+        "VIRTUAL_ENV",
+        "UV_CACHE_DIR",
+    }
+)
+
+
+def sanitized_child_environment() -> dict[str, str]:
+    """Return a bounded environment with provider credentials excluded."""
+    return {
+        key: value
+        for key, value in os.environ.items()
+        if key in _SAFE_CHILD_ENV_KEYS
+    }
+
+
+def child_environment_identity(environment: dict[str, str] | None = None) -> str:
+    values = environment if environment is not None else sanitized_child_environment()
+    bounded = tuple(sorted((key, value) for key, value in values.items()))
+    return canonical_digest(
+        {"domain": "avo-004.7-c7/child-environment/v1", "value": bounded}
+    )
 
 
 class C7WorkspaceIdentityVerifier:
@@ -107,6 +150,16 @@ class C7WorkspaceIdentityVerifier:
         for name, supplied, actual in expected:
             if supplied != actual:
                 raise C7WorkspaceIdentityError(f"workspace identity mismatch: {name}")
+        pinned_environment = getattr(authority, "environment_identity_digest", None)
+        if not isinstance(pinned_environment, str) or (
+            pinned_environment != observed.environment_identity_digest
+        ):
+            raise C7WorkspaceIdentityError(
+                "workspace identity mismatch: environment_identity_digest"
+            )
+        pinned_uv = getattr(authority, "uv_digest", None)
+        if not isinstance(pinned_uv, str) or pinned_uv != observed.uv_digest:
+            raise C7WorkspaceIdentityError("workspace identity mismatch: uv_digest")
 
     def observe(self) -> C7WorkspaceIdentity:
         """Observe identity from the local workspace and interpreter."""
@@ -116,17 +169,19 @@ class C7WorkspaceIdentityVerifier:
             raise C7WorkspaceIdentityError("uv.lock is unavailable")
         source_digest = self._source_tree_digest(commit)
         lockfile_digest = file_digest(lockfile)
-        interpreter_digest = _interpreter_digest()
-        pytest_digest = _pytest_digest()
-        plugin_digest = _plugin_set_digest()
+        interpreter_digest, pytest_digest, plugin_digest = _uv_runtime_identity(self.workspace)
+        environment_identity_digest = child_environment_identity()
+        uv_digest = _uv_digest()
         toolchain_digest = canonical_digest(
             {
-                "domain": "avo-004.7-c7/toolchain/v1",
+                "domain": "avo-004.7-c7/toolchain/v2",
                 "value": {
                     "lockfile_digest": lockfile_digest,
                     "interpreter_digest": interpreter_digest,
                     "pytest_digest": pytest_digest,
                     "plugin_set_digest": plugin_digest,
+                    "environment_identity_digest": environment_identity_digest,
+                    "uv_digest": uv_digest,
                 },
             }
         )
@@ -139,6 +194,8 @@ class C7WorkspaceIdentityVerifier:
             pytest_digest=pytest_digest,
             plugin_set_digest=plugin_digest,
             toolchain_digest=toolchain_digest,
+            environment_identity_digest=environment_identity_digest,
+            uv_digest=uv_digest,
         )
 
     def _git_identity(self) -> tuple[str, str]:
@@ -170,7 +227,11 @@ class C7WorkspaceIdentityVerifier:
                 errors="replace",
                 timeout=_COMMAND_TIMEOUT_SECONDS,
                 shell=False,
-                env={**os.environ, "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0"},
+                env={
+                    **sanitized_child_environment(),
+                    "GIT_OPTIONAL_LOCKS": "0",
+                    "GIT_TERMINAL_PROMPT": "0",
+                },
             )
         except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
             raise C7WorkspaceIdentityError("Git identity inspection failed") from exc
@@ -193,7 +254,11 @@ class C7WorkspaceIdentityVerifier:
                     errors="replace",
                     timeout=_COMMAND_TIMEOUT_SECONDS,
                     shell=False,
-                    env={**os.environ, "GIT_OPTIONAL_LOCKS": "0", "GIT_TERMINAL_PROMPT": "0"},
+                    env={
+                        **sanitized_child_environment(),
+                        "GIT_OPTIONAL_LOCKS": "0",
+                        "GIT_TERMINAL_PROMPT": "0",
+                    },
                 )
             except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
                 raise C7WorkspaceIdentityError("Git source archive failed") from exc
@@ -306,6 +371,89 @@ def _pytest_digest() -> str:
     )
 
 
+def _uv_digest() -> str:
+    launcher = shutil.which("uv", path=sanitized_child_environment().get("PATH"))
+    if not launcher:
+        raise C7WorkspaceIdentityError("uv launcher is unavailable")
+    path = Path(launcher).resolve()
+    if not path.is_file() or path.is_symlink():
+        raise C7WorkspaceIdentityError("uv launcher path is unavailable")
+    return canonical_digest(
+        {"domain": "avo-004.7-c7/uv/v1", "value": {"path": str(path), "digest": file_digest(path)}}
+    )
+
+
+def _uv_runtime_identity(workspace: Path) -> tuple[str, str, str]:
+    """Measure the interpreter and pytest stack inside the locked uv child."""
+    launcher = shutil.which("uv", path=sanitized_child_environment().get("PATH"))
+    if not launcher:
+        raise C7WorkspaceIdentityError("uv launcher is unavailable")
+    probe = (
+        "import importlib.metadata as m, importlib.util, json, platform, sys; "
+        "plugins=sorted((e.name,e.value,getattr(e.dist,'name',''),"
+        "getattr(e.dist,'version','')) for e in m.entry_points(group='pytest11')); "
+        "p=importlib.util.find_spec('pytest'); "
+        "print(json.dumps({'python':sys.executable,'implementation':platform.python_implementation(),"
+        "'version':platform.python_version(),'pytest':p.origin if p else '',"
+        "'pytest_version':m.version('pytest'),'plugins':plugins},sort_keys=True))"
+    )
+    try:
+        result = subprocess.run(
+            [launcher, "run", "--locked", "--offline", "python", "-I", "-c", probe],
+            cwd=workspace,
+            check=True,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="strict",
+            timeout=_COMMAND_TIMEOUT_SECONDS,
+            shell=False,
+            env=sanitized_child_environment(),
+        )
+        if result.stderr or len(result.stdout.encode("utf-8")) > _MAX_COMMAND_OUTPUT:
+            raise ValueError("uv runtime probe output is invalid")
+        payload: dict[str, Any] = json.loads(result.stdout.strip())
+        if type(payload) is not dict or not all(
+            isinstance(payload.get(key), (str, list))
+            for key in (
+                "python",
+                "implementation",
+                "version",
+                "pytest",
+                "pytest_version",
+                "plugins",
+            )
+        ):
+            raise ValueError("uv runtime probe shape is invalid")
+        python_path = Path(str(payload["python"])).resolve()
+        pytest_path = Path(str(payload["pytest"])).resolve()
+        if not python_path.is_file() or not pytest_path.is_file():
+            raise ValueError("uv runtime paths are unavailable")
+        interpreter = canonical_digest(
+            {"domain": "avo-004.7-c7/interpreter-uv/v1", "value": {
+                "path": str(python_path), "digest": file_digest(python_path),
+                "implementation": payload["implementation"], "version": payload["version"]}}
+        )
+        pytest = canonical_digest(
+            {"domain": "avo-004.7-c7/pytest-uv/v1", "value": {
+                "path": str(pytest_path), "digest": file_digest(pytest_path),
+                "version": payload["pytest_version"]}}
+        )
+        plugins = canonical_digest(
+            {"domain": "avo-004.7-c7/pytest-plugins-uv/v1", "value": payload["plugins"]}
+        )
+        return interpreter, pytest, plugins
+    except (
+        OSError,
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        UnicodeError,
+        ValueError,
+        json.JSONDecodeError,
+    ) as exc:
+        raise C7WorkspaceIdentityError("uv runtime identity probe failed") from exc
+
+
 def _plugin_set_digest() -> str:
     try:
         entries = importlib.metadata.entry_points(group="pytest11")
@@ -347,7 +495,7 @@ def _probe(argv: list[str], label: str) -> str:
             errors="strict",
             timeout=_COMMAND_TIMEOUT_SECONDS,
             shell=False,
-            env={"PATH": os.environ.get("PATH", "")},
+            env=sanitized_child_environment(),
         )
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired, UnicodeError) as exc:
         raise C7WorkspaceIdentityError(f"{label} identity probe failed") from exc

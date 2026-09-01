@@ -169,6 +169,7 @@ from avo_correlate.contracts.main_graduation_offline_drill import (
     MainGraduationOfflineExecutionNodeSpec,
     MainGraduationOfflineExecutionReport,
     MainGraduationOfflineNodeObservation,
+    MainGraduationOfflineWorkspaceIdentity,
 )
 from avo_correlate.contracts.model import ModelInvocationRecord, ModelRequest, ModelResponse
 from avo_correlate.contracts.operations import (
@@ -404,6 +405,7 @@ MODELS: tuple[type[StrictModel], ...] = (
     MainGraduationOfflineExecutionNodeSpec,
     MainGraduationOfflineExecutionReport,
     MainGraduationOfflineNodeObservation,
+    MainGraduationOfflineWorkspaceIdentity,
 )
 
 

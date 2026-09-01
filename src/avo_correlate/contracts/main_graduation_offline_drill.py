@@ -173,6 +173,7 @@ class MainGraduationOfflineEvidenceKind(StrEnum):
     CONTROLLER_VERIFIER = "controller-verifier"
     EXECUTION_AUTHORITY = "execution-authority"
     EXECUTION_REPORT = "execution-report"
+    JUNIT_XML = "junit-xml"
 
 
 OFFLINE_EVIDENCE_ROLE_MEDIA: Mapping[
@@ -223,6 +224,10 @@ OFFLINE_EVIDENCE_ROLE_MEDIA: Mapping[
             "c7-execution-report",
             "application/vnd.avo.c7.execution-report+json",
         ),
+        MainGraduationOfflineEvidenceKind.JUNIT_XML: (
+            "c7-junit-xml",
+            "application/vnd.avo.c7.junit+xml",
+        ),
     }
 )
 
@@ -246,8 +251,23 @@ class MainGraduationOfflineExecutionNodeSpec(StrictModel):
     parameter_id: BoundedText
     case_id: CaseId
     vector_id: VectorId
-    expected_outcome: DrillOutcome
-    expected_state: DrillState
+    # These are oracle/assertion coverage labels.  They are never observations
+    # of the system under test and must not be copied into a case verdict.
+    oracle_expected_outcome: DrillOutcome = Field(
+        validation_alias=AliasChoices("oracle_expected_outcome", "expected_outcome")
+    )
+    oracle_expected_state: DrillState = Field(
+        validation_alias=AliasChoices("oracle_expected_state", "expected_state")
+    )
+
+    @property
+    def expected_outcome(self) -> DrillOutcome:
+        """Compatibility accessor; this is oracle metadata, not an observation."""
+        return self.oracle_expected_outcome
+
+    @property
+    def expected_state(self) -> DrillState:
+        return self.oracle_expected_state
 
 
 _FROZEN_NODE_ID_BY_VECTOR: dict[tuple[str, str], str] = {
@@ -353,6 +373,11 @@ class MainGraduationOfflineExecutionAuthority(StrictModel):
     pytest_digest: Sha256Digest
     plugin_set_digest: Sha256Digest
     toolchain_digest: Sha256Digest
+    # A controller may pin the bounded child-process environment.  The zero
+    # value is retained only for reading pre-C7 manifests; new authorities
+    # should always provide the measured digest.
+    environment_identity_digest: Sha256Digest
+    uv_digest: Sha256Digest
     argv: tuple[BoundedText, ...] = Field(min_length=1, max_length=32)
     normalized_report_schema_digest: Sha256Digest
     normalized_report_media_type: Literal[
@@ -375,8 +400,8 @@ class MainGraduationOfflineExecutionAuthority(StrictModel):
         if actual != expected or len({item[0] for item in actual}) != len(actual):
             raise ValueError("authority nodes must exactly match the frozen case/vector matrix")
         if any(
-            node.expected_outcome != _expected_vector(node.case_id, node.vector_id)[0]
-            or node.expected_state != _expected_vector(node.case_id, node.vector_id)[1]
+            node.oracle_expected_outcome != _expected_vector(node.case_id, node.vector_id)[0]
+            or node.oracle_expected_state != _expected_vector(node.case_id, node.vector_id)[1]
             for node in self.nodes
         ):
             raise ValueError("authority node expectation differs from frozen vector expectation")
@@ -388,6 +413,22 @@ class MainGraduationOfflineExecutionAuthority(StrictModel):
         return self
 
 
+class MainGraduationOfflineWorkspaceIdentity(StrictModel):
+    """Exact, locally measured identity of the verifier workspace/toolchain."""
+
+    schema_version: Literal[1] = 1
+    source_commit: GitObject
+    source_tree: GitObject
+    source_tree_digest: Sha256Digest
+    lockfile_digest: Sha256Digest
+    interpreter_digest: Sha256Digest
+    pytest_digest: Sha256Digest
+    plugin_set_digest: Sha256Digest
+    toolchain_digest: Sha256Digest
+    environment_identity_digest: Sha256Digest
+    uv_digest: Sha256Digest
+
+
 class MainGraduationOfflineNodeObservation(StrictModel):
     schema_version: Literal[1] = 1
     node_id: BoundedText = Field(validation_alias=AliasChoices("node_id", "nodeid"))
@@ -395,7 +436,9 @@ class MainGraduationOfflineNodeObservation(StrictModel):
     case_id: CaseId
     vector_id: VectorId
     collected: Literal[True] = True
-    outcome: DrillOutcome
+    # A passing pytest node proves only that the pinned oracle test passed.
+    # It does not prove the expected domain outcome/state.
+    verification_status: Literal["pass"] = "pass"
     exit_status: Literal[0] = 0
     reason_code: Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9._-]{1,127}$")]
     evidence_refs: tuple[MainGraduationOfflineEvidenceRef, ...] = Field(
@@ -434,11 +477,22 @@ class MainGraduationOfflineExecutionReport(StrictModel):
     pytest_digest: Sha256Digest
     plugin_set_digest: Sha256Digest
     toolchain_digest: Sha256Digest
+    environment_identity_digest: Sha256Digest
+    uv_digest: Sha256Digest
     argv: tuple[BoundedText, ...] = Field(min_length=1, max_length=32)
     collection_count: StrictInt = Field(ge=1, le=128)
     collected_node_ids: tuple[BoundedText, ...] = Field(min_length=1, max_length=128)
     observations: tuple[MainGraduationOfflineNodeObservation, ...] = Field(
         min_length=1, max_length=128
+    )
+    workspace_before_identity: MainGraduationOfflineWorkspaceIdentity = Field(
+        validation_alias=AliasChoices("workspace_before_identity", "workspace_before")
+    )
+    workspace_after_identity: MainGraduationOfflineWorkspaceIdentity = Field(
+        validation_alias=AliasChoices("workspace_after_identity", "workspace_after")
+    )
+    junit_xml_artifact: ArtifactRef = Field(
+        validation_alias=AliasChoices("junit_xml_artifact", "junit_xml_ref", "junit_artifact")
     )
     process_exit_code: Literal[0] = 0
     executed_at: datetime
@@ -463,11 +517,18 @@ class MainGraduationOfflineExecutionReport(StrictModel):
             raise ValueError("execution report has missing, extra, duplicate, or reordered nodes")
         if self.executed_at > self.authority_expires_at:
             raise ValueError("execution report was produced after authority expiry")
-        if any(
-            node.outcome != _expected_vector(node.case_id, node.vector_id)[0]
-            for node in self.observations
+        if self.workspace_before_identity != self.workspace_after_identity:
+            raise ValueError("workspace identity changed during pytest execution")
+        if self.environment_identity_digest != self.workspace_before_identity.environment_identity_digest:
+            raise ValueError("execution environment identity differs from workspace identity")
+        if self.uv_digest != self.workspace_before_identity.uv_digest:
+            raise ValueError("execution uv identity differs from workspace identity")
+        if (
+            self.junit_xml_artifact.role != "c7-junit-xml"
+            or self.junit_xml_artifact.media_type != "application/vnd.avo.c7.junit+xml"
+            or self.junit_xml_artifact.size_bytes <= 0
         ):
-            raise ValueError("execution node outcome differs from frozen expectation")
+            raise ValueError("execution report JUnit artifact metadata is invalid")
         if self.report_digest != _domain_digest(
             "avo-004.7-c7/offline-execution-report/v1",
             self.model_dump(exclude={"report_digest"}, mode="json"),
@@ -481,12 +542,25 @@ class MainGraduationOfflineDrillVectorSpec(StrictModel):
 
     schema_version: Literal[1] = 1
     vector_id: VectorId
-    expected_outcome: DrillOutcome
-    expected_state: DrillState
+    # Oracle labels describe what assertion coverage the pinned test owns.
+    oracle_expected_outcome: DrillOutcome = Field(
+        validation_alias=AliasChoices("oracle_expected_outcome", "expected_outcome")
+    )
+    oracle_expected_state: DrillState = Field(
+        validation_alias=AliasChoices("oracle_expected_state", "expected_state")
+    )
     fault_digest: Sha256Digest = Field(
         validation_alias=AliasChoices("fault_digest", "injected_fault_digest")
     )
     vector_digest: Sha256Digest
+
+    @property
+    def expected_outcome(self) -> DrillOutcome:
+        return self.oracle_expected_outcome
+
+    @property
+    def expected_state(self) -> DrillState:
+        return self.oracle_expected_state
 
     @model_validator(mode="after")
     def validate_vector(self) -> MainGraduationOfflineDrillVectorSpec:
@@ -554,9 +628,6 @@ class MainGraduationOfflineDrillPlan(StrictModel):
         validation_alias=AliasChoices("controller_authority_digest", "controller_digest")
     )
     controller_authority_ref: BoundedText
-    main_before_commit: GitObject
-    main_before_tree: GitObject
-    main_before_parents: tuple[GitObject, ...] = Field(min_length=0, max_length=2)
     proof_class: Literal["deterministic-offline-proof"] = OFFLINE_PROOF_CLASS
     deploy_performed: Literal[False] = False
     cases: tuple[MainGraduationOfflineDrillCaseSpec, ...] = Field(
@@ -645,33 +716,22 @@ class MainGraduationOfflineDrillCaseResult(StrictModel):
     case_id: CaseId
     vector_id: VectorId
     operation_id: Sha256Digest
-    expected_outcome: DrillOutcome
-    observed_outcome: DrillOutcome
-    expected_state: DrillState
-    observed_state: DrillState
-    main_before_commit: GitObject
-    main_before_tree: GitObject
-    main_before_parents: tuple[GitObject, ...] = Field(min_length=0, max_length=2)
-    main_after_commit: GitObject
-    main_after_tree: GitObject
-    main_after_parents: tuple[GitObject, ...] = Field(min_length=0, max_length=2)
-    provider_mutation_count: StrictInt = Field(
-        ge=0, le=100, validation_alias=AliasChoices("provider_mutation_count", "provider_mutations")
+    oracle_expected_outcome: DrillOutcome = Field(
+        validation_alias=AliasChoices("oracle_expected_outcome", "expected_outcome")
     )
-    reconciliation_mutation_count: StrictInt = Field(
-        ge=0,
-        le=100,
-        validation_alias=AliasChoices("reconciliation_mutation_count", "reconciliation_mutations"),
+    oracle_expected_state: DrillState = Field(
+        validation_alias=AliasChoices("oracle_expected_state", "expected_state")
     )
-    release_mutation_count: StrictInt = Field(
-        ge=0, le=100, validation_alias=AliasChoices("release_mutation_count", "release_mutations")
+    # This is the sole per-node runtime claim: pytest verified the pinned
+    # oracle node.  No domain outcome/state is inferred from a pass.
+    verification_status: Literal["pass"] = "pass"
+    fault_digest: Sha256Digest = Field(
+        validation_alias=AliasChoices("fault_digest", "injected_fault_digest")
     )
-    crash_facts: MainGraduationOfflineDrillCrashFacts
-    replay_facts: MainGraduationOfflineDrillReplayFacts
-    injected_fault_digest: Sha256Digest
     reason_code: Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9._-]{1,127}$")]
     execution_authority_digest: Sha256Digest
     execution_report_digest: Sha256Digest
+    junit_xml_digest: Sha256Digest
     native_evidence_refs: tuple[MainGraduationOfflineEvidenceRef, ...] = Field(
         min_length=2, max_length=16
     )
@@ -684,7 +744,7 @@ class MainGraduationOfflineDrillCaseResult(StrictModel):
             raise ValueError("unknown frozen offline drill case")
         if self.vector_id not in FROZEN_OFFLINE_DRILL_VECTOR_IDS[self.case_id]:
             raise ValueError("unknown vector for frozen offline drill case")
-        if (self.expected_outcome, self.expected_state) != _expected_vector(
+        if (self.oracle_expected_outcome, self.oracle_expected_state) != _expected_vector(
             self.case_id, self.vector_id
         ):
             raise ValueError("case result expectation differs from frozen vector expectation")
@@ -692,30 +752,6 @@ class MainGraduationOfflineDrillCaseResult(StrictModel):
             self.root_operation_id, self.case_id, self.vector_id
         ):
             raise ValueError("case/vector operation identity mismatch")
-        if self.expected_outcome != self.observed_outcome or (
-            self.expected_state != self.observed_state
-        ):
-            raise ValueError("observed drill outcome/state differs from frozen expectation")
-        if self.main_before_commit != self.main_after_commit or (
-            self.main_before_tree != self.main_after_tree
-        ):
-            raise ValueError("offline drill changed main")
-        if self.main_before_parents != self.main_after_parents:
-            raise ValueError("offline drill changed main topology")
-        if self.replay_facts.replayed and (
-            self.provider_mutation_count
-            or self.reconciliation_mutation_count
-            or self.release_mutation_count
-        ):
-            raise ValueError("replay must have zero provider and reconciliation mutations")
-        if (
-            self.provider_mutation_count
-            or self.reconciliation_mutation_count
-            or self.release_mutation_count
-        ):
-            raise ValueError(
-                "offline drill must not contain unexplained provider/release mutations"
-            )
         if len({item.artifact.digest for item in self.native_evidence_refs}) != len(
             self.native_evidence_refs
         ):
@@ -756,15 +792,16 @@ class MainGraduationOfflineDrillResult(StrictModel):
     plan_digest: Sha256Digest
     repository_digest: Sha256Digest
     target_ref: Literal["refs/heads/main"] = "refs/heads/main"
-    main_before_commit: GitObject
-    main_before_tree: GitObject
-    main_before_parents: tuple[GitObject, ...] = Field(min_length=0, max_length=2)
-    main_after_commit: GitObject
-    main_after_tree: GitObject
-    main_after_parents: tuple[GitObject, ...] = Field(min_length=0, max_length=2)
+    workspace_before_identity: MainGraduationOfflineWorkspaceIdentity = Field(
+        validation_alias=AliasChoices("workspace_before_identity", "workspace_before")
+    )
+    workspace_after_identity: MainGraduationOfflineWorkspaceIdentity = Field(
+        validation_alias=AliasChoices("workspace_after_identity", "workspace_after")
+    )
     cases: tuple[MainGraduationOfflineDrillCaseResult, ...] = Field(min_length=1, max_length=128)
     execution_authority_digest: Sha256Digest
     execution_report_digest: Sha256Digest
+    junit_xml_digest: Sha256Digest
     proof_class: Literal["deterministic-offline-proof"] = OFFLINE_PROOF_CLASS
     deploy_performed: Literal[False] = False
     result_digest: Sha256Digest
@@ -786,12 +823,6 @@ class MainGraduationOfflineDrillResult(StrictModel):
         if any(
             item.root_operation_id != self.operation_id
             or item.plan_digest != self.plan_digest
-            or item.main_before_commit != self.main_before_commit
-            or item.main_before_tree != self.main_before_tree
-            or item.main_before_parents != self.main_before_parents
-            or item.main_after_commit != self.main_after_commit
-            or item.main_after_tree != self.main_after_tree
-            or item.main_after_parents != self.main_after_parents
             or item.deploy_performed
             for item in self.cases
         ):
@@ -799,6 +830,7 @@ class MainGraduationOfflineDrillResult(StrictModel):
         if any(
             item.execution_authority_digest != self.execution_authority_digest
             or item.execution_report_digest != self.execution_report_digest
+            or item.junit_xml_digest != self.junit_xml_digest
             for item in self.cases
         ):
             raise ValueError("aggregate execution manifest binding differs from root")
@@ -812,12 +844,8 @@ class MainGraduationOfflineDrillResult(StrictModel):
             MainGraduationOfflineEvidenceKind.EXECUTION_REPORT,
         } - native_kinds:
             raise ValueError("aggregate lacks controller-owned execution evidence")
-        if self.main_before_commit != self.main_after_commit or (
-            self.main_before_tree != self.main_after_tree
-        ):
-            raise ValueError("aggregate changed main")
-        if self.main_before_parents != self.main_after_parents:
-            raise ValueError("aggregate changed main topology")
+        if self.workspace_before_identity != self.workspace_after_identity:
+            raise ValueError("aggregate workspace identity changed")
         if self.result_digest != _domain_digest(
             "avo-004.7-c7/offline-drill-aggregate-result/v1",
             self.model_dump(exclude={"result_digest"}, mode="json"),
@@ -862,6 +890,7 @@ __all__ = [
     "MainGraduationOfflineExecutionNodeSpec",
     "MainGraduationOfflineExecutionReport",
     "MainGraduationOfflineNodeObservation",
+    "MainGraduationOfflineWorkspaceIdentity",
     "OfflineDrillCaseResult",
     "OfflineDrillCaseSpec",
     "OfflineDrillPlan",

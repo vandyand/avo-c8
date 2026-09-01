@@ -9,6 +9,7 @@ import hashlib
 import inspect
 import json
 import os
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -228,6 +229,7 @@ class MainGraduationOfflineDrillJournal:
             raise MainGraduationOfflineDrillJournalError("report requires durable authority")
         authority, _ = authority_loaded
         self._bind_report_to_authority(checked, authority)
+        self._validate_junit_against_report(checked, authority)
         evidence = self._read_report_evidence(checked, authority)
         data = canonical_bytes(checked)
         index = self._report_index(
@@ -280,6 +282,7 @@ class MainGraduationOfflineDrillJournal:
             raise MainGraduationOfflineDrillJournalError("report has no durable authority")
         authority = authority_loaded[0]
         self._bind_report_to_authority(report, authority)
+        self._validate_junit_against_report(report, authority)
         evidence = self._read_report_evidence(report, authority)
         self._verify("execution_report", authority, report, ref, evidence)
         self._report_digests[(operation_id, authority_digest)] = report_digest
@@ -536,6 +539,45 @@ class MainGraduationOfflineDrillJournal:
 
     read_aggregate_result = read_result
 
+    def read_completed_result(
+        self, operation_id: str
+    ) -> tuple[MainGraduationOfflineDrillResult, ArtifactRef] | None:
+        """Load a completed closure using only this journal root.
+
+        The index itself supplies authority/report identities.  No executor,
+        workspace, clock, expiry, or provider is consulted and this method
+        performs no writes.
+        """
+        root = self._indexes / "result"
+        matches: list[tuple[MainGraduationOfflineDrillResult, ArtifactRef]] = []
+        if not root.is_dir():
+            return None
+        for index in root.glob("*/*/*.json"):
+            if not index.is_file() or index.is_symlink():
+                continue
+            try:
+                raw = index.read_bytes()
+                payload = _strict_loads(raw)
+                if not isinstance(payload, dict):
+                    continue
+                loaded = self._read_indexed(
+                    "result", index, MainGraduationOfflineDrillResult
+                )
+                if loaded is None or loaded[0].operation_id != operation_id:
+                    continue
+                authority_digest = index.parent.parent.name
+                report_digest = index.parent.name
+                verified = self.read_result(operation_id, authority_digest, report_digest)
+                if verified is not None:
+                    matches.append(verified)
+            except Exception as exc:
+                raise MainGraduationOfflineDrillJournalError(
+                    "completed result closure is unverifiable"
+                ) from exc
+        if len(matches) > 1:
+            raise MainGraduationOfflineDrillJournalError("multiple completed C7 results")
+        return matches[0] if matches else None
+
     def _load_complete_cases(
         self,
         plan: MainGraduationOfflineDrillPlan,
@@ -586,6 +628,7 @@ class MainGraduationOfflineDrillJournal:
         authority: MainGraduationOfflineExecutionAuthority,
     ) -> tuple[MainGraduationOfflineEvidenceRef, ...]:
         refs: list[MainGraduationOfflineEvidenceRef] = []
+        self._validate_junit_against_report(report, authority)
         for observation in report.observations:
             self._validate_native_refs(
                 observation.evidence_refs,
@@ -598,6 +641,48 @@ class MainGraduationOfflineDrillJournal:
             )
             refs.extend(observation.evidence_refs)
         return tuple(refs)
+
+    def _validate_junit_against_report(
+        self,
+        report: MainGraduationOfflineExecutionReport,
+        authority: MainGraduationOfflineExecutionAuthority,
+    ) -> None:
+        """Re-read and reparse the exact raw JUnit object on every report use."""
+        ref = report.junit_xml_artifact
+        if (
+            ref.role != "c7-junit-xml"
+            or ref.media_type != "application/vnd.avo.c7.junit+xml"
+            or ref.size_bytes <= 0
+            or ref.size_bytes > self._max
+        ):
+            raise MainGraduationOfflineDrillJournalError("JUnit artifact metadata is invalid")
+        try:
+            raw = self._store.read_bytes(ref)
+            root = ET.fromstring(raw)
+        except Exception as exc:
+            raise MainGraduationOfflineDrillJournalError("JUnit artifact is unreadable") from exc
+        tests = list(root.iter("testcase"))
+        if len(tests) != len(authority.nodes):
+            raise MainGraduationOfflineDrillJournalError(
+                "JUnit testcase count differs from authority"
+            )
+        for testcase, node, observation in zip(
+            tests, authority.nodes, report.observations, strict=True
+        ):
+            classname = testcase.attrib.get("classname", "")
+            name = testcase.attrib.get("name", "")
+            expected_path, separator, expected_name = node.node_id.partition("::")
+            expected_classname = f"tests.unit.{expected_path[:-3].replace('/', '.')}"
+            if (
+                not separator
+                or classname != expected_classname
+                or name != expected_name
+                or testcase.attrib.get("status", "passed").lower() not in {"", "passed", "success"}
+                or list(testcase)
+                or observation.node_id != node.node_id
+                or observation.verification_status != "pass"
+            ):
+                raise MainGraduationOfflineDrillJournalError("JUnit differs from durable report")
 
     def _read_case_evidence(
         self,
@@ -752,39 +837,19 @@ class MainGraduationOfflineDrillJournal:
             raise ValueError("native evidence repository differs from authority")
         if target_ref is not None and target_ref != authority.target_ref:
             raise ValueError("native evidence target differs from authority")
+        native_activation = getattr(native, "activation_digest", None)
+        if native_activation is not None and native_activation != authority.activation_digest:
+            raise ValueError("native evidence activation differs from authority")
 
-        # The native aggregate validators establish the exact topology.  The
-        # additional checks below bind the C7 case snapshot to those native
-        # observations where the native model exposes a terminal topology.
-        if case is None:
-            return
-        if isinstance(native, MainReconciliation):
-            if (
-                native.main_commit != case.main_after_commit
-                or native.main_tree != case.main_after_tree
-            ):
-                raise ValueError("native recovery topology differs from C7 case")
-            if tuple(native.main_parents) != case.main_after_parents:
-                raise ValueError("native recovery parents differ from C7 case")
-        elif isinstance(native, MainRollbackCompletionPackage):
-            post_state = native.post_state
-            if (
-                post_state.result_commit != case.main_after_commit
-                or post_state.result_tree != case.main_after_tree
-                or tuple(post_state.result_parents) != case.main_after_parents
-            ):
-                raise ValueError("native rollback topology differs from C7 case")
-        elif isinstance(native, MainCompletionPackage):
-            post_state = native.provider_post_state_observation
-            if (
-                post_state.result_commit != case.main_after_commit
-                or post_state.result_tree != case.main_after_tree
-                or tuple(post_state.result_parents) != case.main_after_parents
-            ):
-                raise ValueError("native completion topology differs from C7 case")
-        elif isinstance(native, MainLedgerEvidencePackage):
-            if native.final_state.activation_digest != authority.activation_digest:
-                raise ValueError("native ledger state differs from authority")
+        # C7 deliberately has no fabricated per-case main snapshot.  Native
+        # C4-C6 records remain typed supplemental evidence and are bound by
+        # their own validators plus operation/repository/activation identity.
+        if (
+            case is not None
+            and isinstance(native, MainLedgerEvidencePackage)
+            and native.final_state.activation_digest != authority.activation_digest
+        ):
+            raise ValueError("native ledger state differs from authority")
 
     def _validate_native_children(self, native: Any) -> None:
         """Re-read content-addressed children of accepted native aggregates."""
@@ -962,6 +1027,8 @@ class MainGraduationOfflineDrillJournal:
             "pytest_digest",
             "plugin_set_digest",
             "toolchain_digest",
+            "environment_identity_digest",
+            "uv_digest",
             "argv",
         )
         if (
@@ -981,6 +1048,22 @@ class MainGraduationOfflineDrillJournal:
                 raise MainGraduationOfflineDrillJournalError(
                     "report observation differs from authority node"
                 )
+        measured = report.workspace_before_identity
+        if (
+            measured.source_commit != authority.source_commit
+            or measured.source_tree != authority.source_tree
+            or measured.source_tree_digest != authority.source_tree_digest
+            or measured.lockfile_digest != authority.lockfile_digest
+            or measured.interpreter_digest != authority.interpreter_digest
+            or measured.pytest_digest != authority.pytest_digest
+            or measured.plugin_set_digest != authority.plugin_set_digest
+            or measured.toolchain_digest != authority.toolchain_digest
+            or measured.environment_identity_digest != authority.environment_identity_digest
+            or measured.uv_digest != authority.uv_digest
+        ):
+            raise MainGraduationOfflineDrillJournalError(
+                "execution report workspace identity differs from authority"
+            )
 
     @staticmethod
     def _bind_plan_to_authority(
@@ -1020,9 +1103,6 @@ class MainGraduationOfflineDrillJournal:
             or case.plan_digest != plan.plan_digest
             or case.execution_authority_digest != authority_ref.digest
             or case.execution_report_digest != report_ref.digest
-            or case.main_before_commit != plan.main_before_commit
-            or case.main_before_tree != plan.main_before_tree
-            or case.main_before_parents != plan.main_before_parents
             or case.operation_id
             != offline_drill_operation_id(plan.operation_id, case.case_id, case.vector_id)
         ):
@@ -1046,11 +1126,12 @@ class MainGraduationOfflineDrillJournal:
             raise MainGraduationOfflineDrillJournalError("case is outside durable execution matrix")
         vector = next(v for v in spec.vectors if v.vector_id == case.vector_id)
         if (
-            case.expected_outcome != vector.expected_outcome
-            or case.expected_state != vector.expected_state
-            or case.injected_fault_digest != vector.fault_digest
-            or case.observed_outcome != node.outcome
+            case.oracle_expected_outcome != vector.oracle_expected_outcome
+            or case.oracle_expected_state != vector.oracle_expected_state
+            or case.fault_digest != vector.fault_digest
+            or case.verification_status != node.verification_status
             or case.reason_code != node.reason_code
+            or case.junit_xml_digest != report.junit_xml_artifact.digest
         ):
             raise MainGraduationOfflineDrillJournalError(
                 "case observation differs from durable report"
@@ -1085,12 +1166,9 @@ class MainGraduationOfflineDrillJournal:
             or result.target_ref != plan.target_ref
             or result.execution_authority_digest != authority_ref.digest
             or result.execution_report_digest != report_ref.digest
-            or result.main_before_commit != plan.main_before_commit
-            or result.main_before_tree != plan.main_before_tree
-            or result.main_before_parents != plan.main_before_parents
-            or result.main_after_commit != plan.main_before_commit
-            or result.main_after_tree != plan.main_before_tree
-            or result.main_after_parents != plan.main_before_parents
+            or result.workspace_before_identity != report.workspace_before_identity
+            or result.workspace_after_identity != report.workspace_after_identity
+            or result.junit_xml_digest != report.junit_xml_artifact.digest
         ):
             raise MainGraduationOfflineDrillJournalError("result differs from durable dependencies")
 

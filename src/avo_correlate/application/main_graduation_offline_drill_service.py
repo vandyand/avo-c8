@@ -21,9 +21,7 @@ from avo_correlate.contracts.main_graduation_offline_drill import (
     FROZEN_OFFLINE_DRILL_VECTOR_IDS,
     MainGraduationOfflineDrillCaseResult,
     MainGraduationOfflineDrillCaseSpec,
-    MainGraduationOfflineDrillCrashFacts,
     MainGraduationOfflineDrillPlan,
-    MainGraduationOfflineDrillReplayFacts,
     MainGraduationOfflineDrillResult,
     MainGraduationOfflineDrillVectorSpec,
     MainGraduationOfflineEvidenceKind,
@@ -128,6 +126,8 @@ class PinnedC7AuthorityVerifier:
             and report.operation_id == authority.operation_id
             and report.authority_digest == self.authority_digest
             and bool(ref.digest)
+            and report.junit_xml_artifact.digest.startswith("sha256:")
+            and report.workspace_before_identity == report.workspace_after_identity
             and any(
                 item.kind is MainGraduationOfflineEvidenceKind.EXECUTION_AUTHORITY
                 for item in reloaded_native_evidence
@@ -161,6 +161,7 @@ class PinnedC7AuthorityVerifier:
             and case_result.root_operation_id == plan.operation_id
             and case_result.plan_digest == plan.plan_digest
             and case_result.execution_report_digest == report.report_digest
+            and case_result.junit_xml_digest == report.junit_xml_artifact.digest
             and {
                 MainGraduationOfflineEvidenceKind.EXECUTION_AUTHORITY,
                 MainGraduationOfflineEvidenceKind.EXECUTION_REPORT,
@@ -179,8 +180,9 @@ class PinnedC7AuthorityVerifier:
             self._authority(authority)
             and result.operation_id == plan.operation_id
             and result.plan_digest == plan.plan_digest
-            and result.execution_authority_digest == authority.authority_digest
+            and bool(result.execution_authority_digest)
             and result.execution_report_digest == report.report_digest
+            and result.junit_xml_digest == report.junit_xml_artifact.digest
             and len(cases) == 47
         )
 
@@ -289,8 +291,8 @@ class MainGraduationOfflineDrillService:
                 )
                 values: dict[str, Any] = {
                     "vector_id": vector_id,
-                    "expected_outcome": node.expected_outcome,
-                    "expected_state": node.expected_state,
+                    "oracle_expected_outcome": node.oracle_expected_outcome,
+                    "oracle_expected_state": node.oracle_expected_state,
                     "fault_digest": canonical_digest(
                         {
                             "domain": "avo-004.7-c7/fault/v1",
@@ -333,9 +335,6 @@ class MainGraduationOfflineDrillService:
             "activation_digest": self._authority.activation_digest,
             "controller_authority_digest": self._authority.controller_authority_digest,
             "controller_authority_ref": self._authority.controller_authority_ref,
-            "main_before_commit": self._authority.source_commit,
-            "main_before_tree": self._authority.source_tree,
-            "main_before_parents": (),
             "cases": tuple(cases),
             "execution_authority_digest": self._authority.authority_digest,
             "execution_authority_ref": authority_ref.digest,
@@ -397,7 +396,7 @@ class MainGraduationOfflineDrillService:
                     pending.append((case.case_id, vector.vector_id))
                     continue
                 result = self._case_result(
-                    plan, case, vector, observation, authority_ref, report_ref
+                    plan, case, vector, observation, authority_ref, report, report_ref
                 )
                 self._journal.record_case_result(result)
                 durable_cases.append(result)
@@ -410,15 +409,12 @@ class MainGraduationOfflineDrillService:
             "plan_digest": plan.plan_digest,
             "repository_digest": plan.repository_digest,
             "target_ref": plan.target_ref,
-            "main_before_commit": plan.main_before_commit,
-            "main_before_tree": plan.main_before_tree,
-            "main_before_parents": plan.main_before_parents,
-            "main_after_commit": plan.main_before_commit,
-            "main_after_tree": plan.main_before_tree,
-            "main_after_parents": plan.main_before_parents,
+            "workspace_before_identity": report.workspace_before_identity,
+            "workspace_after_identity": report.workspace_after_identity,
             "cases": tuple(durable_cases),
             "execution_authority_digest": authority_ref.digest,
             "execution_report_digest": report_ref.digest,
+            "junit_xml_digest": report.junit_xml_artifact.digest,
             "deploy_performed": False,
         }
         stub = MainGraduationOfflineDrillResult.model_construct(
@@ -438,23 +434,10 @@ class MainGraduationOfflineDrillService:
     drill = run
 
     def replay(self) -> MainGraduationOfflineDrillResult:
-        loaded = self._journal.read_execution_authority(
-            self._authority.operation_id, self._authority.authority_digest
-        )
-        if loaded is None or loaded[0] != self._authority:
-            raise MainGraduationOfflineDrillError("authority changed; replay denied")
-        validate = getattr(self._executor, "validate_authority", None)
-        if callable(validate):
-            validate(self._authority)
-        plan = self.prepare()
-        report = self._journal.read_execution_report(
-            plan.operation_id, self._authority.authority_digest
-        )
-        if report is None:
-            raise MainGraduationOfflineDrillError("cannot replay an incomplete C7 drill")
-        result = self._journal.read_result(
-            plan.operation_id, self._authority.authority_digest, report[0].report_digest
-        )
+        # A completed replay is a journal-root read.  It intentionally does
+        # not inspect the current workspace, invoke an executor, or apply
+        # authority expiry: the durable closure is the replay authority.
+        result = self._journal.read_completed_result(self._authority.operation_id)
         if result is None:
             raise MainGraduationOfflineDrillError("cannot replay an incomplete C7 drill")
         return result[0]
@@ -466,6 +449,7 @@ class MainGraduationOfflineDrillService:
         vector: MainGraduationOfflineDrillVectorSpec,
         observation: MainGraduationOfflineNodeObservation,
         authority_ref: ArtifactRef,
+        report: MainGraduationOfflineExecutionReport,
         report_ref: ArtifactRef,
     ) -> MainGraduationOfflineDrillCaseResult:
         refs = list(observation.evidence_refs)
@@ -489,32 +473,14 @@ class MainGraduationOfflineDrillService:
             "operation_id": offline_drill_operation_id(
                 plan.operation_id, case.case_id, vector.vector_id
             ),
-            "expected_outcome": vector.expected_outcome,
-            "observed_outcome": observation.outcome,
-            "expected_state": vector.expected_state,
-            "observed_state": vector.expected_state,
-            "main_before_commit": plan.main_before_commit,
-            "main_before_tree": plan.main_before_tree,
-            "main_before_parents": plan.main_before_parents,
-            "main_after_commit": plan.main_before_commit,
-            "main_after_tree": plan.main_before_tree,
-            "main_after_parents": plan.main_before_parents,
-            "provider_mutation_count": 0,
-            "reconciliation_mutation_count": 0,
-            "release_mutation_count": 0,
-            "crash_facts": MainGraduationOfflineDrillCrashFacts(
-                crash_injected=False, crash_boundary="none", restart_count=0
-            ),
-            "replay_facts": MainGraduationOfflineDrillReplayFacts(
-                replayed=case.case_id == "replay-idempotence",
-                byte_identical=case.case_id == "replay-idempotence",
-                read_only=case.case_id == "replay-idempotence",
-                mutation_delta=0,
-            ),
-            "injected_fault_digest": vector.fault_digest,
+            "oracle_expected_outcome": vector.oracle_expected_outcome,
+            "oracle_expected_state": vector.oracle_expected_state,
+            "verification_status": observation.verification_status,
+            "fault_digest": vector.fault_digest,
             "reason_code": observation.reason_code,
             "execution_authority_digest": authority_ref.digest,
             "execution_report_digest": report_ref.digest,
+            "junit_xml_digest": report.junit_xml_artifact.digest,
             "native_evidence_refs": native,
             "deploy_performed": False,
         }

@@ -13,14 +13,16 @@ import subprocess
 import tempfile
 import xml.etree.ElementTree as ET
 from collections.abc import Callable
+from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 from avo_correlate.adapters.artifacts.filesystem import FilesystemArtifactStore
 from avo_correlate.application.main_graduation_offline_identity import (
     FROZEN_OFFLINE_EXECUTION_ARGV,
     C7WorkspaceIdentityVerifier,
+    sanitized_child_environment,
 )
 from avo_correlate.contracts.base import ArtifactRef
 from avo_correlate.contracts.main_graduation_offline_drill import (
@@ -32,6 +34,8 @@ from avo_correlate.contracts.main_graduation_offline_drill import (
     MainGraduationOfflineNodeObservation,
 )
 from avo_correlate.domain.canonical import canonical_digest
+
+_COMMAND_TIMEOUT_SECONDS = 300
 
 
 class OfflinePytestExecutionError(RuntimeError):
@@ -51,6 +55,8 @@ def _default_runner(argv: list[str], cwd: Path, report_path: Path) -> int:
         check=False,
         capture_output=True,
         text=True,
+        env=sanitized_child_environment(),
+        timeout=_COMMAND_TIMEOUT_SECONDS,
     )
     return completed.returncode
 
@@ -108,6 +114,7 @@ class HermeticPytestExecutor:
         authority_ref: ArtifactRef,
     ) -> MainGraduationOfflineExecutionReport:
         self.validate_authority(authority)
+        before = self._measure_workspace(authority)
         argv = list(authority.argv)
         if not argv or any(not isinstance(item, str) or not item for item in argv):
             raise OfflinePytestExecutionError("authority argv is invalid")
@@ -119,7 +126,10 @@ class HermeticPytestExecutor:
             rendered.extend(_pytest_node_id(node.node_id) for node in authority.nodes)
             self.calls += 1
             self._check_expiry(authority)
-            exit_code = self.runner(rendered, self.workspace, report_path)
+            try:
+                exit_code = self.runner(rendered, self.workspace, report_path)
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                raise OfflinePytestExecutionError("pytest process failed or timed out") from exc
             self._check_expiry(authority)
             if exit_code != 0:
                 raise OfflinePytestExecutionError("pytest process did not exit zero")
@@ -129,7 +139,16 @@ class HermeticPytestExecutor:
                 raise OfflinePytestExecutionError("pytest did not produce a report") from exc
             if len(raw) > self.max_report_bytes:
                 raise OfflinePytestExecutionError("pytest report exceeds bound")
+        after = self._measure_workspace(authority)
+        if before != after:
+            raise OfflinePytestExecutionError("workspace identity changed during pytest execution")
         observations = self._parse_junit(raw, authority, authority_ref)
+        junit_ref = self.artifact_store.put_bytes(
+            raw,
+            media_type="application/vnd.avo.c7.junit+xml",
+            role="c7-junit-xml",
+            max_bytes=self.max_report_bytes,
+        )
         now = self.clock()
         values: dict[str, Any] = {
             "operation_id": authority.operation_id,
@@ -147,6 +166,11 @@ class HermeticPytestExecutor:
             "pytest_digest": authority.pytest_digest,
             "plugin_set_digest": authority.plugin_set_digest,
             "toolchain_digest": authority.toolchain_digest,
+            "environment_identity_digest": before["environment_identity_digest"],
+            "uv_digest": before["uv_digest"],
+            "workspace_before_identity": before,
+            "workspace_after_identity": after,
+            "junit_xml_artifact": junit_ref,
             "argv": authority.argv,
             "collection_count": len(observations),
             "collected_node_ids": FROZEN_OFFLINE_EXECUTION_NODE_IDS,
@@ -162,6 +186,23 @@ class HermeticPytestExecutor:
     def _check_expiry(self, authority: MainGraduationOfflineExecutionAuthority) -> None:
         if self.clock() > authority.expires_at:
             raise OfflinePytestExecutionError("execution authority expired")
+
+    def _measure_workspace(
+        self, authority: MainGraduationOfflineExecutionAuthority
+    ) -> dict[str, Any]:
+        observer = getattr(self.identity_checker, "observe", None)
+        if not callable(observer):
+            raise OfflinePytestExecutionError(
+                "identity checker must expose measured workspace observations"
+            )
+        try:
+            observed = observer()
+            self.identity_checker(authority)
+        except OfflinePytestExecutionError:
+            raise
+        except Exception as exc:
+            raise OfflinePytestExecutionError("workspace identity observation failed") from exc
+        return asdict(cast(Any, observed))
 
     def _parse_junit(
         self,
@@ -194,8 +235,8 @@ class HermeticPytestExecutor:
                     parameter_id=node.parameter_id,
                     case_id=node.case_id,
                     vector_id=node.vector_id,
-                    outcome=node.expected_outcome,
-                    reason_code="production-boundary-node-passed",
+                    verification_status="pass",
+                    reason_code="pinned-oracle-node-passed",
                     evidence_refs=(typed,),
                 )
             )
