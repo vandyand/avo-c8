@@ -264,7 +264,11 @@ _MODELS: dict[str, type[StrictModel]] = {
 # distinction in one place so a durable reference can be reused verbatim by a
 # completion package instead of being reconstructed with a fresh timestamp or
 # a second metadata shape.
-_STANDARD_ROLE_SUFFIXES: dict[str, str] = {"queue": "queue-observation"}
+_STANDARD_ROLE_SUFFIXES: dict[str, str] = {
+    "attestations": "attestation-manifest",
+    "protection": "protection-manifest",
+    "queue": "queue-observation",
+}
 
 
 def _standard_artifact_role(kind: str) -> str:

@@ -921,7 +921,7 @@ def test_canonical_helpers_and_journal_identity_guards(tmp_path: Path) -> None:
     assert MainGraduationJournal(tmp_path).root == tmp_path.resolve()
 
 
-def test_queue_observation_reference_uses_stable_completion_role_and_replays_exactly(
+def test_completion_alias_references_replay_exactly_from_a_fresh_journal(
     tmp_path: Path,
 ) -> None:
     group_parents = [BASE, HEAD]
@@ -958,15 +958,55 @@ def test_queue_observation_reference_uses_stable_completion_role_and_replays_exa
         observed_at=NOW,
         pull_request_number=1,
     )
+    protection = MainProtectionManifest.model_construct(
+        operation_id=D,
+        repository_digest=R,
+        target_ref="refs/heads/main",
+        manifest_digest=D,
+        provider_identity="provider",
+        provider_api_version="v1",
+        isolated_release_issuer="isolated-release",
+        release_issuer_app_id=9001,
+        issuer_isolation_digest=D,
+        protection_epoch=D,
+        observed_at=NOW,
+    )
+    attestations = MainAttestationManifest.model_construct(
+        operation_id=D,
+        repository_digest=R,
+        target_ref="refs/heads/main",
+        package_digest=D,
+        composition_digest=D,
+        policy_epoch=D,
+        reviewer_identity="reviewer",
+        reviewer_evidence_digest=D,
+        evaluator_identity="evaluator",
+        evaluator_evidence_digest=D,
+    )
     journal = MainGraduationJournal(tmp_path)
-    reference = journal.record_queue_observation(queue)
+    references = {
+        "queue": journal.record_queue_observation(queue),
+        "protection": journal.record_protection_manifest(protection),
+        "attestations": journal.record_attestation_manifest(attestations),
+    }
+    expected_roles = {
+        "queue": "main-graduation-queue-observation",
+        "protection": "main-graduation-protection-manifest",
+        "attestations": "main-graduation-attestation-manifest",
+    }
+    for kind, reference in references.items():
+        assert reference.role == expected_roles[kind]
+        assert reference.media_type == f"application/vnd.avo.{reference.role}+json"
 
-    assert reference.role == "main-graduation-queue-observation"
-    assert reference.media_type == "application/vnd.avo.main-graduation-queue-observation+json"
-    assert journal.read_queue_observation(D) == (queue, reference)
-
-    replay = MainGraduationJournal(tmp_path).read_queue_observation(D)
-    assert replay == (queue, reference)
+    readers = {
+        "queue": journal.read_queue_observation,
+        "protection": journal.read_protection_manifest,
+        "attestations": journal.read_attestation_manifest,
+    }
+    records = {"queue": queue, "protection": protection, "attestations": attestations}
+    for kind, reader in readers.items():
+        assert reader(D) == (records[kind], references[kind])
+        assert MainGraduationJournal(tmp_path).read(kind, D) == (records[kind], references[kind])
 
 
 def test_simple_contract_validators_cover_success_and_failure_edges() -> None:
