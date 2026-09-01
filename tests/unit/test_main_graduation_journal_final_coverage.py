@@ -13,6 +13,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
 from pathlib import Path
+from threading import Barrier
 from typing import Any
 
 import pytest
@@ -30,6 +31,8 @@ from avo_correlate.contracts.main_graduation import (
     MainGraduationAttempt,
     MainGraduationEligibilityRecord,
     MainInverseDeltaArtifact,
+    MainPreparationAuthorization,
+    MainReleaseHoldObservation,
     MainRollbackAuthorization,
     MainRollbackIntent,
 )
@@ -38,7 +41,16 @@ from avo_correlate.contracts.main_graduation_phase_a import (
     main_target_scope_digest,
 )
 from avo_correlate.domain.canonical import canonical_bytes, canonical_digest
+from tests.unit.c4_coordinator_test_support import MAIN_OPERATION
 from tests.unit.phase_a_test_support import TEST_PHASE_A_AUTHORITY
+from tests.unit.test_main_graduation_completion_filesystem import (
+    MutableClock,
+    _attestation,
+    _completion_coordinator,
+    _completion_fixture,
+    _make_group,
+)
+from tests.unit.test_main_graduation_coordinator_preparation import _coordinator
 from tests.unit.test_main_graduation_journal_coverage import (
     BASE,
     D2,
@@ -135,11 +147,94 @@ def test_repeated_read_uses_validated_cache_but_still_detects_deleted_artifact(
     )
     for _ in range(100):
         assert journal.read_ledger_started(D) == (started, reference)
-    assert validations == 1
+    # The cache is deliberately traversal-scoped: independent top-level reads
+    # each revalidate, while nested predecessor reads share one traversal.
+    assert validations == 100
 
     journal.delete_artifact(reference.digest)
     with pytest.raises(MainGraduationJournalError, match="malformed or unverifiable"):
         journal.read_ledger_started(D)
+
+
+def test_traversal_cache_isolated_between_concurrent_top_level_reads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    journal = MainGraduationJournal(tmp_path)
+    started = EligibilityLedgerStarted(
+        activation_digest=D,
+        repository_digest=R,
+        controller_config_digest=D2,
+        scheduler_sequence_watermark=0,
+        streak=0,
+    )
+    journal.record_ledger_started(started)
+    original = EligibilityLedgerStarted.model_validate
+    barrier = Barrier(2)
+    validations = 0
+
+    def counted(cls: Any, value: Any, *args: Any, **kwargs: Any) -> Any:
+        nonlocal validations
+        validations += 1
+        barrier.wait(timeout=5)
+        return original(value, *args, **kwargs)
+
+    monkeypatch.setattr(
+        EligibilityLedgerStarted, "model_validate", classmethod(counted)
+    )
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: journal.read_ledger_started(D), range(2)))
+    assert results[0] is not None
+    assert results[1] == results[0]
+    assert validations == 2
+
+
+def test_top_level_recursive_read_revalidates_tampered_predecessor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    journal, provider = _completion_fixture(tmp_path)
+    provider.clock = MutableClock(NOW)
+    _make_group(provider, tmp_path / "checkout")
+    assert _coordinator(journal, provider).prepare(MAIN_OPERATION).state == "queued"
+    _attestation(journal)
+    first = _completion_coordinator(journal, provider, provider.clock).complete(
+        MAIN_OPERATION,
+        group_sha=provider.group_sha,
+        pull_request_number=provider.pr_number,
+    )
+    assert first.state == "reconciliation_required"
+
+    counts: dict[str, int] = {}
+    for kind, model in (
+        ("release-hold", MainReleaseHoldObservation),
+        ("preparation-authorization", MainPreparationAuthorization),
+    ):
+        original = model.model_validate
+
+        def counted(
+            cls: Any,
+            value: Any,
+            *args: Any,
+            _kind: str = kind,
+            _original: Any = original,
+            **kwargs: Any,
+        ) -> Any:
+            counts[_kind] = counts.get(_kind, 0) + 1
+            return _original(value, *args, **kwargs)
+
+        monkeypatch.setattr(model, "model_validate", classmethod(counted))
+
+    assert journal.read_release_hold(MAIN_OPERATION) is not None
+    assert counts == {"release-hold": 1, "preparation-authorization": 1}
+
+    predecessor = (
+        tmp_path
+        / "main-graduation-index"
+        / "preparation-authorization"
+        / f"{MAIN_OPERATION[7:]}.json"
+    )
+    predecessor.unlink()
+    with pytest.raises(MainGraduationJournalError, match="malformed or unverifiable"):
+        journal.read_release_hold(MAIN_OPERATION)
 
 
 def test_constructor_and_key_guards_fail_closed(tmp_path: Path) -> None:

@@ -10,6 +10,7 @@ import re
 import shutil
 import tempfile
 from contextlib import suppress
+from contextvars import ContextVar
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, Protocol, cast
@@ -85,6 +86,11 @@ class MainGraduationJournalError(RuntimeError):
 
 class MainGraduationRecordConflictError(MainGraduationJournalError):
     """A create-once key was already bound to different canonical bytes."""
+
+
+_ReadTraversal = tuple[
+    int, dict[tuple[str, str], tuple[StrictModel, ArtifactRef]]
+]
 
 
 class _MainBaseReader(Protocol):
@@ -374,10 +380,12 @@ class MainGraduationJournal:
         self._composition_repository_digest = repository_digest
         self._composition_base_reader = base_reader
         self._phase_a_authority_verifier = phase_a_authority_verifier
-        # Cache validated models per journal instance. Every hit still reads
-        # and hashes the content-addressed artifact, preserving same-process
-        # tamper detection; a restarted journal starts with an empty cache.
-        self._validated_records: dict[tuple[str, str], tuple[StrictModel, ArtifactRef]] = {}
+        # Cache validated models only for the current read traversal. A
+        # ContextVar keeps independent threads/tasks from sharing a cache,
+        # while nested reads in one traversal still share it.
+        self._read_state: ContextVar[_ReadTraversal | None] = ContextVar(
+            "main_graduation_journal_read_state", default=None
+        )
         if self._policy_epoch is not None:
             _check_digest(self._policy_epoch)
 
@@ -527,6 +535,26 @@ class MainGraduationJournal:
             raise MainGraduationJournalError("main graduation index is malformed") from exc
 
     def _read(self, kind: str, key: str) -> tuple[StrictModel, ArtifactRef] | None:
+        """Read one record with a cache scoped to this validation traversal."""
+        token = self._read_state.set(self._next_read_state())
+        try:
+            return self._read_impl(kind, key)
+        finally:
+            self._read_state.reset(token)
+
+    def _next_read_state(self) -> _ReadTraversal:
+        state = self._read_state.get()
+        if state is None:
+            return 1, {}
+        return state[0] + 1, state[1]
+
+    def _validated_cache(
+        self,
+    ) -> dict[tuple[str, str], tuple[StrictModel, ArtifactRef]] | None:
+        state = self._read_state.get()
+        return None if state is None else state[1]
+
+    def _read_impl(self, kind: str, key: str) -> tuple[StrictModel, ArtifactRef] | None:
         if kind not in _MODELS:
             raise ValueError("unknown main graduation record kind")
         _check_digest(key)
@@ -545,7 +573,12 @@ class MainGraduationJournal:
             ):
                 raise ValueError("main graduation artifact metadata mismatch")
             data = self._store.read_bytes(reference)
-            cached = self._validated_records.get((kind, key))
+            validated_cache = self._validated_cache()
+            cached = (
+                validated_cache.get((kind, key))
+                if validated_cache is not None
+                else None
+            )
             if cached is not None and _same_artifact_ref(cached[1], reference):
                 # ``read_bytes`` verifies the complete content-addressed
                 # object on every hit. The cached model was already parsed and
@@ -605,7 +638,8 @@ class MainGraduationJournal:
                 raise MainGraduationRecordConflictError(
                     "main graduation identity does not match index"
                 )
-            self._validated_records[(kind, key)] = (record, reference)
+            if validated_cache is not None:
+                validated_cache[(kind, key)] = (record, reference)
             return record, reference
         except MainGraduationRecordConflictError:
             raise
@@ -910,6 +944,16 @@ class MainGraduationJournal:
             self._assert_phase_identity(kind, transition.claim_digest, transition)
 
     def _read_phase_a(self, kind: str, key: str) -> tuple[StrictModel, ArtifactRef] | None:
+        """Direct phase-A reads use the same traversal-scoped cache."""
+        token = self._read_state.set(self._next_read_state())
+        try:
+            return self._read_phase_a_impl(kind, key)
+        finally:
+            self._read_state.reset(token)
+
+    def _read_phase_a_impl(
+        self, kind: str, key: str
+    ) -> tuple[StrictModel, ArtifactRef] | None:
         path = self._phase_local_path(kind, key)
         if not path.is_file():
             return None
@@ -921,7 +965,12 @@ class MainGraduationJournal:
                 or _digest_bytes(data) != envelope.reference.digest
             ):
                 raise ValueError("phase-A artifact hash mismatch")
-            cached = self._validated_records.get((kind, key))
+            validated_cache = self._validated_cache()
+            cached = (
+                validated_cache.get((kind, key))
+                if validated_cache is not None
+                else None
+            )
             if cached is not None and _same_artifact_ref(cached[1], envelope.reference):
                 # The artifact store has verified the immutable bytes above;
                 # reuse only the model whose full predecessor chain was
@@ -954,7 +1003,8 @@ class MainGraduationJournal:
             elif kind == "claimed-release-transition":
                 transition = cast(MainClaimedReleaseTransitionReceipt, record)
                 self._assert_phase_identity(kind, transition.claim_digest, transition)
-            self._validated_records[(kind, key)] = (record, envelope.reference)
+            if validated_cache is not None:
+                validated_cache[(kind, key)] = (record, envelope.reference)
             return record, envelope.reference
         except MainGraduationRecordConflictError:
             raise
