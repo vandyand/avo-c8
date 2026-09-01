@@ -14,7 +14,6 @@ is an harmless orphan and is never discoverable as ledger history.
 from __future__ import annotations
 
 import errno
-import inspect
 import json
 import os
 from pathlib import Path
@@ -59,10 +58,10 @@ class MainGraduationLedgerRecordConflictError(MainGraduationLedgerJournalError):
 class MainLedgerAuthorityVerifier(Protocol):
     """Injected controller-rooted authentication for C6 records.
 
-    Implementations may accept just the record, or the record followed by the
-    exact durable dependencies supplied by the journal.  Returning ``False``
-    is rejection; raising is also rejection.  A parsed DTO and its digest are
-    never treated as principal authentication.
+    Implementations must authenticate the record against the exact durable
+    dependencies supplied by the journal.  Only the literal result ``True``
+    is acceptance; a parsed DTO and its digest are never principal
+    authentication.
     """
 
     def verify_activation(self, activation: MainLedgerActivation) -> object: ...
@@ -96,13 +95,20 @@ class MainLedgerAuthorityVerifier(Protocol):
 
     def verify_package(self, package: MainLedgerEvidencePackage) -> object: ...
 
-    def verify_boundary_evidence(self, evidence: MainLedgerBoundaryViolationEvidence) -> object: ...
+    def verify_boundary_evidence(
+        self, evidence: MainLedgerBoundaryViolationEvidence, activation: MainLedgerActivation
+    ) -> object: ...
 
-    def verify_boundary_reset(self, reset: MainLedgerBoundaryResetTransition) -> object: ...
+    def verify_boundary_reset(
+        self,
+        reset: MainLedgerBoundaryResetTransition,
+        activation: MainLedgerActivation,
+        evidence: MainLedgerBoundaryViolationEvidence,
+    ) -> object: ...
 
 
 _LOCK = RLock()
-_SEQUENCE_SCHEMA = 1
+_SEQUENCE_SCHEMA = 2
 _MAX_INDEX_BYTES = 1024 * 1024
 _DEFAULT_MAX_RECORD_BYTES = 8 * 1024 * 1024
 _MEDIA = "application/vnd.avo.main-ledger"
@@ -134,6 +140,7 @@ class MainGraduationLedgerJournal:
         self._root = root.resolve()
         self._indexes = self._root / "main-ledger-v2"
         self._sequences = self._indexes / "sequence"
+        self._stages = self._indexes / "stage"
         self._store = artifact_store or FilesystemArtifactStore(self._root / "artifacts")
         self._verifier = authority_verifier
         self._max = max_record_bytes
@@ -211,7 +218,6 @@ class MainGraduationLedgerJournal:
                 record.activation_digest,
                 record.scheduler_sequence,
                 entry,
-                create_only=True,
             )
             committed = self._sequence_entry(record.activation_digest, record.scheduler_sequence)
             if committed is None:
@@ -266,7 +272,7 @@ class MainGraduationLedgerJournal:
             self._verify("classification", record, activation, submission)
             data = canonical_bytes(record)
             reference = self._put("classification", data)
-            if entry["classification"] is not None:
+            if self._stage_exists(activation, record.scheduler_sequence, "classification"):
                 old = self._read_entry_ref(
                     entry,
                     "classification",
@@ -278,10 +284,10 @@ class MainGraduationLedgerJournal:
                     raise MainGraduationLedgerRecordConflictError(
                         "conflicting classification replay"
                     )
-                return self._reference(entry, "classification")
-            entry["classification"] = reference.model_dump(mode="json")
-            self._commit_entry(record.activation_digest, record.scheduler_sequence, entry)
-            return reference
+                return self._reference(entry, "classification", activation)
+            return self._create_stage_once(
+                activation, record.scheduler_sequence, "classification", reference, data
+            )
 
     record_eligibility_classification = record_classification
 
@@ -298,7 +304,9 @@ class MainGraduationLedgerJournal:
                         continue
                 elif submission.operation_id != identity:
                     continue
-                if entry["classification"] is None:
+                if not self._stage_exists(
+                    activation, submission.scheduler_sequence, "classification"
+                ):
                     return None
                 classification = self._read_entry_ref(
                     entry,
@@ -307,7 +315,7 @@ class MainGraduationLedgerJournal:
                     activation,
                     submission,
                 )
-                return classification, self._reference(entry, "classification")
+                return classification, self._reference(entry, "classification", activation)
             return None
 
     def record_outcome(self, outcome: MainLedgerTerminalOutcome) -> ArtifactRef:
@@ -323,7 +331,7 @@ class MainGraduationLedgerJournal:
             self._verify("outcome", record, activation, submission, classification)
             data = canonical_bytes(record)
             reference = self._put("outcome", data)
-            if entry["outcome"] is not None:
+            if self._stage_exists(activation, record.scheduler_sequence, "outcome"):
                 old = self._read_entry_ref(
                     entry,
                     "outcome",
@@ -336,10 +344,10 @@ class MainGraduationLedgerJournal:
                     raise MainGraduationLedgerRecordConflictError(
                         "conflicting terminal outcome replay"
                     )
-                return self._reference(entry, "outcome")
-            entry["outcome"] = reference.model_dump(mode="json")
-            self._commit_entry(record.activation_digest, record.scheduler_sequence, entry)
-            return reference
+                return self._reference(entry, "outcome", activation)
+            return self._create_stage_once(
+                activation, record.scheduler_sequence, "outcome", reference, data
+            )
 
     record_terminal_outcome = record_outcome
     record_attempt_outcome = record_outcome
@@ -355,7 +363,7 @@ class MainGraduationLedgerJournal:
                     isinstance(identity, str) and submission.operation_id != identity
                 ):
                     continue
-                if entry["outcome"] is None:
+                if not self._stage_exists(activation, submission.scheduler_sequence, "outcome"):
                     return None
                 classification = self._require_classification(entry, activation, submission)
                 outcome = self._read_entry_ref(
@@ -366,7 +374,7 @@ class MainGraduationLedgerJournal:
                     submission,
                     classification,
                 )
-                return outcome, self._reference(entry, "outcome")
+                return outcome, self._reference(entry, "outcome", activation)
             return None
 
     read_terminal_outcome = read_outcome
@@ -389,6 +397,7 @@ class MainGraduationLedgerJournal:
                 outcome = self._require_outcome(entry, activation, submission, classification)
             elif record.outcome is not None:
                 raise MainGraduationLedgerJournalError("excluded transition cannot carry outcome")
+            self._require_exact_transition_binding(record, activation, classification, outcome)
             prior = self._prior_state(activation, sequence)
             if record.prior_state != prior:
                 raise MainGraduationLedgerJournalError(
@@ -397,7 +406,7 @@ class MainGraduationLedgerJournal:
             self._verify("transition", record, activation, classification, outcome)
             data = canonical_bytes(record)
             reference = self._put("transition", data)
-            if entry["transition"] is not None:
+            if self._stage_exists(activation, sequence, "transition"):
                 old = self._read_entry_ref(
                     entry,
                     "transition",
@@ -411,10 +420,8 @@ class MainGraduationLedgerJournal:
                     raise MainGraduationLedgerRecordConflictError(
                         "conflicting accumulator transition replay"
                     )
-                return self._reference(entry, "transition")
-            entry["transition"] = reference.model_dump(mode="json")
-            self._commit_entry(record.activation_digest, sequence, entry)
-            return reference
+                return self._reference(entry, "transition", activation)
+            return self._create_stage_once(activation, sequence, "transition", reference, data)
 
     record_accumulator_transition = record_transition
 
@@ -429,7 +436,7 @@ class MainGraduationLedgerJournal:
                     isinstance(identity, str) and submission.operation_id != identity
                 ):
                     continue
-                if entry["transition"] is None:
+                if not self._stage_exists(activation, submission.scheduler_sequence, "transition"):
                     return None
                 classification = self._require_classification(entry, activation, submission)
                 outcome = (
@@ -447,7 +454,7 @@ class MainGraduationLedgerJournal:
                     outcome,
                 )
                 self._require_prior_state(activation, transition)
-                return transition, self._reference(entry, "transition")
+                return transition, self._reference(entry, "transition", activation)
             return None
 
     read_accumulator_transition = read_transition
@@ -699,9 +706,6 @@ class MainGraduationLedgerJournal:
             "source_identity": submission.source_identity,
             "submission_identity": submission.submission_identity,
             "submission": reference.model_dump(mode="json"),
-            "classification": None,
-            "outcome": None,
-            "transition": None,
         }
 
     def _commit_entry(
@@ -709,8 +713,6 @@ class MainGraduationLedgerJournal:
         activation_digest: str,
         sequence: int,
         entry: dict[str, Any],
-        *,
-        create_only: bool = False,
     ) -> None:
         if entry.get("schema_version") != _SEQUENCE_SCHEMA:
             raise MainGraduationLedgerJournalError("sequence index schema is unsupported")
@@ -723,21 +725,18 @@ class MainGraduationLedgerJournal:
                 handle.write(data)
                 handle.flush()
                 os.fsync(handle.fileno())
-            if create_only:
-                try:
-                    # A hard-link install is an atomic create-once commit. It
-                    # cannot overwrite a submission committed by another runner.
-                    os.link(temporary, path)
-                except FileExistsError:
-                    existing = self._read_sequence_file(path, activation_digest, sequence)
-                    if canonical_bytes(existing) != data:
-                        raise MainGraduationLedgerRecordConflictError(
-                            "conflicting committed sequence entry"
-                        ) from None
-                finally:
-                    temporary.unlink(missing_ok=True)
-            else:
-                os.replace(temporary, path)
+            try:
+                # A hard-link install is an atomic create-once commit. It
+                # cannot overwrite a submission committed by another runner.
+                os.link(temporary, path)
+            except FileExistsError:
+                existing = self._read_sequence_file(path, activation_digest, sequence)
+                if canonical_bytes(existing) != data:
+                    raise MainGraduationLedgerRecordConflictError(
+                        "conflicting committed sequence entry"
+                    ) from None
+            finally:
+                temporary.unlink(missing_ok=True)
             _sync_directory(path.parent)
         except MainGraduationLedgerRecordConflictError:
             raise
@@ -801,9 +800,6 @@ class MainGraduationLedgerJournal:
                 "source_identity",
                 "submission_identity",
                 "submission",
-                "classification",
-                "outcome",
-                "transition",
             }:
                 raise ValueError("sequence index shape is invalid")
             if (
@@ -818,6 +814,39 @@ class MainGraduationLedgerJournal:
 
     def _sequence_path(self, activation_digest: str, sequence: int) -> Path:
         return self._sequences / activation_digest.removeprefix("sha256:") / f"{sequence}.json"
+
+    def _stage_path(self, activation: MainLedgerActivation, sequence: int, kind: str) -> Path:
+        if kind not in {"classification", "outcome", "transition"}:
+            raise ValueError("invalid ledger stage kind")
+        return (
+            self._stages
+            / activation.activation_digest.removeprefix("sha256:")
+            / str(sequence)
+            / f"{kind}.json"
+        )
+
+    def _stage_exists(self, activation: MainLedgerActivation, sequence: int, kind: str) -> bool:
+        return self._stage_path(activation, sequence, kind).is_file()
+
+    def _stage_reference(
+        self, activation: MainLedgerActivation, sequence: int, kind: str
+    ) -> ArtifactRef:
+        path = self._stage_path(activation, sequence, kind)
+        if not path.is_file():
+            raise MainGraduationLedgerJournalError(f"{kind} is not durably recorded")
+        return self._read_reference(path, kind)
+
+    def _create_stage_once(
+        self,
+        activation: MainLedgerActivation,
+        sequence: int,
+        kind: str,
+        reference: ArtifactRef,
+        data: bytes,
+    ) -> ArtifactRef:
+        return self._create_once(
+            self._stage_path(activation, sequence, kind), reference, data, kind
+        )
 
     def _max_committed_sequence(self, activation: MainLedgerActivation) -> int:
         entries = self._entries_for(activation)
@@ -854,7 +883,7 @@ class MainGraduationLedgerJournal:
         submission = self._read_entry_submission(entry, activation)
         classification: MainLedgerClassificationEvidence | None = None
         outcome: MainLedgerTerminalOutcome | None = None
-        if entry["classification"] is not None:
+        if self._stage_exists(activation, submission.scheduler_sequence, "classification"):
             classification = self._read_entry_ref(
                 entry,
                 "classification",
@@ -862,7 +891,7 @@ class MainGraduationLedgerJournal:
                 activation,
                 submission,
             )
-        if entry["outcome"] is not None:
+        if self._stage_exists(activation, submission.scheduler_sequence, "outcome"):
             if classification is None:
                 raise MainGraduationLedgerJournalError("sequence outcome has no classification")
             outcome = self._read_entry_ref(
@@ -873,7 +902,7 @@ class MainGraduationLedgerJournal:
                 submission,
                 classification,
             )
-        if entry["transition"] is not None:
+        if self._stage_exists(activation, submission.scheduler_sequence, "transition"):
             if classification is None:
                 raise MainGraduationLedgerJournalError("sequence transition has no classification")
             if classification.classification == "eligible" and outcome is None:
@@ -901,7 +930,7 @@ class MainGraduationLedgerJournal:
         classification: MainLedgerClassificationEvidence | None = None,
         outcome: MainLedgerTerminalOutcome | None = None,
     ) -> Any:
-        reference = self._reference(entry, kind)
+        reference = self._reference(entry, kind, activation)
         record = self._read_record(kind, reference, model)
         if kind == "classification":
             if submission is None:
@@ -922,6 +951,7 @@ class MainGraduationLedgerJournal:
                 raise MainGraduationLedgerJournalError(
                     "transition classification dependency is missing"
                 )
+            self._require_exact_transition_binding(record, activation, classification, outcome)
             self._verify("transition", record, activation, classification, outcome)
         elif kind == "submission":
             self._verify("submission", record, activation)
@@ -1038,7 +1068,18 @@ class MainGraduationLedgerJournal:
         except (OSError, ValueError, TypeError, UnicodeError, json.JSONDecodeError) as exc:
             raise MainGraduationLedgerJournalError(f"malformed {kind} index") from exc
 
-    def _reference(self, entry: dict[str, Any], kind: str) -> ArtifactRef:
+    def _reference(
+        self,
+        entry: dict[str, Any],
+        kind: str,
+        activation: MainLedgerActivation | None = None,
+    ) -> ArtifactRef:
+        if kind != "submission":
+            if activation is None:
+                raise MainGraduationLedgerJournalError(
+                    f"{kind} stage activation dependency is missing"
+                )
+            return self._stage_reference(activation, entry["scheduler_sequence"], kind)
         value = entry.get(kind)
         if value is None:
             raise MainGraduationLedgerJournalError(f"{kind} is not durably committed")
@@ -1071,7 +1112,7 @@ class MainGraduationLedgerJournal:
         activation: MainLedgerActivation,
         submission: MainLedgerSubmissionEnvelope,
     ) -> MainLedgerClassificationEvidence:
-        if entry["classification"] is None:
+        if not self._stage_exists(activation, submission.scheduler_sequence, "classification"):
             raise MainGraduationLedgerJournalError("classification is not durably recorded")
         return self._read_entry_ref(
             entry, "classification", MainLedgerClassificationEvidence, activation, submission
@@ -1084,7 +1125,7 @@ class MainGraduationLedgerJournal:
         submission: MainLedgerSubmissionEnvelope,
         classification: MainLedgerClassificationEvidence,
     ) -> MainLedgerTerminalOutcome:
-        if entry["outcome"] is None:
+        if not self._stage_exists(activation, submission.scheduler_sequence, "outcome"):
             raise MainGraduationLedgerJournalError("terminal outcome is not durably recorded")
         return self._read_entry_ref(
             entry, "outcome", MainLedgerTerminalOutcome, activation, submission, classification
@@ -1182,6 +1223,22 @@ class MainGraduationLedgerJournal:
                 "terminal outcome is not exactly bound to eligible classification"
             )
 
+    @staticmethod
+    def _require_exact_transition_binding(
+        transition: MainLedgerAccumulatorTransition,
+        activation: MainLedgerActivation,
+        classification: MainLedgerClassificationEvidence,
+        outcome: MainLedgerTerminalOutcome | None,
+    ) -> None:
+        if (
+            transition.activation_digest != activation.activation_digest
+            or transition.classification != classification
+            or transition.outcome != outcome
+        ):
+            raise MainGraduationLedgerJournalError(
+                "transition is not exactly bound to durable classification and outcome"
+            )
+
     def _verify_package_closure(
         self, package: MainLedgerEvidencePackage, activation: MainLedgerActivation
     ) -> None:
@@ -1275,39 +1332,31 @@ class MainGraduationLedgerJournal:
 
     def _verify(self, kind: str, record: Any, *dependencies: Any) -> None:
         verifier = self._require_verifier()
-        names = {
-            "activation": ("verify_activation",),
-            "submission": ("verify_submission",),
-            "classification": ("verify_classification",),
-            "outcome": ("verify_outcome", "verify_terminal_outcome"),
-            "transition": ("verify_transition", "verify_accumulator_transition"),
-            "package": ("verify_package", "verify_evidence_package"),
-            "boundary": ("verify_boundary_evidence",),
-            "boundary-reset": ("verify_boundary_reset",),
-        }[kind]
-        method = next(
-            (
-                getattr(verifier, name, None)
-                for name in names
-                if callable(getattr(verifier, name, None))
-            ),
-            None,
-        )
-        if method is None:
-            raise MainGraduationLedgerJournalError(f"authority verifier lacks {names[0]}")
-        candidates = (record, *dependencies)
         try:
-            signature = inspect.signature(method)
-            args = candidates
-            if not any(
-                parameter.kind == inspect.Parameter.VAR_POSITIONAL
-                for parameter in signature.parameters.values()
-            ):
-                while args and _cannot_bind(signature, args):
-                    args = args[:-1]
-            result = method(*args)
-            if result is False:
-                raise ValueError("authority verifier rejected record")
+            if kind == "activation":
+                result = verifier.verify_activation(record)
+            elif kind == "submission":
+                result = verifier.verify_submission(record, dependencies[0])
+            elif kind == "classification":
+                result = verifier.verify_classification(record, dependencies[0], dependencies[1])
+            elif kind == "outcome":
+                result = verifier.verify_outcome(
+                    record, dependencies[0], dependencies[1], dependencies[2]
+                )
+            elif kind == "transition":
+                result = verifier.verify_transition(
+                    record, dependencies[0], dependencies[1], dependencies[2]
+                )
+            elif kind == "boundary":
+                result = verifier.verify_boundary_evidence(record, dependencies[0])
+            elif kind == "boundary-reset":
+                result = verifier.verify_boundary_reset(record, dependencies[0], dependencies[1])
+            elif kind == "package":
+                result = verifier.verify_package(record)
+            else:
+                raise ValueError(f"unknown verification kind: {kind}")
+            if result is not True:
+                raise ValueError("authority verifier did not return True")
         except Exception as exc:
             if isinstance(exc, MainGraduationLedgerJournalError):
                 raise
@@ -1319,14 +1368,6 @@ class MainGraduationLedgerJournal:
                 "injected main ledger authority verifier is required"
             )
         return self._verifier
-
-
-def _cannot_bind(signature: inspect.Signature, args: tuple[Any, ...]) -> bool:
-    try:
-        signature.bind(*args)
-    except TypeError:
-        return True
-    return False
 
 
 def _strict_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:

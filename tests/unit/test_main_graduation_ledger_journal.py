@@ -37,8 +37,60 @@ ModelT = TypeVar("ModelT", bound=StrictModel)
 
 
 class _Verifier:
-    def __getattr__(self, _name: str) -> Any:
-        return lambda *_args: True
+    def verify_activation(self, _activation: Any) -> bool:
+        return True
+
+    def verify_submission(self, _submission: Any, _activation: Any) -> bool:
+        return True
+
+    def verify_classification(
+        self, _classification: Any, _activation: Any, _submission: Any
+    ) -> bool:
+        return True
+
+    def verify_outcome(
+        self, _outcome: Any, _activation: Any, _submission: Any, _classification: Any
+    ) -> bool:
+        return True
+
+    def verify_transition(
+        self, _transition: Any, _activation: Any, _classification: Any, _outcome: Any
+    ) -> bool:
+        return True
+
+    def verify_package(self, _package: Any) -> bool:
+        return True
+
+    def verify_boundary_evidence(self, _evidence: Any, _activation: Any) -> bool:
+        return True
+
+    def verify_boundary_reset(self, _reset: Any, _activation: Any, _evidence: Any) -> bool:
+        return True
+
+
+class _MissingActivationVerifier:
+    def verify_submission(self, _submission: Any, _activation: Any) -> bool:
+        return True
+
+
+class _WrongSignatureVerifier(_Verifier):
+    def verify_activation(self, _activation: Any, _unexpected: Any) -> bool:
+        return True
+
+
+class _NoneVerifier(_Verifier):
+    def verify_activation(self, _activation: Any) -> None:
+        return None
+
+
+class _FalseVerifier(_Verifier):
+    def verify_activation(self, _activation: Any) -> bool:
+        return False
+
+
+class _ExceptionVerifier(_Verifier):
+    def verify_activation(self, _activation: Any) -> bool:
+        raise RuntimeError("verification failed")
 
 
 def _with_digest(  # noqa: UP047
@@ -94,7 +146,10 @@ def _submission(
 
 
 def _classification(
-    activation: Any, submission: MainLedgerSubmissionEnvelope, store: FilesystemArtifactStore
+    activation: Any,
+    submission: MainLedgerSubmissionEnvelope,
+    store: FilesystemArtifactStore,
+    path: str = "src/feature.py",
 ) -> MainLedgerClassificationEvidence:
     values: dict[str, Any] = {
         "activation_digest": activation.activation_digest,
@@ -105,8 +160,8 @@ def _classification(
         "empty": False,
         "ordinary": True,
         "risk_class": "ordinary",
-        "paths": ["src/feature.py"],
-        "path_manifest_digest": canonical_digest(["src/feature.py"]),
+        "paths": [path],
+        "path_manifest_digest": canonical_digest([path]),
         "policy_digest": activation.policy_digest,
         "policy_epoch": activation.policy_epoch,
         "controller_authority": activation.controller_authority,
@@ -121,6 +176,7 @@ def _outcome(
     submission: MainLedgerSubmissionEnvelope,
     classification: MainLedgerClassificationEvidence,
     store: FilesystemArtifactStore,
+    reason: str = "upstream failure",
 ) -> MainLedgerTerminalOutcome:
     evidence = store.put_bytes(
         canonical_bytes({"sequence": submission.scheduler_sequence, "outcome": "failure"}),
@@ -147,7 +203,7 @@ def _outcome(
         "evidence_kind": "failure",
         "terminal_evidence_digest": evidence.digest,
         "terminal_evidence": evidence,
-        "reason": "upstream failure",
+        "reason": reason,
         "terminal_at": NOW,
     }
     return _with_digest(MainLedgerTerminalOutcome, values, "outcome_digest")
@@ -165,6 +221,92 @@ def test_authority_is_mandatory_and_submission_is_gap_free(tmp_path: Path) -> No
     journal.record_submission(first)
     assert journal.record_submission(first) == journal.read_submission(first.operation_id)[1]
     assert journal.list_sequences() == (11,)
+
+
+@pytest.mark.parametrize(
+    "verifier_type",
+    [
+        _MissingActivationVerifier,
+        _WrongSignatureVerifier,
+        _NoneVerifier,
+        _FalseVerifier,
+        _ExceptionVerifier,
+    ],
+)
+def test_verifier_fail_closed_on_write_read_and_restart(
+    tmp_path: Path, verifier_type: type[Any]
+) -> None:
+    activation = _activation()
+    with pytest.raises(MainGraduationLedgerJournalError, match="verifier"):
+        MainGraduationLedgerJournal(tmp_path, verifier_type()).record_activation(activation)
+
+    good, activation, store = _journal(tmp_path / "durable")
+    submission = _submission(activation, store, 11)
+    good.record_submission(submission)
+    with pytest.raises(MainGraduationLedgerJournalError, match="verifier"):
+        MainGraduationLedgerJournal(tmp_path / "durable", verifier_type()).read_submission(
+            submission.operation_id
+        )
+
+
+def test_stage_sidecars_are_create_once_across_independent_journals(tmp_path: Path) -> None:
+    first, activation, store = _journal(tmp_path)
+    second_store = FilesystemArtifactStore(
+        tmp_path / "artifacts", clock=lambda: NOW - timedelta(minutes=1)
+    )
+    second = MainGraduationLedgerJournal(tmp_path, _Verifier(), artifact_store=second_store)
+    submission = _submission(activation, store, 11)
+    first.record_submission(submission)
+
+    classification = _classification(activation, submission, store)
+    assert first.record_classification(classification) == second.record_classification(
+        classification
+    )
+    divergent_classification = _classification(activation, submission, store, path="src/other.py")
+    with pytest.raises(MainGraduationLedgerJournalError, match="conflicting"):
+        second.record_classification(divergent_classification)
+    assert first.read_classification(11)[0] == classification
+
+    outcome = _outcome(activation, submission, classification, store)
+    assert first.record_outcome(outcome) == second.record_outcome(outcome)
+    divergent_outcome = _outcome(activation, submission, classification, store, reason="other")
+    with pytest.raises(MainGraduationLedgerJournalError, match="conflicting"):
+        second.record_outcome(divergent_outcome)
+    assert first.read_outcome(11)[0] == outcome
+
+    prior = main_ledger_genesis_state(
+        activation.activation_digest, activation.scheduler_sequence_watermark
+    )
+    result = _with_digest(
+        MainLedgerAccumulatorState,
+        {
+            **prior.model_dump(exclude={"state_digest"}),
+            "last_scheduler_sequence": 11,
+            "failures": 1,
+            "streak": 0,
+        },
+        "state_digest",
+    )
+    transition = _with_digest(
+        MainLedgerAccumulatorTransition,
+        {
+            "activation_digest": activation.activation_digest,
+            "classification": classification,
+            "prior_state": prior,
+            "prior_state_digest": prior.state_digest,
+            "outcome": outcome,
+            "outcome_digest": outcome.outcome_digest,
+            "reset_applied": True,
+            "resulting_state": result,
+            "resulting_state_digest": result.state_digest,
+        },
+        "transition_digest",
+    )
+    assert first.record_transition(transition) == second.record_transition(transition)
+    with pytest.raises(MainGraduationLedgerJournalError, match="malformed"):
+        second.record_transition(transition.model_copy(update={"outcome": None}))
+    restarted = MainGraduationLedgerJournal(tmp_path, _Verifier())
+    assert restarted.read_transition(11)[0] == transition
 
 
 def test_cas_orphan_is_not_discoverable_and_restart_finds_commit(tmp_path: Path) -> None:
