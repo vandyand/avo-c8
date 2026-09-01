@@ -27,12 +27,12 @@ from avo_correlate.adapters.git.main_composition import (
 from avo_correlate.contracts.base import ArtifactRef, Sha256Digest
 from avo_correlate.contracts.main_graduation import (
     MainCompletionPackage,
-    MainInverseDeltaArtifact,
+    MainRollbackCompositionArtifact,
+    main_rollback_composition_id,
 )
 from avo_correlate.domain.canonical import canonical_digest
 
 _ROLLBACK_RETENTION = re.compile(r"^refs/avo/main-rollback/[0-9a-f]{64}$")
-_ROLLBACK_CANDIDATE = re.compile(r"^refs/heads/avo/main-rollback/[0-9a-f]{64}$")
 _ROLLBACK_COMMIT_MESSAGE = "AVO protected-main rollback composition"
 _AUTHOR_NAME = "AVO Main Rollback"
 _AUTHOR_EMAIL = "avo-main-rollback@localhost"
@@ -45,34 +45,33 @@ class MainRollbackCompositionError(RuntimeError):
 
 @dataclass(frozen=True, slots=True)
 class MainRollbackCompositionResult:
-    """Exact inverse artifact plus its isolated local candidate reference."""
+    """Exact inverse composition before a rollback attempt exists."""
 
-    rollback_operation_id: Sha256Digest
+    composition_id: Sha256Digest
     source_operation_id: Sha256Digest
-    inverse: MainInverseDeltaArtifact
-    inverse_artifact: ArtifactRef
+    composition: MainRollbackCompositionArtifact
+    composition_artifact: ArtifactRef
     candidate_commit: str
     candidate_tree: str
     candidate_parent_commit: str
-    candidate_ref: str
     retention_ref: str
 
     @property
     def inverse_delta_digest(self) -> Sha256Digest:
-        return self.inverse.inverse_delta_digest
+        return self.composition.inverse_delta_digest
 
     @property
     def inverse_artifact_digest(self) -> Sha256Digest:
-        return self.inverse_artifact.digest
+        return self.composition_artifact.digest
 
 
 class MainRollbackCompositionAdapter:
     """Compute one exact reverse delta from a completed main result.
 
-    ``rollback_operation_id`` is intentionally distinct from the source
-    graduation operation.  The source completion is looked up by
-    ``source_operation_id`` and checked against its canonical package digest;
-    no mutable integration ref or caller-provided completion is accepted.
+    The source completion is looked up by ``source_operation_id`` and checked
+    against its canonical package digest; no mutable integration ref or
+    caller-provided completion is accepted.  A final rollback operation is
+    deliberately not known at this stage.
     """
 
     def __init__(
@@ -101,18 +100,18 @@ class MainRollbackCompositionAdapter:
     def compose(
         self,
         *,
-        rollback_operation_id: Sha256Digest,
         source_operation_id: Sha256Digest,
         completion_package_digest: Sha256Digest,
+        rollback_operation_id: Sha256Digest | None = None,
     ) -> MainRollbackCompositionResult:
         try:
+            if rollback_operation_id is not None:
+                raise MainRollbackCompositionError(
+                    "provisional rollback operation identity is rejected; compose without it"
+                )
             package = self._load_source_completion(
                 source_operation_id, completion_package_digest
             )
-            if rollback_operation_id == source_operation_id:
-                raise MainRollbackCompositionError(
-                    "rollback operation must differ from source graduation operation"
-                )
             if package.repository_digest != self.repository_digest:
                 raise MainRollbackCompositionError("rollback repository differs from adapter")
             if package.plan.policy_epoch != self._composition.policy_epoch:
@@ -146,57 +145,69 @@ class MainRollbackCompositionAdapter:
             self._composition._verify_candidate(
                 candidate_commit, inverse_tree, result_commit
             )
-            candidate_ref = (
-                f"refs/heads/avo/main-rollback/{rollback_operation_id.removeprefix('sha256:')}"
-            )
-            if _ROLLBACK_CANDIDATE.fullmatch(candidate_ref) is None:
-                raise MainRollbackCompositionError(
-                    "rollback candidate ref is outside controller namespace"
-                )
-            retention_ref = (
-                f"refs/avo/main-rollback/{rollback_operation_id.removeprefix('sha256:')}"
-            )
-            self._retain_rollback_candidate(retention_ref, candidate_commit)
-
             # Re-observe the protected base after all derived Git objects and
-            # retention publication, immediately before durable inverse write.
+            # immediately before durable composition write.
             final = self._composition.fresh_main_base()
             if final.commit != current.commit or final.tree != current.tree:
                 raise MainRollbackCompositionError("main changed during inverse composition")
 
             inverse_values: dict[str, Any] = {
-                "schema_version": 2,
-                "operation_id": rollback_operation_id,
+                "schema_version": 1,
                 "source_operation_id": source_operation_id,
-                "repository_digest": self.repository_digest,
-                "target_ref": "refs/heads/main",
                 "completion_package_digest": completion_package_digest,
+                "repository_digest": self.repository_digest,
+                "target_ref": package.target_ref,
                 "original_delta_digest": package.delta.delta_digest,
                 "current_main_commit": current.commit,
                 "current_main_tree": current.tree,
                 "current_main_parent_commit": base_commit,
                 "inverse_changed_paths": changed_paths,
                 "inverse_tree": inverse_tree,
+                "inverse_delta_digest": "sha256:" + "0" * 64,
                 "policy_epoch": self._composition.policy_epoch,
+                "candidate_commit": candidate_commit,
+                "candidate_tree": inverse_tree,
+                "candidate_parent_commit": result_commit,
                 "deploy_performed": False,
             }
-            probe = MainInverseDeltaArtifact.model_construct(
-                **inverse_values, inverse_delta_digest="sha256:" + "0" * 64
+            probe = MainRollbackCompositionArtifact.model_construct(
+                **inverse_values, composition_id="sha256:" + "0" * 64,
+                retention_ref="refs/avo/main-rollback/" + "0" * 64,
             )
             inverse_values["inverse_delta_digest"] = canonical_digest(
-                probe.model_dump(exclude={"inverse_delta_digest"}, mode="json")
+                probe.model_dump(
+                    exclude={"inverse_delta_digest", "composition_id", "retention_ref"},
+                    mode="json",
+                )
             )
-            inverse = MainInverseDeltaArtifact.model_validate(inverse_values)
-            artifact = self.journal.record_inverse_delta(inverse)
+            probe = MainRollbackCompositionArtifact.model_construct(
+                **inverse_values,
+                composition_id="sha256:" + "0" * 64,
+                retention_ref="refs/avo/main-rollback/" + "0" * 64,
+            )
+            composition_id = main_rollback_composition_id(
+                **probe.model_dump(exclude={"composition_id", "retention_ref"}, mode="json")
+            )
+            retention_ref = (
+                f"refs/avo/main-rollback/{composition_id.removeprefix('sha256:')}"
+            )
+            self._retain_rollback_candidate(retention_ref, candidate_commit)
+            inverse_values.update(
+                {
+                    "composition_id": composition_id,
+                    "retention_ref": retention_ref,
+                }
+            )
+            composition = MainRollbackCompositionArtifact.model_validate(inverse_values)
+            artifact = self.journal.record_rollback_composition(composition)
             return MainRollbackCompositionResult(
-                rollback_operation_id=rollback_operation_id,
+                composition_id=composition_id,
                 source_operation_id=source_operation_id,
-                inverse=inverse,
-                inverse_artifact=artifact,
+                composition=composition,
+                composition_artifact=artifact,
                 candidate_commit=candidate_commit,
                 candidate_tree=inverse_tree,
                 candidate_parent_commit=result_commit,
-                candidate_ref=candidate_ref,
                 retention_ref=retention_ref,
             )
         except MainRollbackCompositionError:

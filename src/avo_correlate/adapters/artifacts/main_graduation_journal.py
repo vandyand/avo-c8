@@ -10,7 +10,7 @@ import os
 import re
 import shutil
 import tempfile
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass
 from datetime import datetime
@@ -69,6 +69,7 @@ from avo_correlate.contracts.main_graduation import (
     MainRollbackCleanupReceipt,
     MainRollbackCleanupTerminalEvidence,
     MainRollbackCompletionPackage,
+    MainRollbackCompositionArtifact,
     MainRollbackIntent,
     MainRollbackPostStateObservation,
     MainRollbackPreparationAuthorization,
@@ -323,6 +324,7 @@ _MODELS: dict[str, type[StrictModel]] = {
     "provider-post-state-observation": MainProviderPostStateObservation,
     "reconciliation": MainReconciliation,
     "inverse-delta": MainInverseDeltaArtifact,
+    "rollback-composition": MainRollbackCompositionArtifact,
     "rollback-authorization": MainRollbackAuthorization,
     "rollback-attempt-authority": MainRollbackAttemptAuthority,
     "rollback-intent": MainRollbackIntent,
@@ -358,6 +360,8 @@ _STANDARD_ROLE_SUFFIXES: dict[str, str] = {
 
 
 def _standard_artifact_role(kind: str) -> str:
+    if kind == "rollback-composition":
+        return "main-rollback-composition"
     return f"main-graduation-{_STANDARD_ROLE_SUFFIXES.get(kind, kind)}"
 
 
@@ -384,6 +388,8 @@ def _operation_id(record: Any) -> str:
         value = getattr(record, "activation_digest", None)
     if value is None:
         value = getattr(record, "submission_digest", None)
+    if value is None:
+        value = getattr(record, "composition_id", None)
     if value is None:
         raise ValueError("main graduation record lacks a SHA-256 operation identity")
     if len(value) != 71 or not _is_digest(value):
@@ -469,12 +475,32 @@ class MainGraduationJournal:
         self._read_state: ContextVar[_ReadTraversal | None] = ContextVar(
             "main_graduation_journal_read_state", default=None
         )
+        self._historical_rollback_lease_reads: ContextVar[bool] = ContextVar(
+            "main_graduation_historical_rollback_lease_reads", default=False
+        )
         if self._policy_epoch is not None:
             _check_digest(self._policy_epoch)
 
     @property
     def root(self) -> Path:
         return self._root
+
+    @contextmanager
+    def rollback_authority_recovery(self) -> Any:
+        """Allow a rollback coordinator to re-read terminal source leases.
+
+        A rollback lease necessarily replaces the transient target slot held
+        by the completed source operation.  During the coordinator's bounded
+        local authority chain, source completion and composition are still
+        checked by their immutable CAS bytes and injected authority verifier;
+        only the superseded target-slot pointer is skipped.  Ordinary reads
+        retain the target-slot assertion.
+        """
+        token = self._historical_rollback_lease_reads.set(True)
+        try:
+            yield
+        finally:
+            self._historical_rollback_lease_reads.reset(token)
 
     def delete_artifact(self, digest: str) -> bool:
         """Recovery/test seam; indexed reads still fail closed after deletion."""
@@ -544,6 +570,10 @@ class MainGraduationJournal:
                 self._require_reconciliation(cast(MainReconciliation, checked))
             elif kind == "inverse-delta":
                 self._require_inverse_source(cast(MainInverseDeltaArtifact, checked))
+            elif kind == "rollback-composition":
+                self._require_rollback_composition(
+                    cast(MainRollbackCompositionArtifact, checked)
+                )
             elif kind == "rollback-authorization":
                 self._require_rollback_intent(cast(MainRollbackAuthorization, checked))
             elif kind == "rollback-attempt-authority":
@@ -551,7 +581,8 @@ class MainGraduationJournal:
                     cast(MainRollbackAttemptAuthority, checked)
                 )
             elif kind == "rollback-intent":
-                self._require_inverse_delta(cast(MainRollbackIntent, checked))
+                intent = cast(MainRollbackIntent, checked)
+                self._require_rollback_composition_intent(intent)
             elif kind == "rollback-result":
                 self._require_rollback_result(cast(MainRollbackResultReceipt, checked))
             elif kind == "rollback-cleanup-intent":
@@ -761,12 +792,17 @@ class MainGraduationJournal:
                 self._require_reconciliation(cast(MainReconciliation, record))
             elif kind == "inverse-delta":
                 self._require_inverse_source(cast(MainInverseDeltaArtifact, record))
+            elif kind == "rollback-composition":
+                self._require_rollback_composition(
+                    cast(MainRollbackCompositionArtifact, record)
+                )
             elif kind == "rollback-authorization":
                 self._require_rollback_intent(cast(MainRollbackAuthorization, record))
             elif kind == "rollback-attempt-authority":
                 self._require_rollback_attempt_authority(cast(MainRollbackAttemptAuthority, record))
             elif kind == "rollback-intent":
-                self._require_inverse_delta(cast(MainRollbackIntent, record))
+                intent = cast(MainRollbackIntent, record)
+                self._require_rollback_composition_intent(intent)
             elif kind == "rollback-result":
                 self._require_rollback_result(cast(MainRollbackResultReceipt, record))
             elif kind == "rollback-cleanup-intent":
@@ -931,7 +967,7 @@ class MainGraduationJournal:
             "main-rollback-claimed-release-transition": package.claimed_transition_receipt,
             "main-rollback-mutation-intent": package.release_transition_intent,
             "main-rollback-mutation-receipt": package.release_transition_mutation_receipt,
-            "main-rollback-inverse-delta": package.inverse_delta,
+            "main-rollback-composition": package.composition,
             "main-rollback-authorization": package.rollback_authorization,
             "main-rollback-intent": package.rollback_intent,
             "main-rollback-result": package.rollback_result,
@@ -1032,7 +1068,7 @@ class MainGraduationJournal:
             self._require_phase_exact(
                 "mutation-fence-resolution", package.release_transition_fence_resolution
             )
-        self._require_exact("inverse-delta", package.inverse_delta)
+        self._require_exact("rollback-composition", package.composition)
         self._require_exact("rollback-authorization", package.rollback_authorization)
         self._require_exact("rollback-intent", package.rollback_intent)
         self._require_exact("rollback-attempt-authority", package.attempt_authority)
@@ -1217,7 +1253,8 @@ class MainGraduationJournal:
             self._assert_phase_identity(kind, resolution.fence_digest, resolution)
             self._verify_fence_authority(resolution, self._source_receipt(resolution))
         elif kind == "lease-evidence-record":
-            self._assert_target_lease(cast(MainLeaseEvidenceRecord, record))
+            if not self._historical_rollback_lease_reads.get():
+                self._assert_target_lease(cast(MainLeaseEvidenceRecord, record))
             self._verify_lease_authority(cast(MainLeaseEvidenceRecord, record))
         elif kind == "claimed-release-transition":
             transition = cast(MainClaimedReleaseTransitionReceipt, record)
@@ -1275,7 +1312,8 @@ class MainGraduationJournal:
                 self._assert_phase_identity(kind, resolution.fence_digest, resolution)
                 self._verify_fence_authority(resolution, self._source_receipt(resolution))
             elif kind == "lease-evidence-record":
-                self._assert_target_lease(cast(MainLeaseEvidenceRecord, record))
+                if not self._historical_rollback_lease_reads.get():
+                    self._assert_target_lease(cast(MainLeaseEvidenceRecord, record))
                 self._verify_lease_authority(cast(MainLeaseEvidenceRecord, record))
             elif kind == "claimed-release-transition":
                 transition = cast(MainClaimedReleaseTransitionReceipt, record)
@@ -3219,6 +3257,9 @@ class MainGraduationJournal:
             or preparation.rollback_intent_digest != intent.intent_digest
             or preparation.rollback_authorization_digest != auth.authorization_digest
             or preparation.package_digest != intent.completion_package_digest
+            or preparation.composition_id != intent.composition_id
+            or preparation.composition_artifact_digest
+            != intent.composition_artifact_digest
             or preparation.composition_digest != intent.inverse_delta_artifact_digest
             or preparation.base_commit != intent.base_commit
             or preparation.base_tree != intent.base_tree
@@ -3907,7 +3948,13 @@ class MainGraduationJournal:
         if prior is None:
             raise MainGraduationJournalError("rollback authorization requires durable intent")
         intent = cast(MainRollbackIntent, prior[0])
-        self._require_inverse_delta(intent)
+        if (
+            intent.composition_id != authorization.composition_id
+            or intent.composition_artifact_digest
+            != authorization.composition_artifact_digest
+        ):
+            raise MainGraduationJournalError("rollback authorization composition differs")
+        self._require_rollback_composition_intent(intent)
         if (
             authorization.source_operation_id == authorization.operation_id
             or intent.source_operation_id != authorization.source_operation_id
@@ -4051,6 +4098,59 @@ class MainGraduationJournal:
         ):
             raise MainGraduationJournalError("rollback inverse delta binding differs")
 
+    def _require_rollback_composition(
+        self, composition: MainRollbackCompositionArtifact
+    ) -> None:
+        """Require a pre-attempt inverse composition to match one completion."""
+
+        source_prior = self._read("completion", composition.source_operation_id)
+        if source_prior is None:
+            raise MainGraduationJournalError(
+                "rollback composition requires durable source completion"
+            )
+        source = cast(MainCompletionPackage, source_prior[0])
+        if (
+            composition.completion_package_digest != canonical_digest(source)
+            or composition.original_delta_digest != source.delta.delta_digest
+            or composition.current_main_commit != source.reconciliation.main_commit
+            or composition.current_main_tree != source.reconciliation.main_tree
+            or composition.current_main_parent_commit
+            != source.reconciliation.main_parents[0]
+            or composition.current_main_parent_commit != source.composition.base_commit
+            or composition.inverse_changed_paths != source.delta.changed_paths
+            or composition.inverse_tree != source.composition.base_tree
+            or composition.repository_digest != source.repository_digest
+            or composition.target_ref != source.target_ref
+            or composition.policy_epoch != source.plan.policy_epoch
+            or composition.candidate_parent_commit
+            != composition.current_main_commit
+            or composition.candidate_commit == composition.current_main_commit
+            or composition.candidate_tree != composition.inverse_tree
+        ):
+            raise MainGraduationJournalError("rollback composition source binding differs")
+
+    def _require_rollback_composition_intent(self, intent: MainRollbackIntent) -> None:
+        prior = self._read("rollback-composition", intent.composition_id)
+        if prior is None:
+            raise MainGraduationJournalError("rollback intent requires durable composition")
+        composition = cast(MainRollbackCompositionArtifact, prior[0])
+        if (
+            intent.composition_artifact_digest != canonical_digest(composition)
+            or intent.source_operation_id != composition.source_operation_id
+            or intent.completion_package_digest != composition.completion_package_digest
+            or intent.original_delta_digest != composition.original_delta_digest
+            or intent.current_main_commit != composition.current_main_commit
+            or intent.current_main_tree != composition.current_main_tree
+            or intent.current_main_parent_commit != composition.current_main_parent_commit
+            or intent.inverse_delta_digest != composition.inverse_delta_digest
+            or intent.inverse_tree != composition.inverse_tree
+            or intent.candidate_commit != composition.candidate_commit
+            or intent.candidate_tree != composition.candidate_tree
+            or intent.candidate_parent_commit != composition.candidate_parent_commit
+            or intent.policy_epoch != composition.policy_epoch
+        ):
+            raise MainGraduationJournalError("rollback intent composition binding differs")
+
     def _require_rollback_lease_for_intent(self, intent: MainRollbackIntent) -> None:
         prior = self._read("lease-evidence-record", intent.operation_id)
         if prior is None:
@@ -4079,34 +4179,43 @@ class MainGraduationJournal:
                 "rollback attempt authority conflicts with graduation authority"
             )
         source_prior = self._read("completion", attempt.source_operation_id)
-        inverse_prior = self._read("inverse-delta", attempt.operation_id)
+        composition_prior = self._read("rollback-composition", attempt.composition_id)
         auth_prior = self._read("rollback-authorization", attempt.operation_id)
         intent_prior = self._read("rollback-intent", attempt.operation_id)
-        if any(value is None for value in (source_prior, inverse_prior, auth_prior, intent_prior)):
+        if (
+            source_prior is None
+            or auth_prior is None
+            or intent_prior is None
+            or composition_prior is None
+        ):
             raise MainGraduationJournalError(
-                "rollback attempt authority requires durable source, inverse, intent, "
+                "rollback attempt authority requires durable source, composition, intent, "
                 "and authorization"
             )
         assert source_prior is not None
-        assert inverse_prior is not None
         assert auth_prior is not None
         assert intent_prior is not None
         source = cast(MainCompletionPackage, source_prior[0])
-        inverse = cast(MainInverseDeltaArtifact, inverse_prior[0])
+        composition = cast(MainRollbackCompositionArtifact, composition_prior[0])
+        expected_inverse_digest = composition.inverse_delta_digest
+        expected_artifact_digest = canonical_digest(composition)
         auth = cast(MainRollbackAuthorization, auth_prior[0])
         intent = cast(MainRollbackIntent, intent_prior[0])
         if (
             attempt.repository_digest != source.repository_digest
             or attempt.target_ref != source.target_ref
             or attempt.completion_package_digest != canonical_digest(source)
-            or attempt.inverse_delta_digest != inverse.inverse_delta_digest
-            or attempt.inverse_delta_artifact_digest != canonical_digest(inverse)
+            or attempt.composition_id != composition.composition_id
+            or attempt.composition_artifact_digest != expected_artifact_digest
+            or attempt.inverse_delta_digest != expected_inverse_digest
+            or attempt.inverse_delta_artifact_digest != expected_artifact_digest
             or attempt.current_main_commit != auth.current_main_commit
             or attempt.current_main_tree != auth.current_main_tree
             or attempt.current_main_parent_commit != auth.current_main_parent_commit
-            or attempt.original_delta_digest != inverse.original_delta_digest
+            or attempt.original_delta_digest != composition.original_delta_digest
             or attempt.original_delta_digest != source.delta.delta_digest
-            or attempt.inverse_tree != inverse.inverse_tree
+            or attempt.inverse_tree
+            != composition.inverse_tree
             or attempt.candidate_commit != intent.candidate_commit
             or attempt.candidate_tree != intent.candidate_tree
             or attempt.candidate_parent_commit != intent.candidate_parent_commit
@@ -4226,19 +4335,22 @@ class MainGraduationJournal:
     def _require_rollback_result(self, result: MainRollbackResultReceipt) -> None:
         intent_prior = self._read("rollback-intent", result.operation_id)
         auth_prior = self._read("rollback-authorization", result.operation_id)
-        inverse_prior = self._read("inverse-delta", result.operation_id)
+        composition_prior = self._read("rollback-composition", result.composition_id)
         source_prior = self._read("completion", result.source_operation_id)
-        if any(value is None for value in (intent_prior, auth_prior, inverse_prior, source_prior)):
+        if any(
+            value is None
+            for value in (intent_prior, auth_prior, composition_prior, source_prior)
+        ):
             raise MainGraduationJournalError(
-                "rollback result requires durable intent, authorization, inverse, and source"
+                "rollback result requires durable intent, authorization, composition, and source"
             )
         assert intent_prior is not None
         assert auth_prior is not None
-        assert inverse_prior is not None
+        assert composition_prior is not None
         assert source_prior is not None
         intent = cast(MainRollbackIntent, intent_prior[0])
         auth = cast(MainRollbackAuthorization, auth_prior[0])
-        inverse = cast(MainInverseDeltaArtifact, inverse_prior[0])
+        composition = cast(MainRollbackCompositionArtifact, composition_prior[0])
         source = cast(MainCompletionPackage, source_prior[0])
         if self._policy_epoch is not None and auth.policy_epoch != self._policy_epoch:
             raise MainGraduationJournalError("rollback result policy epoch is stale")
@@ -4248,10 +4360,12 @@ class MainGraduationJournal:
             or result.authorization_digest != auth.authorization_digest
             or result.source_operation_id != source.operation_id
             or result.completion_package_digest != canonical_digest(source)
-            or result.inverse_delta_digest != inverse.inverse_delta_digest
-            or result.inverse_delta_artifact_digest != canonical_digest(inverse)
+            or result.composition_id != composition.composition_id
+            or result.composition_artifact_digest != canonical_digest(composition)
+            or result.inverse_delta_digest != composition.inverse_delta_digest
+            or result.inverse_delta_artifact_digest != canonical_digest(composition)
             or result.current_main_commit != auth.current_main_commit
-            or result.inverse_tree != inverse.inverse_tree
+            or result.inverse_tree != composition.inverse_tree
             or result.repository_digest != intent.repository_digest
             or result.target_ref != intent.target_ref
             or result.repository_digest != source.repository_digest
@@ -4264,7 +4378,7 @@ class MainGraduationJournal:
             raise MainGraduationJournalError("rollback result authority binding differs")
         if result.outcome in {"applied", "already_applied"} and (
             result.result_commit is None
-            or result.result_tree != inverse.inverse_tree
+            or result.result_tree != composition.inverse_tree
             or result.result_parent_commit != result.current_main_commit
             or result.result_parents != [result.current_main_commit]
             or result.result_commit == result.current_main_commit
@@ -5788,6 +5902,19 @@ class MainGraduationJournal:
 
     def read_inverse_delta(self, operation_id: str) -> tuple[StrictModel, ArtifactRef] | None:
         return self._read("inverse-delta", operation_id)
+
+    def record_rollback_composition(
+        self, record: MainRollbackCompositionArtifact
+    ) -> ArtifactRef:
+        return self._record("rollback-composition", record)
+
+    def read_rollback_composition(
+        self, composition_id: str
+    ) -> tuple[MainRollbackCompositionArtifact, ArtifactRef] | None:
+        return cast(
+            tuple[MainRollbackCompositionArtifact, ArtifactRef] | None,
+            self._read("rollback-composition", composition_id),
+        )
 
     def record_rollback_intent(self, record: MainRollbackIntent) -> ArtifactRef:
         return self._record("rollback-intent", record)

@@ -11,7 +11,7 @@ interrupted invocation.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal, cast
@@ -27,10 +27,10 @@ from avo_correlate.adapters.git.main_rollback_composition import (
 from avo_correlate.contracts.base import ArtifactRef, Sha256Digest
 from avo_correlate.contracts.main_graduation import (
     MainCompletionPackage,
-    MainInverseDeltaArtifact,
     MainReleaseIssuerBinding,
     MainRollbackAttemptAuthority,
     MainRollbackAuthorization,
+    MainRollbackCompositionArtifact,
     MainRollbackIntent,
     MainRollbackPreparationAuthorization,
     main_rollback_operation_id,
@@ -62,7 +62,7 @@ class MainRollbackAuthorityResult:
     operation_id: Sha256Digest
     state: Literal["prepared"]
     lease: MainLeaseEvidenceRecord
-    inverse: MainInverseDeltaArtifact
+    composition: MainRollbackCompositionArtifact
     authorization: MainRollbackAuthorization
     intent: MainRollbackIntent
     attempt_authority: MainRollbackAttemptAuthority
@@ -74,6 +74,27 @@ class MainRollbackAuthorityResult:
         """Compatibility alias for callers that call durable refs ``refs``."""
 
         return self.artifact_refs
+
+
+@dataclass(frozen=True, slots=True)
+class MainRollbackAuthorityPreview:
+    """Final operation identity callers use to acquire the durable lease."""
+
+    operation_id: Sha256Digest
+    candidate_ref: str
+    composition_id: Sha256Digest
+
+
+@dataclass(frozen=True, slots=True)
+class MainRollbackCurrentAuthority:
+    """Fresh controller-owned protected-main and policy observation."""
+
+    current_main_commit: str
+    current_main_tree: str
+    current_main_parent_commit: str
+    policy_epoch: Sha256Digest
+    controller_config_digest: Sha256Digest
+    release_issuer_binding: MainReleaseIssuerBinding
 
 
 def _digest_record(model: Any, values: Mapping[str, object], field: str) -> Any:
@@ -104,12 +125,58 @@ class MainRollbackAuthority:
         policy_epoch: Sha256Digest | None = None,
         controller_config_digest: Sha256Digest | None = None,
         release_issuer_binding: MainReleaseIssuerBinding | None = None,
+        current_authority_reader: Callable[[], MainRollbackCurrentAuthority] | None = None,
+        lease_acquirer: Callable[[Sha256Digest, str, str], MainLeaseEvidenceRecord]
+        | None = None,
     ) -> None:
         self.journal = journal
         self.clock = clock
         self.policy_epoch = policy_epoch
         self.controller_config_digest = controller_config_digest
         self.release_issuer_binding = release_issuer_binding
+        self.current_authority_reader = current_authority_reader
+        self.lease_acquirer = lease_acquirer
+
+    def preview(
+        self,
+        *,
+        source_operation_id: Sha256Digest,
+        attempt_nonce: str,
+        composition: MainRollbackCompositionResult,
+        policy_epoch: Sha256Digest | None = None,
+        controller_config_digest: Sha256Digest | None = None,
+        release_issuer_binding: MainReleaseIssuerBinding | None = None,
+    ) -> MainRollbackAuthorityPreview:
+        """Derive the final identity before lease acquisition or any writes."""
+
+        source = self._source(source_operation_id)
+        composition_artifact = self._composition(composition, source_operation_id)
+        policy = policy_epoch or self.policy_epoch or source.plan.policy_epoch
+        config = (
+            controller_config_digest
+            or self.controller_config_digest
+            or source.release_issuer_binding.controller_config_digest
+        )
+        binding = (
+            release_issuer_binding
+            or self.release_issuer_binding
+            or source.release_issuer_binding
+        )
+        self._validate_current_authority(source, policy, config, binding)
+        operation_id = self._derive_operation_id(
+            source_operation_id=source_operation_id,
+            attempt_nonce=attempt_nonce,
+            source=source,
+            composition=composition_artifact,
+            policy_epoch=policy,
+            controller_config_digest=config,
+            binding=binding,
+        )
+        return MainRollbackAuthorityPreview(
+            operation_id=operation_id,
+            candidate_ref=f"refs/heads/avo/main-rollback/{operation_id.removeprefix('sha256:')}",
+            composition_id=composition_artifact.composition_id,
+        )
 
     def prepare(
         self,
@@ -133,7 +200,7 @@ class MainRollbackAuthority:
 
         try:
             source = self._source(source_operation_id)
-            inverse = self._inverse(composition, source_operation_id)
+            composition_artifact = self._composition(composition, source_operation_id)
             policy = policy_epoch or self.policy_epoch or source.plan.policy_epoch
             config = (
                 controller_config_digest
@@ -150,48 +217,55 @@ class MainRollbackAuthority:
                 source_operation_id=source_operation_id,
                 attempt_nonce=attempt_nonce,
                 source=source,
-                inverse=inverse,
-                composition=composition,
+                composition=composition_artifact,
                 policy_epoch=policy,
                 controller_config_digest=config,
                 binding=binding,
             )
-            if composition.rollback_operation_id != operation_id:
-                raise MainRollbackAuthorityError(
-                    "verified inverse composition operation identity differs"
-                )
-            durable_lease = self._durable_lease(operation_id, lease)
+            # Once the intent exists, recovery is strictly local adoption.  It
+            # must remain possible after the transient lease expires: no new
+            # provider dispatch is authorized by replaying local records.
+            recovery = getattr(self.journal, "rollback_authority_recovery", None)
+            if callable(recovery):
+                with recovery():
+                    prior_intent = self.journal.read_rollback_intent(operation_id)
+                    prior_auth = self.journal.read_rollback_authorization(operation_id)
+            else:
+                prior_intent = self.journal.read_rollback_intent(operation_id)
+                prior_auth = self.journal.read_rollback_authorization(operation_id)
+            if prior_intent is None and lease is None and self.lease_acquirer is not None:
+                try:
+                    lease = self.lease_acquirer(
+                        operation_id, source.repository_digest, source.target_ref
+                    )
+                except Exception as exc:
+                    raise MainRollbackAuthorityError(
+                        "rollback lease acquisition was not durably confirmed"
+                    ) from exc
+            durable_lease = self._durable_lease(
+                operation_id, lease, require_active=prior_intent is None
+            )
             now = self._trusted_now()
-            if not (durable_lease.acquired_at <= now < durable_lease.expires_at):
+            if prior_intent is None and not (
+                durable_lease.acquired_at <= now < durable_lease.expires_at
+            ):
                 raise MainRollbackAuthorityError("rollback lease is expired or not yet active")
-            # A crash after intent persistence must replay the original
-            # timestamp.  Rebuilding it from the current clock would turn an
-            # otherwise exact retry into a record conflict.
-            prior_intent = self.journal.read_rollback_intent(operation_id)
-            prior_auth = self.journal.read_rollback_authorization(operation_id)
+            if prior_intent is None:
+                self._revalidate_after_lease(
+                    source, composition_artifact, policy, config, binding
+                )
             authority_at = now
             if prior_auth is not None:
                 authority_at = cast(MainRollbackAuthorization, prior_auth[0]).authorized_at
             elif prior_intent is not None:
                 authority_at = cast(MainRollbackIntent, prior_intent[0]).recorded_at
 
-            candidate_ref = composition.candidate_ref
-            if (
-                inverse.operation_id != operation_id
-                or inverse.repository_digest != source.repository_digest
-            ):
-                raise MainRollbackAuthorityError("inverse composition identity differs")
-            expected_ref = f"refs/heads/avo/main-rollback/{operation_id.removeprefix('sha256:')}"
-            if candidate_ref != expected_ref:
-                raise MainRollbackAuthorityError(
-                    "inverse candidate ref is outside controller namespace"
-                )
-
-            inverse_ref = self._ensure_inverse(inverse)
+            candidate_ref = f"refs/heads/avo/main-rollback/{operation_id.removeprefix('sha256:')}"
+            composition_ref = self._ensure_composition(composition_artifact)
             auth = self._build_authorization(
                 operation_id=operation_id,
                 source=source,
-                inverse=inverse,
+                composition=composition_artifact,
                 lease=durable_lease,
                 policy_epoch=policy,
                 controller_config_digest=config,
@@ -201,8 +275,8 @@ class MainRollbackAuthority:
             intent = self._build_intent(
                 operation_id=operation_id,
                 source=source,
-                inverse=inverse,
-                composition=composition,
+                composition=composition_artifact,
+                candidate_ref=candidate_ref,
                 lease=durable_lease,
                 policy_epoch=policy,
                 authorization=auth,
@@ -220,8 +294,8 @@ class MainRollbackAuthority:
             attempt = self._build_attempt(
                 operation_id=operation_id,
                 source=source,
-                inverse=inverse,
-                composition=composition,
+                composition=composition_artifact,
+                candidate_ref=candidate_ref,
                 lease=durable_lease,
                 policy_epoch=policy,
                 controller_config_digest=config,
@@ -237,8 +311,8 @@ class MainRollbackAuthority:
             preparation = self._build_preparation(
                 operation_id=operation_id,
                 source=source,
-                inverse=inverse,
-                composition=composition,
+                composition=composition_artifact,
+                candidate_ref=candidate_ref,
                 lease=durable_lease,
                 policy_epoch=policy,
                 authorization=auth,
@@ -258,14 +332,14 @@ class MainRollbackAuthority:
                 operation_id=operation_id,
                 state="prepared",
                 lease=cast(MainLeaseEvidenceRecord, lease_loaded[0]),
-                inverse=inverse,
+                composition=composition_artifact,
                 authorization=auth,
                 intent=intent,
                 attempt_authority=attempt,
                 preparation_authorization=preparation,
                 artifact_refs={
                     "lease-evidence-record": lease_loaded[1],
-                    "inverse-delta": inverse_ref,
+                    "rollback-composition": composition_ref,
                     "rollback-intent": intent_ref,
                     "rollback-authorization": auth_ref,
                     "rollback-attempt-authority": attempt_ref,
@@ -291,7 +365,12 @@ class MainRollbackAuthority:
     prepare_authority = prepare
 
     def _source(self, operation_id: Sha256Digest) -> MainCompletionPackage:
-        loaded = self.journal.read_completion(operation_id)
+        recovery = getattr(self.journal, "rollback_authority_recovery", None)
+        if callable(recovery):
+            with recovery():
+                loaded = self.journal.read_completion(operation_id)
+        else:
+            loaded = self.journal.read_completion(operation_id)
         if loaded is None:
             raise MainRollbackAuthorityError("source completion is not durably recorded")
         source = cast(MainCompletionPackage, loaded[0])
@@ -302,25 +381,33 @@ class MainRollbackAuthority:
         return source
 
     @staticmethod
-    def _inverse(
+    def _composition(
         composition: MainRollbackCompositionResult, source_operation_id: Sha256Digest
-    ) -> MainInverseDeltaArtifact:
-        inverse = cast(MainInverseDeltaArtifact, composition.inverse)
-        if inverse.source_operation_id != source_operation_id:
-            raise MainRollbackAuthorityError("inverse source operation differs")
+    ) -> MainRollbackCompositionArtifact:
+        artifact = cast(MainRollbackCompositionArtifact, composition.composition)
+        if artifact.source_operation_id != source_operation_id:
+            raise MainRollbackAuthorityError("composition source operation differs")
         if composition.source_operation_id != source_operation_id:
             raise MainRollbackAuthorityError("composition source operation differs")
-        if composition.inverse_artifact.digest != canonical_digest(inverse):
-            raise MainRollbackAuthorityError("inverse artifact reference digest differs")
-        return inverse
+        if composition.composition_artifact.digest != canonical_digest(artifact):
+            raise MainRollbackAuthorityError("composition artifact reference digest differs")
+        if artifact.composition_id != composition.composition_id:
+            raise MainRollbackAuthorityError("composition identity differs")
+        return artifact
 
     def _durable_lease(
-        self, operation_id: Sha256Digest, supplied: MainLeaseEvidenceRecord | None
+        self,
+        operation_id: Sha256Digest,
+        supplied: MainLeaseEvidenceRecord | None,
+        *,
+        require_active: bool,
     ) -> MainLeaseEvidenceRecord:
         loaded = self.journal.read_lease_evidence_record(operation_id)
         if loaded is None:
             raise MainRollbackAuthorityError("fresh rollback lease is not durably recorded")
         durable = cast(MainLeaseEvidenceRecord, loaded[0])
+        if durable.operation_id != operation_id or durable.target_ref != "refs/heads/main":
+            raise MainRollbackAuthorityError("rollback lease target binding differs")
         if supplied is not None and canonical_bytes(supplied) != canonical_bytes(durable):
             raise MainRollbackAuthorityError("caller lease differs from durable rollback lease")
         requested_at = self._trusted_now()
@@ -331,40 +418,61 @@ class MainRollbackAuthority:
             lease_digest=durable.lease_digest,
             requested_at=requested_at,
         )
-        checker = getattr(self.journal, "assert_lease_evidence", None)
-        if not callable(checker):
-            raise MainRollbackAuthorityError("journal cannot authenticate target-scoped lease")
-        try:
-            checked = checker(request)
-        except (
-            MainGraduationJournalError,
-            MainGraduationRecordConflictError,
-            ValueError,
-        ) as exc:
-            raise MainRollbackAuthorityError(
-                "rollback lease is not current target-scoped authority"
-            ) from exc
+        if require_active:
+            checker = getattr(self.journal, "assert_lease_evidence", None)
+            if not callable(checker):
+                raise MainRollbackAuthorityError(
+                    "journal cannot authenticate target-scoped lease"
+                )
+            try:
+                checked = checker(request)
+            except (
+                MainGraduationJournalError,
+                MainGraduationRecordConflictError,
+                ValueError,
+            ) as exc:
+                raise MainRollbackAuthorityError(
+                    "rollback lease is not current target-scoped authority"
+                ) from exc
+        else:
+            # The public active-reader intentionally rejects expired leases.
+            # The durable CAS read above has already authenticated the record;
+            # recovery uses it only to adopt local records and never as
+            # authority for a new stage.
+            checked = durable
         if canonical_bytes(checked) != canonical_bytes(durable):
             raise MainRollbackAuthorityError("lease verifier returned a different durable record")
         return durable
 
-    def _ensure_inverse(self, inverse: MainInverseDeltaArtifact) -> ArtifactRef:
-        loaded = self.journal.read_inverse_delta(inverse.operation_id)
+    def _ensure_composition(
+        self, composition: MainRollbackCompositionArtifact
+    ) -> ArtifactRef:
+        recovery = getattr(self.journal, "rollback_authority_recovery", None)
+        context = recovery() if callable(recovery) else None
+        if context is None:
+            return self._ensure_composition_unscoped(composition)
+        with context:
+            return self._ensure_composition_unscoped(composition)
+
+    def _ensure_composition_unscoped(
+        self, composition: MainRollbackCompositionArtifact
+    ) -> ArtifactRef:
+        loaded = self.journal.read_rollback_composition(composition.composition_id)
         if loaded is not None:
-            if canonical_bytes(loaded[0]) != canonical_bytes(inverse):
+            if canonical_bytes(loaded[0]) != canonical_bytes(composition):
                 raise MainRollbackAuthorityError(
-                    "durable inverse differs from verified composition"
+                    "durable rollback composition differs from verified composition"
                 )
             return loaded[1]
         try:
-            return self.journal.record_inverse_delta(inverse)
+            return self.journal.record_rollback_composition(composition)
         except (
             MainGraduationJournalError,
             MainGraduationRecordConflictError,
             ValueError,
         ) as exc:
             raise MainRollbackAuthorityError(
-                "inverse composition was not durably recorded"
+                "rollback composition was not durably recorded"
             ) from exc
 
     def _validate_current_authority(
@@ -384,32 +492,70 @@ class MainRollbackAuthority:
         if binding.app_id == 15368:
             raise MainRollbackAuthorityError("validation App 15368 cannot issue rollback")
 
+    def _revalidate_after_lease(
+        self,
+        source: MainCompletionPackage,
+        composition: MainRollbackCompositionArtifact,
+        policy: Sha256Digest,
+        config: Sha256Digest,
+        binding: MainReleaseIssuerBinding,
+    ) -> None:
+        reader = self.current_authority_reader
+        if reader is None:
+            raise MainRollbackAuthorityError(
+                "current rollback authority reader is required before first intent"
+            )
+        try:
+            current = reader()
+        except Exception as exc:
+            raise MainRollbackAuthorityError(
+                "current rollback authority could not be revalidated"
+            ) from exc
+        if (
+            current.current_main_commit != composition.current_main_commit
+            or current.current_main_tree != composition.current_main_tree
+            or current.current_main_parent_commit != composition.current_main_parent_commit
+            or current.policy_epoch != policy
+            or current.controller_config_digest != config
+            or current.release_issuer_binding != binding
+        ):
+            raise MainRollbackAuthorityError(
+                "current rollback protected-main authority drifted after lease"
+            )
+        self._validate_current_authority(
+            source,
+            current.policy_epoch,
+            current.controller_config_digest,
+            current.release_issuer_binding,
+        )
+
     @staticmethod
     def _derive_operation_id(
         *,
         source_operation_id: Sha256Digest,
         attempt_nonce: str,
         source: MainCompletionPackage,
-        inverse: MainInverseDeltaArtifact,
-        composition: MainRollbackCompositionResult,
+        composition: MainRollbackCompositionArtifact,
         policy_epoch: Sha256Digest,
         controller_config_digest: Sha256Digest,
         binding: MainReleaseIssuerBinding,
     ) -> Sha256Digest:
         identity = {
-            "schema_version": 1,
+            "schema_version": 2,
             "attempt_nonce": attempt_nonce,
             "source_operation_id": source_operation_id,
             "completion_package_digest": canonical_digest(source),
             "repository_digest": source.repository_digest,
             "target_ref": source.target_ref,
-            "current_main_commit": inverse.current_main_commit,
-            "current_main_tree": inverse.current_main_tree,
-            "current_main_parent_commit": inverse.current_main_parent_commit,
-            "original_delta_digest": inverse.original_delta_digest,
-            "inverse_delta_digest": inverse.inverse_delta_digest,
-            "inverse_delta_artifact_digest": canonical_digest(inverse),
-            "inverse_tree": inverse.inverse_tree,
+            "composition_id": composition.composition_id,
+            "composition_artifact_digest": canonical_digest(composition),
+            "current_main_commit": composition.current_main_commit,
+            "current_main_tree": composition.current_main_tree,
+            "current_main_parent_commit": composition.current_main_parent_commit,
+            "original_delta_digest": composition.original_delta_digest,
+            "inverse_delta_digest": composition.inverse_delta_digest,
+            "inverse_delta_artifact_digest": canonical_digest(composition),
+            "inverse_tree": composition.inverse_tree,
             "candidate_commit": composition.candidate_commit,
             "candidate_tree": composition.candidate_tree,
             "candidate_parent_commit": composition.candidate_parent_commit,
@@ -427,7 +573,7 @@ class MainRollbackAuthority:
         *,
         operation_id: Sha256Digest,
         source: MainCompletionPackage,
-        inverse: MainInverseDeltaArtifact,
+        composition: MainRollbackCompositionArtifact,
         lease: MainLeaseEvidenceRecord,
         policy_epoch: Sha256Digest,
         controller_config_digest: Sha256Digest,
@@ -438,15 +584,17 @@ class MainRollbackAuthority:
             "operation_id": operation_id,
             "source_operation_id": source.operation_id,
             "completion_package_digest": canonical_digest(source),
-            "original_delta_digest": inverse.original_delta_digest,
             "repository_digest": source.repository_digest,
             "target_ref": source.target_ref,
-            "current_main_commit": inverse.current_main_commit,
-            "current_main_tree": inverse.current_main_tree,
-            "current_main_parent_commit": inverse.current_main_parent_commit,
-            "inverse_delta_digest": inverse.inverse_delta_digest,
-            "inverse_delta_artifact_digest": canonical_digest(inverse),
-            "inverse_tree": inverse.inverse_tree,
+            "original_delta_digest": composition.original_delta_digest,
+            "current_main_commit": composition.current_main_commit,
+            "current_main_tree": composition.current_main_tree,
+            "current_main_parent_commit": composition.current_main_parent_commit,
+            "inverse_delta_digest": composition.inverse_delta_digest,
+            "inverse_delta_artifact_digest": canonical_digest(composition),
+            "inverse_tree": composition.inverse_tree,
+            "composition_id": composition.composition_id,
+            "composition_artifact_digest": canonical_digest(composition),
             "lease_identity": lease.owner,
             "lease_digest": lease.lease_digest,
             "lease_epoch_digest": lease.lease_epoch_digest,
@@ -467,8 +615,8 @@ class MainRollbackAuthority:
         *,
         operation_id: Sha256Digest,
         source: MainCompletionPackage,
-        inverse: MainInverseDeltaArtifact,
-        composition: MainRollbackCompositionResult,
+        composition: MainRollbackCompositionArtifact,
+        candidate_ref: str,
         lease: MainLeaseEvidenceRecord,
         policy_epoch: Sha256Digest,
         authorization: MainRollbackAuthorization,
@@ -478,19 +626,23 @@ class MainRollbackAuthority:
             "operation_id": operation_id,
             "source_operation_id": source.operation_id,
             "completion_package_digest": canonical_digest(source),
-            "original_delta_digest": inverse.original_delta_digest,
-            "inverse_delta_digest": inverse.inverse_delta_digest,
-            "inverse_delta_artifact_digest": canonical_digest(inverse),
-            "base_commit": inverse.current_main_commit,
-            "base_tree": inverse.current_main_tree,
-            "current_main_commit": inverse.current_main_commit,
-            "current_main_tree": inverse.current_main_tree,
-            "current_main_parent_commit": inverse.current_main_parent_commit,
+            "repository_digest": source.repository_digest,
+            "target_ref": source.target_ref,
+            "original_delta_digest": composition.original_delta_digest,
+            "inverse_delta_digest": composition.inverse_delta_digest,
+            "inverse_delta_artifact_digest": canonical_digest(composition),
+            "base_commit": composition.current_main_commit,
+            "base_tree": composition.current_main_tree,
+            "current_main_commit": composition.current_main_commit,
+            "current_main_tree": composition.current_main_tree,
+            "current_main_parent_commit": composition.current_main_parent_commit,
             "candidate_commit": composition.candidate_commit,
             "candidate_tree": composition.candidate_tree,
             "candidate_parent_commit": composition.candidate_parent_commit,
-            "candidate_ref": composition.candidate_ref,
-            "inverse_tree": inverse.inverse_tree,
+            "candidate_ref": candidate_ref,
+            "inverse_tree": composition.inverse_tree,
+            "composition_id": composition.composition_id,
+            "composition_artifact_digest": canonical_digest(composition),
             "lease_identity": lease.owner,
             "lease_digest": lease.lease_digest,
             "lease_epoch_digest": lease.lease_epoch_digest,
@@ -505,8 +657,8 @@ class MainRollbackAuthority:
         *,
         operation_id: Sha256Digest,
         source: MainCompletionPackage,
-        inverse: MainInverseDeltaArtifact,
-        composition: MainRollbackCompositionResult,
+        composition: MainRollbackCompositionArtifact,
+        candidate_ref: str,
         lease: MainLeaseEvidenceRecord,
         policy_epoch: Sha256Digest,
         controller_config_digest: Sha256Digest,
@@ -520,17 +672,19 @@ class MainRollbackAuthority:
             "completion_package_digest": canonical_digest(source),
             "repository_digest": source.repository_digest,
             "target_ref": source.target_ref,
-            "current_main_commit": inverse.current_main_commit,
-            "current_main_tree": inverse.current_main_tree,
-            "current_main_parent_commit": inverse.current_main_parent_commit,
-            "original_delta_digest": inverse.original_delta_digest,
-            "inverse_delta_digest": inverse.inverse_delta_digest,
-            "inverse_delta_artifact_digest": canonical_digest(inverse),
-            "inverse_tree": inverse.inverse_tree,
+            "current_main_commit": composition.current_main_commit,
+            "current_main_tree": composition.current_main_tree,
+            "current_main_parent_commit": composition.current_main_parent_commit,
+            "original_delta_digest": composition.original_delta_digest,
+            "inverse_delta_digest": composition.inverse_delta_digest,
+            "inverse_delta_artifact_digest": canonical_digest(composition),
+            "inverse_tree": composition.inverse_tree,
             "candidate_commit": composition.candidate_commit,
             "candidate_tree": composition.candidate_tree,
             "candidate_parent_commit": composition.candidate_parent_commit,
-            "candidate_ref": composition.candidate_ref,
+            "candidate_ref": candidate_ref,
+            "composition_id": composition.composition_id,
+            "composition_artifact_digest": canonical_digest(composition),
             "policy_epoch": policy_epoch,
             "controller_config_digest": controller_config_digest,
             "release_issuer_identity": binding.issuer_id,
@@ -538,7 +692,7 @@ class MainRollbackAuthority:
             "issuer_isolation_digest": binding.isolation_digest,
             "deploy_performed": False,
         }
-        probe = MainRollbackAttemptAuthority.model_construct(
+        probe = cast(Any, MainRollbackAttemptAuthority).model_construct(
             **values, manifest_digest=_ZERO
         )
         values["operation_id"] = main_rollback_operation_id(
@@ -548,7 +702,7 @@ class MainRollbackAuthority:
         )
         if values["operation_id"] != operation_id:
             raise MainRollbackAuthorityError("rollback attempt identity derivation drift")
-        attempt_probe = MainRollbackAttemptAuthority.model_construct(
+        attempt_probe = cast(Any, MainRollbackAttemptAuthority).model_construct(
             **values, manifest_digest=_ZERO
         )
         values["manifest_digest"] = canonical_digest(
@@ -561,8 +715,8 @@ class MainRollbackAuthority:
         *,
         operation_id: Sha256Digest,
         source: MainCompletionPackage,
-        inverse: MainInverseDeltaArtifact,
-        composition: MainRollbackCompositionResult,
+        composition: MainRollbackCompositionArtifact,
+        candidate_ref: str,
         lease: MainLeaseEvidenceRecord,
         policy_epoch: Sha256Digest,
         authorization: MainRollbackAuthorization,
@@ -574,14 +728,16 @@ class MainRollbackAuthority:
             "rollback_authorization_digest": authorization.authorization_digest,
             "rollback_intent_digest": intent.intent_digest,
             "package_digest": canonical_digest(source),
-            "composition_digest": canonical_digest(inverse),
+            "composition_digest": canonical_digest(composition),
+            "composition_id": composition.composition_id,
+            "composition_artifact_digest": canonical_digest(composition),
             "repository_digest": source.repository_digest,
             "target_ref": source.target_ref,
-            "base_commit": inverse.current_main_commit,
-            "base_tree": inverse.current_main_tree,
+            "base_commit": composition.current_main_commit,
+            "base_tree": composition.current_main_tree,
             "candidate_commit": composition.candidate_commit,
             "candidate_tree": composition.candidate_tree,
-            "candidate_ref": composition.candidate_ref,
+            "candidate_ref": candidate_ref,
             "lease_identity": lease.owner,
             "lease_digest": lease.lease_digest,
             "lease_epoch_digest": lease.lease_epoch_digest,
@@ -613,12 +769,21 @@ class MainRollbackAuthority:
         prior = getattr(writer, "__self__", None)
         reader = getattr(prior, reader_name, None)
         if callable(reader):
-            existing = reader(operation_id)
+            recovery = getattr(prior, "rollback_authority_recovery", None)
+            if callable(recovery):
+                with recovery():
+                    existing = reader(operation_id)
+            else:
+                existing = reader(operation_id)
             if existing is not None:
                 if canonical_bytes(existing[0]) != canonical_bytes(record):
                     raise MainRollbackAuthorityError(f"conflicting durable {kind}")
                 return cast(ArtifactRef, existing[1])
         try:
+            recovery = getattr(prior, "rollback_authority_recovery", None)
+            if callable(recovery):
+                with recovery():
+                    return cast(ArtifactRef, writer(record))
             return cast(ArtifactRef, writer(record))
         except MainGraduationRecordConflictError as exc:
             raise MainRollbackAuthorityError(f"conflicting durable {kind}") from exc

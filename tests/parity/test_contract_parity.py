@@ -27,9 +27,16 @@ def test_checked_in_schemas_match_generation(tmp_path: Path) -> None:
         "MainQueueObservation.v1.schema.json",
         "MainGraduationIntent.v1.schema.json",
         "MainInverseDeltaArtifact.v1.schema.json",
+        "MainInverseDeltaArtifact.v2.schema.json",
         "MainRollbackAuthorization.v1.schema.json",
+        "MainRollbackAuthorization.v2.schema.json",
+        "MainRollbackAttemptAuthority.v1.schema.json",
+        "MainRollbackCompletionPackage.v2.schema.json",
         "MainRollbackIntent.v1.schema.json",
         "MainRollbackIntent.v2.schema.json",
+        "MainRollbackIntent.v3.schema.json",
+        "MainRollbackPreparationAuthorization.v1.schema.json",
+        "MainRollbackResultReceipt.v1.schema.json",
     }
     committed = {
         item.name: item.read_bytes()

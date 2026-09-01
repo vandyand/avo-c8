@@ -70,6 +70,10 @@ def _main_rollback_candidate_ref(operation_id: str) -> str:
     return f"refs/heads/avo/main-rollback/{operation_id.removeprefix('sha256:')}"
 
 
+def _main_rollback_retention_ref(composition_id: str) -> str:
+    return f"refs/avo/main-rollback/{composition_id.removeprefix('sha256:')}"
+
+
 def _main_retention_ref(operation_id: str) -> str:
     return f"refs/avo/main-composition/{operation_id.removeprefix('sha256:')}"
 
@@ -706,8 +710,10 @@ class MainPreparationAuthorization(MainBound):
 class MainRollbackPreparationAuthorization(MainBound):
     """Reversible rollback preparation, distinct from historical graduation wires."""
 
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     operation_id: Sha256Digest
+    composition_id: Sha256Digest
+    composition_artifact_digest: Sha256Digest
     rollback_authorization_digest: Sha256Digest
     rollback_intent_digest: Sha256Digest
     package_digest: Sha256Digest
@@ -1683,10 +1689,54 @@ class MainInverseDeltaArtifact(MainBound):
         return self
 
 
+class MainRollbackCompositionArtifact(MainBound):
+    """Immutable inverse composition, independent of a rollback attempt."""
+
+    schema_version: Literal[1] = 1
+    composition_id: Sha256Digest
+    source_operation_id: Sha256Digest
+    completion_package_digest: Sha256Digest
+    original_delta_digest: Sha256Digest
+    current_main_commit: GitObject
+    current_main_tree: GitObject
+    current_main_parent_commit: GitObject
+    inverse_changed_paths: list[NonEmptyString] = Field(min_length=1)
+    inverse_tree: GitObject
+    inverse_delta_digest: Sha256Digest
+    policy_epoch: Sha256Digest
+    candidate_commit: GitObject
+    candidate_tree: GitObject
+    candidate_parent_commit: GitObject
+    retention_ref: NonEmptyString
+    deploy_performed: Literal[False] = False
+
+    _valid_paths = field_validator("inverse_changed_paths")(_paths)
+
+    @model_validator(mode="after")
+    def validate_composition(self) -> MainRollbackCompositionArtifact:
+        if self.retention_ref != _main_rollback_retention_ref(self.composition_id):
+            raise ValueError("rollback composition retention ref is outside controller namespace")
+        if self.inverse_delta_digest != canonical_digest(
+            self.model_dump(
+                exclude={"inverse_delta_digest", "composition_id", "retention_ref"},
+                mode="json",
+            )
+        ):
+            raise ValueError("rollback composition inverse digest mismatch")
+        identity = self.model_dump(
+            exclude={"composition_id", "retention_ref"}, mode="json"
+        )
+        if self.composition_id != main_rollback_composition_id(**identity):
+            raise ValueError("rollback composition identity mismatch")
+        return self
+
+
 class MainRollbackAuthorization(MainBound):
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     operation_id: Sha256Digest
     source_operation_id: Sha256Digest
+    composition_id: Sha256Digest
+    composition_artifact_digest: Sha256Digest
     completion_package_digest: Sha256Digest
     original_delta_digest: Sha256Digest
     current_main_commit: GitObject
@@ -1728,9 +1778,11 @@ class MainRollbackAuthorization(MainBound):
 
 
 class MainRollbackIntent(MainBound):
-    schema_version: Literal[3] = 3
+    schema_version: Literal[4] = 4
     operation_id: Sha256Digest
     source_operation_id: Sha256Digest
+    composition_id: Sha256Digest
+    composition_artifact_digest: Sha256Digest
     completion_package_digest: Sha256Digest
     original_delta_digest: Sha256Digest
     inverse_delta_digest: Sha256Digest
@@ -1786,9 +1838,11 @@ class MainRollbackResultReceipt(MainBound):
     an explicit durable outcome and cannot be treated as success.
     """
 
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     operation_id: Sha256Digest
     source_operation_id: Sha256Digest
+    composition_id: Sha256Digest
+    composition_artifact_digest: Sha256Digest
     completion_package_digest: Sha256Digest
     intent_digest: Sha256Digest
     authorization_digest: Sha256Digest
@@ -1958,10 +2012,12 @@ class MainRollbackAttemptAuthority(MainBound):
     cannot accidentally create a second operation for the same attempt.
     """
 
-    schema_version: Literal[1] = 1
+    schema_version: Literal[2] = 2
     operation_id: Sha256Digest
     attempt_nonce: NonEmptyString
     source_operation_id: Sha256Digest
+    composition_id: Sha256Digest
+    composition_artifact_digest: Sha256Digest
     completion_package_digest: Sha256Digest
     repository_digest: Sha256Digest
     target_ref: MainRef = "refs/heads/main"
@@ -2106,8 +2162,10 @@ MainRollbackTerminalCleanupEvidence = MainRollbackCleanupTerminalEvidence
 class MainRollbackCompletionPackage(MainBound):
     """Content-addressed terminal closure for one rollback attempt."""
 
-    schema_version: Literal[2] = 2
+    schema_version: Literal[3] = 3
     operation_id: Sha256Digest
+    composition_id: Sha256Digest
+    composition_artifact_digest: Sha256Digest
     attempt_authority: MainRollbackAttemptAuthority = Field(
         validation_alias=AliasChoices("attempt_authority", "attempt_manifest", "attempt")
     )
@@ -2130,7 +2188,7 @@ class MainRollbackCompletionPackage(MainBound):
     release_transition_intent: MainMutationIntent
     release_transition_mutation_receipt: MainMutationReceipt
     release_transition_fence_resolution: MainMutationFenceResolution | None
-    inverse_delta: MainInverseDeltaArtifact
+    composition: MainRollbackCompositionArtifact
     rollback_authorization: MainRollbackAuthorization = Field(
         validation_alias=AliasChoices("rollback_authorization", "authorization")
     )
@@ -2170,7 +2228,7 @@ class MainRollbackCompletionPackage(MainBound):
             self.claimed_transition_receipt,
             self.release_transition_intent,
             self.release_transition_mutation_receipt,
-            self.inverse_delta,
+            self.composition,
             self.rollback_authorization,
             self.rollback_intent,
             self.rollback_result,
@@ -2190,17 +2248,53 @@ class MainRollbackCompletionPackage(MainBound):
         if (
             self.repository_digest != source.repository_digest
             or self.target_ref != source.target_ref
+            or self.composition_id != attempt.composition_id
+            or self.composition_artifact_digest != attempt.composition_artifact_digest
+            or self.composition.composition_id != self.composition_id
+            or canonical_digest(self.composition) != self.composition_artifact_digest
             or attempt.source_operation_id != source.operation_id
             or attempt.completion_package_digest != canonical_digest(source)
             or attempt.original_delta_digest != source.delta.delta_digest
-            or self.inverse_delta.source_operation_id != source.operation_id
-            or self.inverse_delta.completion_package_digest != canonical_digest(source)
+            or self.composition.source_operation_id != source.operation_id
+            or self.composition.completion_package_digest != canonical_digest(source)
+            or self.composition.current_main_commit != attempt.current_main_commit
+            or self.composition.current_main_tree != attempt.current_main_tree
+            or self.composition.current_main_parent_commit
+            != attempt.current_main_parent_commit
+            or self.composition.inverse_delta_digest != attempt.inverse_delta_digest
+            or self.composition.inverse_tree != attempt.inverse_tree
+            or self.composition.candidate_commit != attempt.candidate_commit
+            or self.composition.candidate_tree != attempt.candidate_tree
+            or self.composition.candidate_parent_commit != attempt.candidate_parent_commit
+            or self.composition.candidate_commit != self.rollback_intent.candidate_commit
+            or self.composition.candidate_tree != self.rollback_intent.candidate_tree
+            or self.composition.candidate_parent_commit
+            != self.rollback_intent.candidate_parent_commit
             or self.rollback_result.source_operation_id != source.operation_id
             or self.rollback_result.completion_package_digest != canonical_digest(source)
+            or self.rollback_result.composition_id != self.composition_id
+            or self.rollback_result.composition_artifact_digest
+            != self.composition_artifact_digest
+            or self.rollback_result.current_main_commit != self.composition.current_main_commit
+            or self.rollback_result.inverse_tree != self.composition.inverse_tree
+            or (
+                self.rollback_result.outcome in {"applied", "already_applied"}
+                and (
+                    self.rollback_result.result_tree != self.composition.candidate_tree
+                    or self.rollback_result.result_parent_commit
+                    != self.composition.candidate_parent_commit
+                )
+            )
             or self.rollback_authorization.source_operation_id != source.operation_id
             or self.rollback_authorization.completion_package_digest != canonical_digest(source)
+            or self.rollback_authorization.composition_id != self.composition_id
+            or self.rollback_authorization.composition_artifact_digest
+            != self.composition_artifact_digest
             or self.rollback_intent.source_operation_id != source.operation_id
             or self.rollback_intent.completion_package_digest != canonical_digest(source)
+            or self.rollback_intent.composition_id != self.composition_id
+            or self.rollback_intent.composition_artifact_digest
+            != self.composition_artifact_digest
             or self.rollback_preparation_authorization.operation_id != self.operation_id
             or self.rollback_preparation_authorization.rollback_intent_digest
             != self.rollback_intent.intent_digest
@@ -2264,7 +2358,7 @@ class MainRollbackCompletionPackage(MainBound):
             "main-rollback-claimed-release-transition",
             "main-rollback-mutation-intent",
             "main-rollback-mutation-receipt",
-            "main-rollback-inverse-delta",
+            "main-rollback-composition",
             "main-rollback-authorization",
             "main-rollback-intent",
             "main-rollback-result",
@@ -2296,7 +2390,9 @@ class MainRollbackCompletionPackage(MainBound):
         if (
             prep.repository_digest != self.repository_digest
             or prep.package_digest != self.rollback_intent.completion_package_digest
-            or prep.composition_digest != self.rollback_intent.inverse_delta_artifact_digest
+            or prep.composition_id != self.composition_id
+            or prep.composition_artifact_digest != self.composition_artifact_digest
+            or prep.composition_digest != self.composition_artifact_digest
             or prep.base_commit != self.rollback_intent.base_commit
             or prep.base_tree != self.rollback_intent.base_tree
             or prep.candidate_commit != self.rollback_intent.candidate_commit
@@ -2482,6 +2578,19 @@ def main_rollback_operation_id(**identity: object) -> Sha256Digest:
     )
 
 
+def main_rollback_composition_id(**identity: object) -> Sha256Digest:
+    """Return the stable identity for inverse composition before an attempt."""
+
+    identity = {
+        key: value
+        for key, value in identity.items()
+        if key not in {"composition_id", "retention_ref"}
+    }
+    return canonical_digest(
+        {"domain": "avo.main.rollback.composition.v1", "identity": identity}
+    )
+
+
 def main_record_bytes(record: StrictModel) -> bytes:
     """Canonical wire bytes used for every content-addressed main record."""
     return canonical_bytes(record)
@@ -2528,6 +2637,7 @@ __all__ = [
     "MainRollbackCleanupTerminalEvidence",
     "MainRollbackCleanupTerminalObservation",
     "MainRollbackCompletionPackage",
+    "MainRollbackCompositionArtifact",
     "MainRollbackFinalPostStateObservation",
     "MainRollbackIntent",
     "MainRollbackPostStateObservation",
@@ -2539,6 +2649,7 @@ __all__ = [
     "main_operation_id",
     "main_record_bytes",
     "main_record_digest",
+    "main_rollback_composition_id",
     "main_rollback_operation_id",
 ]
 

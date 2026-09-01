@@ -41,7 +41,9 @@ from tests.unit.test_main_rollback_lifecycle_contracts import (
 def _attempt(source: Any, inverse: Any, intent: Any, auth: Any) -> MainRollbackAttemptAuthority:
     values: dict[str, Any] = {
         "attempt_nonce": "rollback-attempt-1",
-        "source_operation_id": source.operation_id,
+            "source_operation_id": source.operation_id,
+            "composition_id": intent.composition_id,
+            "composition_artifact_digest": intent.composition_artifact_digest,
         "completion_package_digest": canonical_digest(source),
         "repository_digest": R,
         "target_ref": "refs/heads/main",
@@ -50,7 +52,7 @@ def _attempt(source: Any, inverse: Any, intent: Any, auth: Any) -> MainRollbackA
         "current_main_parent_commit": auth.current_main_parent_commit,
         "original_delta_digest": inverse.original_delta_digest,
         "inverse_delta_digest": inverse.inverse_delta_digest,
-        "inverse_delta_artifact_digest": canonical_digest(inverse),
+            "inverse_delta_artifact_digest": intent.composition_artifact_digest,
         "inverse_tree": inverse.inverse_tree,
         "candidate_commit": intent.candidate_commit,
         "candidate_tree": intent.candidate_tree,
@@ -270,7 +272,7 @@ def test_terminal_contracts_reject_abandoned_v1_wires_and_round_trip_v2() -> Non
         MainRollbackCleanupTerminalEvidence.model_validate_json(canonical_bytes(terminal))
     ) == canonical_bytes(terminal)
 
-    assert MainRollbackCompletionPackage.model_fields["schema_version"].default == 2
+    assert MainRollbackCompletionPackage.model_fields["schema_version"].default == 3
     with pytest.raises(ValidationError, match="schema_version"):
         MainRollbackCompletionPackage.model_validate({"schema_version": 1})
 

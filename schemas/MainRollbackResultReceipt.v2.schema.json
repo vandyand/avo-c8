@@ -1,0 +1,187 @@
+{
+  "additionalProperties": false,
+  "description": "Provider receipt for the exact protected rollback result.\n\nA successful receipt carries one and only one result parent.  Rejected or\ninvalid provider responses may carry no result objects; ambiguity remains\nan explicit durable outcome and cannot be treated as success.",
+  "properties": {
+    "authorization_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Authorization Digest",
+      "type": "string"
+    },
+    "completion_package_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Completion Package Digest",
+      "type": "string"
+    },
+    "composition_artifact_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Composition Artifact Digest",
+      "type": "string"
+    },
+    "composition_id": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Composition Id",
+      "type": "string"
+    },
+    "current_main_commit": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Current Main Commit",
+      "type": "string"
+    },
+    "deploy_performed": {
+      "const": false,
+      "default": false,
+      "title": "Deploy Performed",
+      "type": "boolean"
+    },
+    "intent_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Intent Digest",
+      "type": "string"
+    },
+    "inverse_delta_artifact_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Inverse Delta Artifact Digest",
+      "type": "string"
+    },
+    "inverse_delta_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Inverse Delta Digest",
+      "type": "string"
+    },
+    "inverse_tree": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Inverse Tree",
+      "type": "string"
+    },
+    "observed_at": {
+      "format": "date-time",
+      "title": "Observed At",
+      "type": "string"
+    },
+    "operation_id": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Operation Id",
+      "type": "string"
+    },
+    "outcome": {
+      "enum": [
+        "applied",
+        "already_applied",
+        "invalid"
+      ],
+      "title": "Outcome",
+      "type": "string"
+    },
+    "provider_api_version": {
+      "minLength": 1,
+      "title": "Provider Api Version",
+      "type": "string"
+    },
+    "provider_identity": {
+      "minLength": 1,
+      "title": "Provider Identity",
+      "type": "string"
+    },
+    "receipt_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Receipt Digest",
+      "type": "string"
+    },
+    "repository_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Repository Digest",
+      "type": "string"
+    },
+    "response_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Response Digest",
+      "type": "string"
+    },
+    "result_commit": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Result Commit"
+    },
+    "result_parent_commit": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Result Parent Commit"
+    },
+    "result_parents": {
+      "items": {
+        "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+        "type": "string"
+      },
+      "title": "Result Parents",
+      "type": "array"
+    },
+    "result_tree": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Result Tree"
+    },
+    "schema_version": {
+      "const": 2,
+      "default": 2,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "source_operation_id": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Source Operation Id",
+      "type": "string"
+    },
+    "target_ref": {
+      "const": "refs/heads/main",
+      "default": "refs/heads/main",
+      "title": "Target Ref",
+      "type": "string"
+    }
+  },
+  "required": [
+    "repository_digest",
+    "operation_id",
+    "source_operation_id",
+    "composition_id",
+    "composition_artifact_digest",
+    "completion_package_digest",
+    "intent_digest",
+    "authorization_digest",
+    "inverse_delta_digest",
+    "inverse_delta_artifact_digest",
+    "current_main_commit",
+    "inverse_tree",
+    "provider_identity",
+    "provider_api_version",
+    "outcome",
+    "response_digest",
+    "observed_at",
+    "receipt_digest"
+  ],
+  "title": "MainRollbackResultReceipt",
+  "type": "object"
+}

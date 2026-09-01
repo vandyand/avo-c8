@@ -17,8 +17,6 @@ from tests.unit.c4_coordinator_test_support import MAIN_OPERATION, REPOSITORY, g
 from tests.unit.test_main_graduation_c4_completion_gates import _prepared_completion_fixture
 from tests.unit.test_main_graduation_completion_filesystem import _completion_coordinator
 
-ROLLBACK_OPERATION = "sha256:" + "2" * 64
-
 
 class _Reader:
     def __init__(self, root: Path, commit: str, tree: str) -> None:
@@ -76,25 +74,25 @@ def test_inverse_composition_is_exact_and_does_not_move_main(tmp_path: Path) -> 
         journal,
         _Reader(checkout, provider.main_commit, provider.main_tree),
     ).compose(
-        rollback_operation_id=ROLLBACK_OPERATION,
         source_operation_id=MAIN_OPERATION,
         completion_package_digest=digest,
     )
 
-    assert result.inverse.source_operation_id == MAIN_OPERATION
-    assert result.inverse.operation_id == ROLLBACK_OPERATION
-    assert result.inverse.inverse_tree == package.composition.base_tree
+    assert result.composition.source_operation_id == MAIN_OPERATION
+    assert result.composition.inverse_tree == package.composition.base_tree
     assert result.candidate_parent_commit == provider.main_commit
     assert result.candidate_tree == package.composition.base_tree
-    assert result.retention_ref == f"refs/avo/main-rollback/{'2' * 64}"
+    assert result.retention_ref == (
+        f"refs/avo/main-rollback/{result.composition_id.removeprefix('sha256:')}"
+    )
     assert git(checkout, "rev-parse", result.retention_ref) == result.candidate_commit
     assert git(checkout, "rev-parse", "refs/heads/main") == main_before
-    assert journal.read_inverse_delta(ROLLBACK_OPERATION) is not None
+    assert journal.read_rollback_composition(result.composition_id) is not None
 
 
 def test_inverse_requires_distinct_source_operation(tmp_path: Path) -> None:
     journal, _checkout, provider, package = _ready(tmp_path)
-    with pytest.raises(MainRollbackCompositionError, match="differ"):
+    with pytest.raises(MainRollbackCompositionError, match="provisional"):
         _adapter(
             tmp_path,
             journal,
@@ -114,7 +112,6 @@ def test_inverse_rejects_wrong_completion_digest(tmp_path: Path) -> None:
             journal,
             _Reader(_checkout, provider.main_commit, provider.main_tree),
         ).compose(
-            rollback_operation_id=ROLLBACK_OPERATION,
             source_operation_id=MAIN_OPERATION,
             completion_package_digest="sha256:" + "f" * 64,
         )
@@ -132,7 +129,6 @@ def test_inverse_rejects_advanced_main_before_candidate_retention(tmp_path: Path
     advanced_tree = git(checkout, "rev-parse", "refs/heads/main^{tree}")
     with pytest.raises(MainRollbackCompositionError, match="advanced"):
         _adapter(tmp_path, journal, _Reader(checkout, advanced, advanced_tree)).compose(
-            rollback_operation_id=ROLLBACK_OPERATION,
             source_operation_id=MAIN_OPERATION,
             completion_package_digest=canonical_digest(package),
         )
@@ -149,7 +145,6 @@ def test_inverse_rejects_historical_policy_epoch(tmp_path: Path) -> None:
             _Reader(checkout, provider.main_commit, provider.main_tree),
             policy_epoch="sha256:" + "e" * 64,
         ).compose(
-            rollback_operation_id=ROLLBACK_OPERATION,
             source_operation_id=MAIN_OPERATION,
             completion_package_digest=canonical_digest(package),
         )

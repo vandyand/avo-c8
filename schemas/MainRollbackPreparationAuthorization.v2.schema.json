@@ -1,0 +1,154 @@
+{
+  "additionalProperties": false,
+  "description": "Reversible rollback preparation, distinct from historical graduation wires.",
+  "properties": {
+    "authorization_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Authorization Digest",
+      "type": "string"
+    },
+    "authorized": {
+      "const": true,
+      "default": true,
+      "title": "Authorized",
+      "type": "boolean"
+    },
+    "authorized_at": {
+      "format": "date-time",
+      "title": "Authorized At",
+      "type": "string"
+    },
+    "base_commit": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Base Commit",
+      "type": "string"
+    },
+    "base_tree": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Base Tree",
+      "type": "string"
+    },
+    "candidate_commit": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Candidate Commit",
+      "type": "string"
+    },
+    "candidate_ref": {
+      "minLength": 1,
+      "title": "Candidate Ref",
+      "type": "string"
+    },
+    "candidate_tree": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Candidate Tree",
+      "type": "string"
+    },
+    "composition_artifact_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Composition Artifact Digest",
+      "type": "string"
+    },
+    "composition_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Composition Digest",
+      "type": "string"
+    },
+    "composition_id": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Composition Id",
+      "type": "string"
+    },
+    "deploy_performed": {
+      "const": false,
+      "default": false,
+      "title": "Deploy Performed",
+      "type": "boolean"
+    },
+    "lease_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Lease Digest",
+      "type": "string"
+    },
+    "lease_epoch_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Lease Epoch Digest",
+      "type": "string"
+    },
+    "lease_identity": {
+      "minLength": 1,
+      "title": "Lease Identity",
+      "type": "string"
+    },
+    "operation_id": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Operation Id",
+      "type": "string"
+    },
+    "package_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Package Digest",
+      "type": "string"
+    },
+    "policy_epoch": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Policy Epoch",
+      "type": "string"
+    },
+    "repository_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Repository Digest",
+      "type": "string"
+    },
+    "rollback_authorization_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Rollback Authorization Digest",
+      "type": "string"
+    },
+    "rollback_intent_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Rollback Intent Digest",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 2,
+      "default": 2,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "scope": {
+      "const": "rollback_candidate_publication_pr_preparation_queue_admission",
+      "default": "rollback_candidate_publication_pr_preparation_queue_admission",
+      "title": "Scope",
+      "type": "string"
+    },
+    "target_ref": {
+      "const": "refs/heads/main",
+      "default": "refs/heads/main",
+      "title": "Target Ref",
+      "type": "string"
+    }
+  },
+  "required": [
+    "repository_digest",
+    "operation_id",
+    "composition_id",
+    "composition_artifact_digest",
+    "rollback_authorization_digest",
+    "rollback_intent_digest",
+    "package_digest",
+    "composition_digest",
+    "base_commit",
+    "base_tree",
+    "candidate_commit",
+    "candidate_tree",
+    "candidate_ref",
+    "lease_identity",
+    "lease_digest",
+    "lease_epoch_digest",
+    "policy_epoch",
+    "authorization_digest",
+    "authorized_at"
+  ],
+  "title": "MainRollbackPreparationAuthorization",
+  "type": "object"
+}

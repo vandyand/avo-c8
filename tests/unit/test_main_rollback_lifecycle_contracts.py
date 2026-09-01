@@ -22,6 +22,7 @@ from avo_correlate.contracts.main_graduation import (
     MainRollbackCleanupIntent,
     MainRollbackCleanupObservation,
     MainRollbackCleanupReceipt,
+    MainRollbackCompositionArtifact,
     MainRollbackIntent,
     MainRollbackPreparationAuthorization,
     MainRollbackResultReceipt,
@@ -92,16 +93,19 @@ def _rollback_intent(
     *,
     recorded_at: datetime = NOW + timedelta(minutes=2),
     completion_package_digest: str = D2,
+    composition_artifact_digest: str = D,
 ) -> MainRollbackIntent:
     values = {
         "operation_id": RB,
         "source_operation_id": D,
+        "composition_id": D,
+        "composition_artifact_digest": composition_artifact_digest,
         "repository_digest": R,
         "target_ref": "refs/heads/main",
         "completion_package_digest": completion_package_digest,
         "original_delta_digest": D,
         "inverse_delta_digest": D2,
-        "inverse_delta_artifact_digest": D,
+        "inverse_delta_artifact_digest": composition_artifact_digest,
         "base_commit": HEAD,
         "base_tree": TREE,
         "current_main_commit": HEAD,
@@ -127,10 +131,13 @@ def _rollback_authorization(
     authorized_at: datetime = NOW + timedelta(minutes=1),
     expires_at: datetime = NOW + timedelta(minutes=5),
     completion_package_digest: str = D2,
+    composition_artifact_digest: str = D,
 ) -> MainRollbackAuthorization:
     values = {
         "operation_id": RB,
         "source_operation_id": D,
+        "composition_id": D,
+        "composition_artifact_digest": composition_artifact_digest,
         "repository_digest": R,
         "target_ref": "refs/heads/main",
         "completion_package_digest": completion_package_digest,
@@ -139,7 +146,7 @@ def _rollback_authorization(
         "current_main_tree": TREE,
         "current_main_parent_commit": BASE,
         "inverse_delta_digest": D2,
-        "inverse_delta_artifact_digest": D,
+        "inverse_delta_artifact_digest": composition_artifact_digest,
         "inverse_tree": BASE,
         "lease_identity": "rollback-controller",
         "lease_digest": D,
@@ -160,6 +167,8 @@ def _rollback_preparation(
 ) -> MainRollbackPreparationAuthorization:
     values = {
         "operation_id": RB,
+        "composition_id": D,
+        "composition_artifact_digest": intent.composition_artifact_digest,
         "repository_digest": R,
         "rollback_authorization_digest": auth.authorization_digest,
         "rollback_intent_digest": intent.intent_digest,
@@ -197,27 +206,55 @@ def _inverse(source: Any, *, policy_epoch: str = D) -> MainInverseDeltaArtifact:
     )
 
 
+def _composition(source: Any) -> MainRollbackCompositionArtifact:
+    """Small valid-enough composition fixture for journal dependency tests."""
+    values = {
+        "composition_id": D,
+        "source_operation_id": source.operation_id,
+        "repository_digest": source.repository_digest,
+        "target_ref": source.target_ref,
+        "completion_package_digest": canonical_digest(source),
+        "original_delta_digest": source.delta.delta_digest,
+        "current_main_commit": source.reconciliation.main_commit,
+        "current_main_tree": source.reconciliation.main_tree,
+        "current_main_parent_commit": source.reconciliation.main_parents[0],
+        "inverse_changed_paths": source.delta.changed_paths,
+        "inverse_tree": BASE,
+        "inverse_delta_digest": D2,
+        "policy_epoch": source.plan.policy_epoch,
+        "candidate_commit": RESULT,
+        "candidate_tree": BASE,
+        "candidate_parent_commit": source.reconciliation.main_commit,
+        "retention_ref": "refs/avo/main-rollback/" + D[7:],
+    }
+    return MainRollbackCompositionArtifact.model_construct(**values)
+
+
 def _result(
     source: Any,
     intent: MainRollbackIntent,
     auth: MainRollbackAuthorization,
     inverse: MainInverseDeltaArtifact,
+    composition: MainRollbackCompositionArtifact | None = None,
     *,
     outcome: str = "applied",
     result_tree: str = BASE,
     result_parent: str = HEAD,
     result_parents: list[str] | None = None,
 ) -> MainRollbackResultReceipt:
+    composition_digest = canonical_digest(composition) if composition is not None else D
     values = {
         "operation_id": RB,
         "source_operation_id": source.operation_id,
+        "composition_id": intent.composition_id,
+        "composition_artifact_digest": intent.composition_artifact_digest,
         "repository_digest": R,
         "target_ref": "refs/heads/main",
         "completion_package_digest": canonical_digest(source),
         "intent_digest": intent.intent_digest,
         "authorization_digest": auth.authorization_digest,
         "inverse_delta_digest": inverse.inverse_delta_digest,
-        "inverse_delta_artifact_digest": canonical_digest(inverse),
+        "inverse_delta_artifact_digest": composition_digest,
         "current_main_commit": auth.current_main_commit,
         "inverse_tree": inverse.inverse_tree,
         "provider_identity": "github",
@@ -305,11 +342,19 @@ def _rollback_fixture() -> tuple[
 ]:
     source = completion()
     completion_digest = canonical_digest(source)
+    composition = _composition(source)
+    composition_digest = canonical_digest(composition)
     inverse = _inverse(source)
-    intent = _rollback_intent(completion_package_digest=completion_digest)
-    auth = _rollback_authorization(completion_package_digest=completion_digest)
+    intent = _rollback_intent(
+        completion_package_digest=completion_digest,
+        composition_artifact_digest=composition_digest,
+    )
+    auth = _rollback_authorization(
+        completion_package_digest=completion_digest,
+        composition_artifact_digest=composition_digest,
+    )
     lease = _lease()
-    result = _result(source, intent, auth, inverse)
+    result = _result(source, intent, auth, inverse, composition)
     return source, inverse, intent, auth, lease, result
 
 
@@ -360,9 +405,9 @@ def _journal_with_records(
     return journal
 
 
-def test_rollback_intent_v3_binds_distinct_source_ref_and_lease_epoch() -> None:
+def test_rollback_intent_v4_binds_composition_source_ref_and_lease_epoch() -> None:
     intent = _rollback_intent()
-    assert intent.schema_version == 3
+    assert intent.schema_version == 4
     assert intent.source_operation_id != intent.operation_id
     assert intent.candidate_ref == "refs/heads/avo/main-rollback/" + RB[7:]
     assert intent.lease_epoch_digest == LEASE_EPOCH
@@ -389,7 +434,7 @@ def test_preparation_authorization_uses_separate_graduation_and_rollback_wires()
     intent = _rollback_intent()
     auth = _rollback_authorization()
     rollback = _rollback_preparation(intent, auth, authorized_at=NOW + timedelta(minutes=3))
-    assert rollback.schema_version == 1
+    assert rollback.schema_version == 2
     assert rollback.rollback_intent_digest == intent.intent_digest
     assert rollback.lease_epoch_digest == LEASE_EPOCH
 
@@ -468,7 +513,8 @@ def test_c4_graduation_request_digest_retains_pre_rollback_wire_identity() -> No
 
 
 def test_rollback_result_requires_exact_applied_topology() -> None:
-    source, inverse, intent, auth, _lease_record, exact = _rollback_fixture()
+    source, _inverse, intent, auth, _lease_record, exact = _rollback_fixture()
+    composition = _composition(source)
     assert exact.outcome == "applied"
     assert exact.result_parent_commit == HEAD
     assert exact.result_parents == [HEAD]
@@ -487,7 +533,7 @@ def test_rollback_result_requires_exact_applied_topology() -> None:
     records = {
         "rollback-intent": intent,
         "rollback-authorization": auth,
-        "inverse-delta": inverse,
+        "rollback-composition": composition,
         "completion": source,
     }
     journal = _journal_with_records(Path("."), records)
@@ -497,7 +543,8 @@ def test_rollback_result_requires_exact_applied_topology() -> None:
 
 
 def test_cleanup_contracts_bind_ref_suffix_digests_and_dispatch_outcome() -> None:
-    _source, _inverse, intent, auth, _lease_record, result = _rollback_fixture()
+    source, _inverse, intent, auth, _lease_record, result = _rollback_fixture()
+    composition = _composition(source)
     cleanup = _cleanup_intent(intent, auth, result)
     receipt = _cleanup_receipt(cleanup)
     observation = _cleanup_observation(cleanup, receipt)
@@ -522,6 +569,7 @@ def test_cleanup_contracts_bind_ref_suffix_digests_and_dispatch_outcome() -> Non
         "rollback-result": result,
         "rollback-intent": intent,
         "rollback-authorization": auth,
+        "rollback-composition": composition,
         "rollback-cleanup-intent": cleanup,
         "rollback-cleanup-receipt": receipt,
     }
@@ -578,11 +626,12 @@ def test_journal_rejects_post_expiry_rollback_intent_and_preparation() -> None:
 
 
 def test_fresh_journal_rejects_missing_or_tampered_dependencies_on_restart(tmp_path: Path) -> None:
-    source, inverse, intent, auth, _lease_record, result = _rollback_fixture()
+    source, _inverse, intent, auth, _lease_record, result = _rollback_fixture()
+    composition = _composition(source)
     records = {
         "rollback-intent": intent,
         "rollback-authorization": auth,
-        "inverse-delta": inverse,
+        "rollback-composition": composition,
         "completion": source,
     }
     restarted = _journal_with_records(tmp_path, records)
@@ -597,7 +646,7 @@ def test_fresh_journal_rejects_missing_or_tampered_dependencies_on_restart(tmp_p
             fresh._require_rollback_result(result)  # type: ignore[attr-defined]
 
     tampered = dict(records)
-    tampered["inverse-delta"] = inverse.model_copy(update={"inverse_tree": TREE})
+    tampered["rollback-composition"] = composition.model_copy(update={"inverse_tree": TREE})
     fresh = _journal_with_records(tmp_path / "tampered", tampered)
     with pytest.raises(MainGraduationJournalError, match="authority binding"):
         fresh._require_rollback_result(result)  # type: ignore[attr-defined]
@@ -623,12 +672,13 @@ def _lifecycle_records() -> tuple[
 def test_missing_rollback_authority_verifier_rejects_each_durable_evidence_record(
     tmp_path: Path,
 ) -> None:
-    source, intent, auth, inverse, result, cleanup, receipt, observation = _lifecycle_records()
+    source, intent, auth, _inverse, result, cleanup, receipt, observation = _lifecycle_records()
+    composition = _composition(source)
     dependency_maps = {
         "rollback-result": {
             "rollback-intent": intent,
             "rollback-authorization": auth,
-            "inverse-delta": inverse,
+            "rollback-composition": composition,
             "completion": source,
         },
         "rollback-cleanup-intent": {
@@ -660,11 +710,12 @@ def test_missing_rollback_authority_verifier_rejects_each_durable_evidence_recor
 def test_injected_rollback_authority_is_called_on_record_and_restart_reads(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    source, intent, auth, inverse, result, cleanup, receipt, observation = _lifecycle_records()
+    source, intent, auth, _inverse, result, cleanup, receipt, observation = _lifecycle_records()
+    composition = _composition(source)
     dependencies = {
         "rollback-intent": intent,
         "rollback-authorization": auth,
-        "inverse-delta": inverse,
+        "rollback-composition": composition,
         "completion": source,
         "rollback-result": result,
         "rollback-cleanup-intent": cleanup,
@@ -728,7 +779,8 @@ def test_injected_rollback_authority_is_called_on_record_and_restart_reads(
 def test_tampered_or_mismatched_rollback_evidence_fails_before_authority_verifier(
     tmp_path: Path,
 ) -> None:
-    source, intent, auth, inverse, result, cleanup, receipt, observation = _lifecycle_records()
+    source, intent, auth, _inverse, result, cleanup, receipt, observation = _lifecycle_records()
+    composition = _composition(source)
     cases = (
         (
             "rollback-result",
@@ -736,7 +788,7 @@ def test_tampered_or_mismatched_rollback_evidence_fails_before_authority_verifie
             {
                 "rollback-intent": intent,
                 "rollback-authorization": auth,
-                "inverse-delta": inverse,
+                "rollback-composition": composition,
                 "completion": source,
             },
                 result.model_copy(update={"result_tree": TREE}),
