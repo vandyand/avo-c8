@@ -196,6 +196,7 @@ def main() -> int:
     parser.add_argument(
         "--expected-controller-root-raw-digest",
         "--expected-controller-root-artifact-digest",
+        "--expected-controller-root-digest",
         dest="expected_controller_root_raw_digest",
     )
     parser.add_argument("--workspace", type=Path)
