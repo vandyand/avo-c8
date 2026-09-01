@@ -3,13 +3,16 @@
 
 from __future__ import annotations
 
+import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from subprocess import CompletedProcess
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+import avo_correlate.application.main_graduation_offline_identity as identity_module
 from avo_correlate.application.main_graduation_offline_drill_service import (
     PinnedC7AuthorityVerifier,
 )
@@ -18,6 +21,8 @@ from avo_correlate.application.main_graduation_offline_identity import (
     C7WorkspaceIdentity,
     C7WorkspaceIdentityError,
     C7WorkspaceIdentityVerifier,
+    resolve_uv_path,
+    sanitized_child_environment,
 )
 from avo_correlate.application.main_graduation_offline_pytest_executor import (
     OfflinePytestExecutionError,
@@ -65,6 +70,8 @@ def _observed() -> C7WorkspaceIdentity:
         pytest_digest="sha256:" + "f" * 64,
         plugin_set_digest="sha256:" + "0" * 64,
         toolchain_digest="sha256:" + "1" * 64,
+        environment_identity_digest="sha256:" + "2" * 64,
+        uv_digest="sha256:" + "3" * 64,
     )
 
 
@@ -133,6 +140,42 @@ def test_controller_and_artifact_pins_are_required_externally() -> None:
         PinnedC7AuthorityVerifier("sha256:" + "a" * 64)
     with pytest.raises(ValueError, match="controller authority pin"):
         PinnedC7AuthorityVerifier("sha256:" + "a" * 64, "sha256:" + "b" * 64)
+
+
+def test_scrubbed_environment_requires_path_and_excludes_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("PATH", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "must-not-propagate")
+    with pytest.raises(C7WorkspaceIdentityError, match="PATH"):
+        sanitized_child_environment()
+
+
+def test_uv_runtime_probe_uses_one_resolved_absolute_launcher(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    launcher = Path(sys.executable).resolve()
+    calls: list[list[str]] = []
+
+    def runner(argv: list[str], **_kwargs: Any) -> CompletedProcess[str]:
+        calls.append(argv)
+        payload = (
+            '{"implementation":"CPython","plugins":[],"pytest":"'
+            + str(launcher).replace("\\", "\\\\")
+            + '","pytest_version":"1","python":"'
+            + str(launcher).replace("\\", "\\\\")
+            + '","version":"3"}'
+        )
+        return CompletedProcess(argv, 0, stdout=payload, stderr="")
+
+    monkeypatch.setattr(identity_module.subprocess, "run", runner)
+    identity_module._uv_runtime_identity(tmp_path, launcher, {"PATH": "unused"})
+    assert calls and calls[0][0] == str(launcher)
+
+
+def test_resolve_uv_path_rejects_missing_environment_path() -> None:
+    with pytest.raises(C7WorkspaceIdentityError, match="PATH"):
+        resolve_uv_path({})
 
 
 def _completed(stdout: str) -> Any:

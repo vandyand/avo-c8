@@ -21,6 +21,7 @@ from typing import Any, Protocol, cast
 from avo_correlate.adapters.artifacts.filesystem import FilesystemArtifactStore
 from avo_correlate.application.main_graduation_offline_identity import (
     FROZEN_OFFLINE_EXECUTION_ARGV,
+    C7WorkspaceIdentityError,
     C7WorkspaceIdentityVerifier,
     sanitized_child_environment,
 )
@@ -36,6 +37,7 @@ from avo_correlate.contracts.main_graduation_offline_drill import (
 from avo_correlate.domain.canonical import canonical_digest
 
 _COMMAND_TIMEOUT_SECONDS = 300
+_MAX_PROCESS_OUTPUT = 2 * 1024 * 1024
 
 
 class OfflinePytestExecutionError(RuntimeError):
@@ -58,6 +60,10 @@ def _default_runner(argv: list[str], cwd: Path, report_path: Path) -> int:
         env=sanitized_child_environment(),
         timeout=_COMMAND_TIMEOUT_SECONDS,
     )
+    if len(completed.stdout.encode("utf-8")) > _MAX_PROCESS_OUTPUT or len(
+        completed.stderr.encode("utf-8")
+    ) > _MAX_PROCESS_OUTPUT:
+        raise OfflinePytestExecutionError("pytest process output exceeds bound")
     return completed.returncode
 
 
@@ -121,6 +127,17 @@ class HermeticPytestExecutor:
         with tempfile.TemporaryDirectory(prefix="avo-c7-junit-") as temp:
             report_path = Path(temp) / "junit.xml"
             rendered = [item.replace("{junitxml}", f"--junitxml={report_path}") for item in argv]
+            # Identity observation resolves and hashes uv once.  Use that
+            # exact absolute path for execution; do not resolve a fresh bare
+            # launcher after the toolchain has been authenticated.
+            uv_path = getattr(self.identity_checker, "_last_uv_path", None)
+            if not isinstance(uv_path, Path) or not uv_path.is_absolute() or not uv_path.is_file():
+                raise OfflinePytestExecutionError(
+                    "workspace identity did not provide a verified uv path"
+                )
+            if not rendered or rendered[0] != FROZEN_OFFLINE_EXECUTION_ARGV[0]:
+                raise OfflinePytestExecutionError("authority command launcher is invalid")
+            rendered[0] = str(uv_path)
             # The authority bounds the command shape; the frozen node list is
             # appended by this executor so callers cannot substitute a test.
             rendered.extend(_pytest_node_id(node.node_id) for node in authority.nodes)
@@ -128,7 +145,7 @@ class HermeticPytestExecutor:
             self._check_expiry(authority)
             try:
                 exit_code = self.runner(rendered, self.workspace, report_path)
-            except (OSError, subprocess.TimeoutExpired) as exc:
+            except (OSError, subprocess.TimeoutExpired, C7WorkspaceIdentityError) as exc:
                 raise OfflinePytestExecutionError("pytest process failed or timed out") from exc
             self._check_expiry(authority)
             if exit_code != 0:

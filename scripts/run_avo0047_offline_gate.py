@@ -10,6 +10,11 @@ from pathlib import Path
 from typing import Any
 
 from avo_correlate.adapters.artifacts.filesystem import FilesystemArtifactStore
+from avo_correlate.application.c7_controller_root import (
+    C7ControllerRootArtifact,
+    C7ControllerRootError,
+    load_controller_root,
+)
 from avo_correlate.application.main_graduation_offline_drill_service import (
     MainGraduationOfflineDrillService,
     PinnedC7AuthorityVerifier,
@@ -22,6 +27,12 @@ from avo_correlate.domain.canonical import canonical_bytes, file_digest
 
 
 class _AuthorityClock:
+    """Local OS UTC wall clock for freshness inside an authenticated window.
+
+    This clock is not a cryptographic time source and does not authenticate a
+    controller root; the loaded, pinned root supplies that authority.
+    """
+
     def now(self) -> datetime:
         return datetime.now(UTC)
 
@@ -67,6 +78,46 @@ def _load_authority(
     return authority
 
 
+def _load_controller_root(
+    path: Path, expected_raw_digest: str
+) -> C7ControllerRootArtifact:
+    """Load the typed controller root using only its out-of-band raw pin."""
+    try:
+        return load_controller_root(path, expected_raw_digest)
+    except C7ControllerRootError as exc:
+        raise RuntimeError("c7_controller_root_mismatch") from exc
+
+
+def _match_controller_root(
+    authority: MainGraduationOfflineExecutionAuthority,
+    controller: C7ControllerRootArtifact,
+) -> None:
+    root = controller.root
+    bindings = (
+        ("operation_id", authority.operation_id, root.operation_id),
+        ("repository_digest", authority.repository_digest, root.repository_digest),
+        ("target_ref", authority.target_ref, root.target_ref),
+        ("issuer_identity", authority.issuer_identity, root.issuer_identity),
+        ("source_commit", authority.source_commit, root.source_commit),
+        ("source_tree", authority.source_tree, root.source_tree),
+        ("source_tree_digest", authority.source_tree_digest, root.source_tree_digest),
+        ("protocol_digest", authority.protocol_digest, root.protocol_digest),
+        ("configuration_digest", authority.configuration_digest, root.configuration_digest),
+        ("policy_digest", authority.policy_digest, root.policy_digest),
+        ("activation_digest", authority.activation_digest, root.activation_digest),
+        (
+            "controller_authority_digest",
+            authority.controller_authority_digest,
+            root.controller_authority_digest,
+        ),
+        ("controller_authority_ref", authority.controller_authority_ref, controller.raw_digest),
+    )
+    if any(supplied != expected for _, supplied, expected in bindings):
+        raise RuntimeError("c7_controller_authority_mismatch")
+    if not root.authorized_at <= authority.authorized_at <= authority.expires_at <= root.expires_at:
+        raise RuntimeError("c7_controller_authority_window_mismatch")
+
+
 def run(
     root: Path,
     authority_file: Path | None = None,
@@ -74,32 +125,40 @@ def run(
     workspace: Path | None = None,
     state_root: Path | None = None,
     *,
-    expected_controller_authority_digest: str | None = None,
-    expected_controller_authority_ref: str | None = None,
+    controller_root_file: Path | None = None,
+    expected_controller_root_raw_digest: str | None = None,
+    # Naming used by the preparation script is retained as an explicit alias;
+    # both values, when supplied, must be the same out-of-band raw pin.
+    expected_controller_root_artifact_digest: str | None = None,
 ) -> dict[str, Any]:
-    """Execute only with an explicit controller authority and workspace."""
+    """Execute only with a typed, raw-pinned controller root and workspace."""
     target_root = state_root or root
     _reject_conflicting_root(target_root)
+    raw_digest = expected_controller_root_raw_digest
+    if raw_digest is None:
+        raw_digest = expected_controller_root_artifact_digest
+    elif (
+        expected_controller_root_artifact_digest is not None
+        and expected_controller_root_artifact_digest != raw_digest
+    ):
+        raise RuntimeError("c7_controller_root_mismatch")
     if (
         authority_file is None
         or expected_authority_artifact_digest is None
         or workspace is None
-        or expected_controller_authority_digest is None
-        or expected_controller_authority_ref is None
+        or controller_root_file is None
+        or raw_digest is None
     ):
         raise RuntimeError("c7_authority_executor_unavailable")
+    controller = _load_controller_root(controller_root_file, raw_digest)
     authority = _load_authority(authority_file, expected_authority_artifact_digest)
-    if (
-        authority.controller_authority_digest != expected_controller_authority_digest
-        or authority.controller_authority_ref != expected_controller_authority_ref
-    ):
-        raise RuntimeError("c7_controller_authority_mismatch")
+    _match_controller_root(authority, controller)
     clock = _AuthorityClock()
     verifier = PinnedC7AuthorityVerifier(
         authority.authority_digest,
         expected_authority_artifact_digest,
-        controller_authority_digest=expected_controller_authority_digest,
-        controller_authority_ref=expected_controller_authority_ref,
+        controller_authority_digest=controller.controller_authority_digest,
+        controller_authority_ref=controller.controller_authority_ref,
     )
     store_root = target_root / "artifacts"
     executor = HermeticPytestExecutor(
@@ -128,8 +187,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--authority-file", type=Path)
     parser.add_argument("--expected-authority-artifact-digest")
-    parser.add_argument("--expected-controller-authority-digest")
-    parser.add_argument("--expected-controller-authority-ref")
+    parser.add_argument("--controller-root-file", type=Path)
+    parser.add_argument(
+        "--expected-controller-root-raw-digest",
+        "--expected-controller-root-artifact-digest",
+        dest="expected_controller_root_raw_digest",
+    )
     parser.add_argument("--workspace", type=Path)
     parser.add_argument("--state-root", type=Path)
     parser.add_argument("--root", type=Path, help=argparse.SUPPRESS)
@@ -144,8 +207,8 @@ def main() -> int:
             args.expected_authority_artifact_digest,
             args.workspace,
             state_root,
-            expected_controller_authority_digest=args.expected_controller_authority_digest,
-            expected_controller_authority_ref=args.expected_controller_authority_ref,
+            controller_root_file=args.controller_root_file,
+            expected_controller_root_raw_digest=args.expected_controller_root_raw_digest,
         )
     except (RuntimeError, OSError, ValueError) as exc:
         print(str(exc))
