@@ -1,5 +1,6 @@
 """Hosted Git providers."""
 
+from .c8_snapshot import C8GitHubSnapshotAdapter, C8SnapshotUnverifiable, GitHubC8SnapshotAdapter
 from .campaign import GitHubCampaignProvider
 from .github import (
     GitHubEvidenceSnapshot,
@@ -13,6 +14,7 @@ from .github import (
     GitHubRollbackTopology,
     github_repository_digest,
 )
+from .github_transport import GitHubJsonTransport
 from .protected_main import (
     MainGraduationAttester,
     MainMergeGroupObservation,
@@ -28,13 +30,15 @@ from .protected_main import (
     ProtectedMainRejected,
     ProtectedMainSnapshot,
 )
-from .github_transport import GitHubJsonTransport
 
 __all__ = [
+    "C8GitHubSnapshotAdapter",
+    "C8SnapshotUnverifiable",
+    "GitHubC8SnapshotAdapter",
     "GitHubCampaignProvider",
-    "GitHubJsonTransport",
     "GitHubEvidenceSnapshot",
     "GitHubIntegrationProvider",
+    "GitHubJsonTransport",
     "GitHubProtectionPolicy",
     "GitHubProvider",
     "GitHubPullRequestBinding",
