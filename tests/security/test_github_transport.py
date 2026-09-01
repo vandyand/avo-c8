@@ -2,13 +2,21 @@
 # pyright: reportUnknownArgumentType=false, reportUnknownLambdaType=false, reportPrivateUsage=false
 
 import io
+from datetime import UTC, datetime
 from email.message import Message
+from typing import Any, NoReturn, cast
 from urllib.error import HTTPError
+from urllib.request import Request
 
 import pytest
 
 from avo_correlate.adapters.hosted_git import github_transport
-from avo_correlate.adapters.hosted_git.github import GitHubRejected, GitHubTransportError
+from avo_correlate.adapters.hosted_git.github import (
+    GitHubIntegrationProvider,
+    GitHubRejected,
+    GitHubTransportError,
+    github_repository_digest,
+)
 from avo_correlate.adapters.hosted_git.github_transport import GitHubJsonTransport
 
 
@@ -106,6 +114,54 @@ def test_redirect_handler_rejects_before_following_another_origin() -> None:
     handler = github_transport._NoRedirectHandler()
     with pytest.raises(GitHubTransportError, match="redirect"):
         handler.redirect_request(None, 302, "", {}, "https://evil.example/")
+
+
+def test_default_provider_rejects_cross_origin_redirect_without_forwarding_auth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The provider's live default must use the pinned, no-redirect transport."""
+
+    provider = GitHubIntegrationProvider(
+        owner="acme",
+        repo="widget",
+        repository_digest=github_repository_digest("acme", "widget"),
+        target_ref="refs/heads/integration",
+        trusted_checks=(("ci", 7),),
+        protection_checks=(("ci", 7),),
+        freshness_cutoff=datetime(2026, 1, 1, tzinfo=UTC),
+        token="secret-token",
+    )
+    assert isinstance(provider.transport, GitHubJsonTransport)
+
+    requests: list[Request] = []
+
+    def open_with_cross_origin_redirect(request: Request, **_: object) -> NoReturn:
+        requests.append(request)
+        handler = next(
+            item
+            for item in cast(Any, github_transport._NO_REDIRECT_OPENER).handlers
+            if isinstance(item, github_transport._NoRedirectHandler)
+        )
+        handler.redirect_request(
+            request,
+            None,
+            302,
+            "Found",
+            {"Location": "https://evil.example/collect"},
+            "https://evil.example/collect",
+        )
+        raise AssertionError("the no-redirect handler must reject before this point")
+
+    monkeypatch.setattr(
+        github_transport._NO_REDIRECT_OPENER, "open", open_with_cross_origin_redirect
+    )
+    with pytest.raises(GitHubTransportError, match="redirect"):
+        provider.observe_integration("refs/heads/integration")
+
+    assert len(requests) == 1
+    request = requests[0]
+    assert request.full_url == "https://api.github.com/repos/acme/widget/git/ref/heads/integration"
+    assert request.get_header("Authorization") == "Bearer secret-token"
 
 
 def test_4xx_is_authoritative_but_5xx_and_timeout_are_ambiguous(

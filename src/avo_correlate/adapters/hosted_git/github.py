@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import json
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -12,7 +11,6 @@ from datetime import UTC, datetime
 from math import ceil
 from typing import Literal, Protocol, cast
 from urllib.parse import quote, urlparse
-from urllib.request import Request, urlopen
 
 from avo_correlate.contracts.integration_campaign import campaign_marker_digest
 from avo_correlate.contracts.integration_live_rollback_completion import (
@@ -46,7 +44,6 @@ type JsonValue = JsonPrimitive | list[JsonValue] | dict[str, JsonValue]
 type JsonObject = dict[str, JsonValue]
 type JsonBody = Mapping[str, JsonValue]
 
-_MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 _RECOVERY_CANDIDATE_REF = re.compile(r"^refs/heads/avo/candidate/[0-9a-f]{64}$")
 
 
@@ -208,25 +205,16 @@ def _json_value(value: object) -> JsonValue:
     raise ValueError("malformed JSON response")
 
 
-def _default_transport(
-    method: str, url: str, body: JsonBody | None, headers: Mapping[str, str]
-) -> tuple[int, JsonValue]:
-    data = json.dumps(body).encode() if body is not None else None
-    req = Request(
-        url, data=data, method=method, headers=dict(headers) | {"Content-Type": "application/json"}
-    )
-    try:
-        with urlopen(req, timeout=30) as response:
-            raw = response.read(_MAX_RESPONSE_BYTES + 1)
-            if len(raw) > _MAX_RESPONSE_BYTES:
-                raise GitHubTransportError("GitHub response exceeded configured bound")
-            parsed: object = json.loads(raw) if raw else {}
-            return int(response.status), _json_value(parsed)
-    except Exception as exc:  # urllib's HTTPError may carry an authoritative status
-        status = getattr(exc, "code", None)
-        if isinstance(status, int) and 400 <= status < 500:
-            raise GitHubRejected(f"GitHub request rejected ({status})", status=status) from exc
-        raise GitHubTransportError("GitHub transport failure") from exc
+def _default_transport() -> JsonTransport:
+    """Construct the bounded transport without importing it at module load time.
+
+    ``github_transport`` uses the provider's JSON types and exceptions, so this
+    import must stay lazy to avoid a module initialization cycle.
+    """
+
+    from .github_transport import GitHubJsonTransport
+
+    return GitHubJsonTransport()
 
 
 def _object(value: JsonValue, context: str) -> JsonObject:
@@ -309,7 +297,7 @@ class GitHubIntegrationProvider:
     api_base: str = "https://api.github.com"
     provider_identity: str = "github"
     provider_api_version: str = "2022-11-28"
-    transport: JsonTransport = _default_transport
+    transport: JsonTransport = field(default_factory=_default_transport)
 
     def __post_init__(self) -> None:
         if not self.owner or not self.repo or any(c in self.owner + self.repo for c in "/\\"):
