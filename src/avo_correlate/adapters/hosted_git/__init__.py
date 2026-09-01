@@ -1,5 +1,18 @@
 """Hosted Git providers."""
 
+from .c8_phase2 import (
+    C8Phase2Blocked,
+    C8Phase2Unverifiable,
+    EffectiveMainRules,
+    MergeQueueConfiguration,
+    RequiredChecksConfiguration,
+    parse_branch_protection_checks,
+    parse_effective_main_rules,
+    parse_merge_queue,
+    parse_merge_queue_configuration,
+    parse_required_checks,
+    parse_rules,
+)
 from .c8_snapshot import C8GitHubSnapshotAdapter, C8SnapshotUnverifiable, GitHubC8SnapshotAdapter
 from .campaign import GitHubCampaignProvider
 from .github import (
@@ -33,7 +46,10 @@ from .protected_main import (
 
 __all__ = [
     "C8GitHubSnapshotAdapter",
+    "C8Phase2Blocked",
+    "C8Phase2Unverifiable",
     "C8SnapshotUnverifiable",
+    "EffectiveMainRules",
     "GitHubC8SnapshotAdapter",
     "GitHubCampaignProvider",
     "GitHubEvidenceSnapshot",
@@ -52,6 +68,7 @@ __all__ = [
     "MainPullRequestObservation",
     "MainRefObservation",
     "MainRepositoryObservation",
+    "MergeQueueConfiguration",
     "ProtectedMainAttestationAdapter",
     "ProtectedMainAttester",
     "ProtectedMainGitHubProvider",
@@ -59,5 +76,12 @@ __all__ = [
     "ProtectedMainProviderError",
     "ProtectedMainRejected",
     "ProtectedMainSnapshot",
+    "RequiredChecksConfiguration",
     "github_repository_digest",
+    "parse_branch_protection_checks",
+    "parse_effective_main_rules",
+    "parse_merge_queue",
+    "parse_merge_queue_configuration",
+    "parse_required_checks",
+    "parse_rules",
 ]
