@@ -1,4 +1,4 @@
-# pyright: reportMissingImports=false, reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnknownVariableType=false, reportUntypedFunctionDecorator=false, reportIncompatibleMethodOverride=false
+# pyright: reportMissingImports=false, reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnknownVariableType=false, reportUntypedFunctionDecorator=false, reportIncompatibleMethodOverride=false, reportPrivateUsage=false
 
 """Focused framework tests for the deterministic C7 offline drill service.
 
@@ -23,10 +23,10 @@ from avo_correlate.adapters.artifacts.main_graduation_offline_drill_journal impo
     MainGraduationOfflineDrillJournalError,
 )
 from avo_correlate.application.main_graduation_offline_drill_service import (
-    DeterministicOfflineDrillHarness,
     MainGraduationOfflineDrillError,
     MainGraduationOfflineDrillService,
     OfflineDrillObservation,
+    _DeterministicOfflineDrillHarness,
 )
 from avo_correlate.contracts.main_graduation_offline_drill import (
     FROZEN_OFFLINE_DRILL_CASE_IDS,
@@ -42,7 +42,7 @@ class CountingExecutor:
         store = FilesystemArtifactStore(
             root / "artifacts", clock=lambda: datetime(2026, 1, 1, tzinfo=UTC)
         )
-        self.delegate = DeterministicOfflineDrillHarness(store)
+        self.delegate = _DeterministicOfflineDrillHarness(store)
         self.calls = 0
         self.keys: list[tuple[str, str]] = []
 
@@ -54,8 +54,52 @@ class CountingExecutor:
 
 def _run(root: Path) -> tuple[MainGraduationOfflineDrillService, CountingExecutor]:
     executor = CountingExecutor(root)
-    service = MainGraduationOfflineDrillService(root, executor=executor)
+    service = MainGraduationOfflineDrillService(
+        root,
+        executor=executor,
+        clock=_FixedClock(),
+        authority_manifest=_manifest(),
+        authority_verifier=_TestVerifier(),
+    )
     return service, executor
+
+
+class _FixedClock:
+    def now(self) -> datetime:
+        return datetime(2026, 1, 1, tzinfo=UTC)
+
+
+class _TestVerifier:
+    def verify_plan(self, plan: Any) -> bool:
+        return True
+
+    def verify_case_result(self, case_result: Any, plan: Any, evidence: Any) -> bool:
+        return True
+
+    def verify_result(self, result: Any, plan: Any, cases: Any) -> bool:
+        return True
+
+
+def _manifest() -> dict[str, Any]:
+    def digest(label: str) -> str:
+        return canonical_digest({"c7-test": label})
+
+    return {
+        "operation_id": digest("operation"),
+        "repository_digest": digest("repository"),
+        "protocol_digest": digest("protocol"),
+        "configuration_digest": digest("configuration"),
+        "policy_digest": digest("policy"),
+        "policy_epoch_digest": digest("policy-epoch"),
+        "activation_digest": digest("activation"),
+        "controller_authority_digest": digest("controller"),
+        "controller_authority_ref": "refs/avo/test-controller",
+        "execution_authority_digest": digest("execution-authority"),
+        "execution_authority_ref": "refs/avo/test-execution-authority",
+        "main_before_commit": "3" * 40,
+        "main_before_tree": "4" * 40,
+        "main_before_parents": ("5" * 40,),
+    }
 
 
 @pytest.fixture
@@ -86,8 +130,8 @@ def test_full_frozen_matrix_closes_and_aggregates(short_root: Path) -> None:
 
 
 def test_two_fresh_roots_are_byte_identical(short_root: Path) -> None:
-    first = MainGraduationOfflineDrillService(short_root / "first").run()
-    second = MainGraduationOfflineDrillService(short_root / "second").run()
+    first = _run(short_root / "first")[0].run()
+    second = _run(short_root / "second")[0].run()
 
     assert first.plan.plan_digest == second.plan.plan_digest
     assert first.result is not None and second.result is not None
@@ -139,7 +183,13 @@ def test_changed_main_and_nonzero_mutation_observations_block(
 
     executor = MutatingExecutor(short_root)
     with pytest.raises(MainGraduationOfflineDrillError):
-        MainGraduationOfflineDrillService(short_root, executor=executor).run()
+        MainGraduationOfflineDrillService(
+            short_root,
+            executor=executor,
+            clock=_FixedClock(),
+            authority_manifest=_manifest(),
+            authority_verifier=_TestVerifier(),
+        ).run()
 
 
 def test_deploy_flag_and_unknown_outcome_observations_block(short_root: Path) -> None:
@@ -152,7 +202,11 @@ def test_deploy_flag_and_unknown_outcome_observations_block(short_root: Path) ->
 
     with pytest.raises((MainGraduationOfflineDrillError, TypeError)):
         MainGraduationOfflineDrillService(
-            short_root / "deploy", executor=BadExecutor(short_root / "deploy")
+            short_root / "deploy",
+            executor=BadExecutor(short_root / "deploy"),
+            clock=_FixedClock(),
+            authority_manifest=_manifest(),
+            authority_verifier=_TestVerifier(),
         ).run()
 
     class UnknownExecutor(CountingExecutor):
@@ -161,7 +215,11 @@ def test_deploy_flag_and_unknown_outcome_observations_block(short_root: Path) ->
 
     with pytest.raises(MainGraduationOfflineDrillError):
         MainGraduationOfflineDrillService(
-            short_root / "unknown", executor=UnknownExecutor(short_root / "unknown")
+            short_root / "unknown",
+            executor=UnknownExecutor(short_root / "unknown"),
+            clock=_FixedClock(),
+            authority_manifest=_manifest(),
+            authority_verifier=_TestVerifier(),
         ).run()
 
 
@@ -174,7 +232,11 @@ def test_missing_and_duplicate_evidence_observations_block(short_root: Path) -> 
         (MainGraduationOfflineDrillError, MainGraduationOfflineDrillJournalError, ValidationError)
     ):
         MainGraduationOfflineDrillService(
-            short_root / "missing", executor=MissingEvidenceExecutor(short_root / "missing")
+            short_root / "missing",
+            executor=MissingEvidenceExecutor(short_root / "missing"),
+            clock=_FixedClock(),
+            authority_manifest=_manifest(),
+            authority_verifier=_TestVerifier(),
         ).run()
 
     class DuplicateEvidenceExecutor(CountingExecutor):
@@ -187,14 +249,18 @@ def test_missing_and_duplicate_evidence_observations_block(short_root: Path) -> 
 
     with pytest.raises((MainGraduationOfflineDrillError, ValidationError)):
         MainGraduationOfflineDrillService(
-            short_root / "duplicate", executor=DuplicateEvidenceExecutor(short_root / "duplicate")
+            short_root / "duplicate",
+            executor=DuplicateEvidenceExecutor(short_root / "duplicate"),
+            clock=_FixedClock(),
+            authority_manifest=_manifest(),
+            authority_verifier=_TestVerifier(),
         ).run()
 
 
 def test_unknown_or_duplicate_vector_is_rejected_by_frozen_plan(short_root: Path) -> None:
     # This is a framework-level guard: no service result can be built from an
     # input plan that changes the immutable matrix.
-    service = MainGraduationOfflineDrillService(short_root)
+    service = _run(short_root)[0]
     plan = service.prepare().model_dump(mode="json")
     first = plan["cases"][0]
     first["vectors"] = [first["vectors"][0], first["vectors"][0]]

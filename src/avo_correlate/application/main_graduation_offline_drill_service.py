@@ -1,4 +1,4 @@
-# pyright: reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnknownVariableType=false, reportUnnecessaryCast=false
+# pyright: reportUnknownMemberType=false, reportUnknownArgumentType=false, reportUnknownVariableType=false, reportUnnecessaryCast=false, reportPrivateUsage=false
 
 """Deterministic, offline-only C7 graduation drill orchestration.
 
@@ -12,13 +12,15 @@ evidence before a result is durable.
 from __future__ import annotations
 
 import inspect
+from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol, cast
 
 from avo_correlate.adapters.artifacts.filesystem import FilesystemArtifactStore
 from avo_correlate.adapters.artifacts.main_graduation_offline_drill_journal import (
+    MainGraduationOfflineDrillAuthorityVerifier,
     MainGraduationOfflineDrillJournal,
 )
 from avo_correlate.contracts.base import ArtifactRef, Sha256Digest
@@ -34,24 +36,10 @@ from avo_correlate.contracts.main_graduation_offline_drill import (
     MainGraduationOfflineDrillReplayFacts,
     MainGraduationOfflineDrillResult,
     MainGraduationOfflineDrillVectorSpec,
+    offline_drill_case_id,
     offline_drill_operation_id,
 )
 from avo_correlate.domain.canonical import canonical_bytes, canonical_digest
-
-FIXED_C7_TIME = datetime(2026, 1, 1, 0, 0, tzinfo=UTC)
-FIXED_C7_REPOSITORY_DIGEST: Sha256Digest = "sha256:" + "1" * 64
-FIXED_C7_OPERATION_ID: Sha256Digest = cast(
-    Sha256Digest,
-    canonical_digest(
-        {
-            "domain": "avo-004.7-c7/offline-root/v1",
-            "repository_digest": FIXED_C7_REPOSITORY_DIGEST,
-        }
-    ),
-)
-FIXED_C7_MAIN_COMMIT = "3" * 40
-FIXED_C7_MAIN_TREE = "4" * 40
-FIXED_C7_MAIN_PARENT = "5" * 40
 
 
 class OfflineDrillClock(Protocol):
@@ -76,9 +64,9 @@ class OfflineDrillObservation:
     observed_outcome: DrillOutcome = "reconciliation_required"
     observed_state: DrillState = "failed_closed"
     evidence_artifacts: tuple[ArtifactRef, ...] = ()
-    main_after_commit: str = FIXED_C7_MAIN_COMMIT
-    main_after_tree: str = FIXED_C7_MAIN_TREE
-    main_after_parents: tuple[str, ...] = (FIXED_C7_MAIN_PARENT,)
+    main_after_commit: str = ""
+    main_after_tree: str = ""
+    main_after_parents: tuple[str, ...] = ()
     provider_mutation_count: int = 0
     reconciliation_mutation_count: int = 0
     release_mutation_count: int = 0
@@ -114,45 +102,7 @@ class MainGraduationOfflineDrillError(RuntimeError):
     """The offline observation cannot be safely bound to the frozen plan."""
 
 
-class _C7Verifier:
-    """Minimal controller verifier used by the reference offline harness."""
-
-    @staticmethod
-    def verify_plan(plan: MainGraduationOfflineDrillPlan) -> bool:
-        return (
-            plan.deploy_performed is False
-            and plan.target_ref == "refs/heads/main"
-            and plan.main_before_commit == FIXED_C7_MAIN_COMMIT
-        )
-
-    @staticmethod
-    def verify_case_result(
-        case_result: MainGraduationOfflineDrillCaseResult,
-        plan: MainGraduationOfflineDrillPlan,
-        evidence: tuple[Any, ...],
-    ) -> bool:
-        return (
-            case_result.deploy_performed is False
-            and case_result.root_operation_id == plan.operation_id
-            and len(evidence) >= 7
-            and case_result.main_before_commit == case_result.main_after_commit
-            and case_result.main_before_tree == case_result.main_after_tree
-        )
-
-    @staticmethod
-    def verify_result(
-        result: MainGraduationOfflineDrillResult,
-        plan: MainGraduationOfflineDrillPlan,
-        cases: tuple[MainGraduationOfflineDrillCaseResult, ...],
-    ) -> bool:
-        return (
-            result.deploy_performed is False
-            and result.operation_id == plan.operation_id
-            and len(cases) == sum(len(v) for v in FROZEN_OFFLINE_DRILL_VECTOR_IDS.values())
-        )
-
-
-class DeterministicOfflineDrillHarness:
+class _DeterministicOfflineDrillHarness:
     """Reference executor for the fully offline C7 gate.
 
     The harness writes canonical, typed evidence envelopes through the same
@@ -206,6 +156,9 @@ class DeterministicOfflineDrillHarness:
             observed_outcome=expected_outcome,
             observed_state=expected_state,
             evidence_artifacts=tuple(refs),
+            main_after_commit=plan.main_before_commit,
+            main_after_tree=plan.main_before_tree,
+            main_after_parents=plan.main_before_parents,
             crash_injected=crash,
             crash_boundary=vector.vector_id if crash else "none",
             replayed=replayed,
@@ -264,29 +217,61 @@ class MainGraduationOfflineDrillService:
         *,
         clock: OfflineDrillClock | None = None,
         trusted_clock: OfflineDrillClock | None = None,
-        repository_digest: Sha256Digest = FIXED_C7_REPOSITORY_DIGEST,
+        authority_manifest: Mapping[str, Any] | None = None,
+        authority_verifier: MainGraduationOfflineDrillAuthorityVerifier | None = None,
+        repository_digest: Sha256Digest | None = None,
         operation_id: Sha256Digest | None = None,
     ) -> None:
-        self._clock = clock or trusted_clock or _FixedClock()
+        if executor is None:
+            raise MainGraduationOfflineDrillError("c7_authority_executor_unavailable")
+        if isinstance(executor, _DeterministicOfflineDrillHarness):
+            raise MainGraduationOfflineDrillError("c7_authority_executor_unavailable")
+        if authority_manifest is None:
+            raise MainGraduationOfflineDrillError("c7_authority_executor_unavailable")
+        manifest = dict(authority_manifest)
+        required_manifest = (
+            "operation_id",
+            "repository_digest",
+            "protocol_digest",
+            "configuration_digest",
+            "policy_digest",
+            "policy_epoch_digest",
+            "activation_digest",
+            "controller_authority_digest",
+            "controller_authority_ref",
+            "execution_authority_digest",
+            "execution_authority_ref",
+            "main_before_commit",
+            "main_before_tree",
+            "main_before_parents",
+        )
+        if any(key not in manifest for key in required_manifest):
+            raise MainGraduationOfflineDrillError("c7_authority_executor_unavailable")
+        self._clock = clock or trusted_clock
+        self._authority_manifest = manifest
+        manifest_operation = cast(Sha256Digest, manifest["operation_id"])
+        if operation_id is not None and operation_id != manifest_operation:
+            raise MainGraduationOfflineDrillError("authority manifest operation mismatch")
+        if repository_digest is not None and repository_digest != manifest["repository_digest"]:
+            raise MainGraduationOfflineDrillError("authority manifest repository mismatch")
         if isinstance(journal_or_root, MainGraduationOfflineDrillJournal):
             self._journal = journal_or_root
             store = self._journal.artifact_store
-            # Journals are intentionally fail-closed when used directly.  A
-            # service-created journal gets the controller verifier above; for
-            # a caller-created journal, install the same verifier only when
-            # no explicit verifier was supplied.
-            if getattr(self._journal, "_verifier", None) is None:
-                self._journal._verifier = _C7Verifier()  # type: ignore[attr-defined]
+            if self._journal._verifier is None:
+                raise MainGraduationOfflineDrillError("independent C7 authority verifier required")
+            if authority_verifier is not None and authority_verifier is not self._journal._verifier:
+                raise MainGraduationOfflineDrillError("journal/verifier binding mismatch")
         else:
+            if authority_verifier is None or self._clock is None:
+                raise MainGraduationOfflineDrillError("independent C7 authority verifier required")
             store = FilesystemArtifactStore(
                 Path(journal_or_root) / "artifacts", clock=self._clock.now
             )
             self._journal = MainGraduationOfflineDrillJournal(
-                Path(journal_or_root), authority_verifier=_C7Verifier(), artifact_store=store
+                Path(journal_or_root), authority_verifier=authority_verifier, artifact_store=store
             )
-        self._repository_digest = repository_digest
-        self._operation_id = operation_id or self.operation_id(repository_digest)
-        self._executor = executor or DeterministicOfflineDrillHarness(store, clock=self._clock)
+        self._operation_id = manifest_operation
+        self._executor = executor
 
     @property
     def journal(self) -> MainGraduationOfflineDrillJournal:
@@ -297,13 +282,11 @@ class MainGraduationOfflineDrillService:
         return self._executor
 
     @staticmethod
-    def operation_id(repository_digest: Sha256Digest = FIXED_C7_REPOSITORY_DIGEST) -> Sha256Digest:
-        return cast(
-            Sha256Digest,
-            canonical_digest(
-                {"domain": "avo-004.7-c7/offline-root/v1", "repository_digest": repository_digest}
-            ),
-        )
+    def operation_id(authority_manifest: Mapping[str, Any]) -> Sha256Digest:
+        value = authority_manifest.get("operation_id")
+        if not isinstance(value, str) or not value.startswith("sha256:"):
+            raise MainGraduationOfflineDrillError("authority manifest operation is required")
+        return cast(Sha256Digest, value)
 
     def prepare(self) -> MainGraduationOfflineDrillPlan:
         existing = self._journal.read_plan(self._operation_id)
@@ -340,29 +323,33 @@ class MainGraduationOfflineDrillService:
                 )
                 vectors.append(MainGraduationOfflineDrillVectorSpec.model_validate(vector_values))
             case_values: dict[str, Any] = {"case_id": case_id, "vectors": tuple(vectors)}
-            case_stub = MainGraduationOfflineDrillCaseSpec.model_construct(
-                **case_values, case_digest="sha256:" + "0" * 64
-            )
-            case_values["case_digest"] = canonical_digest(
-                {
-                    "domain": "avo-004.7-c7/offline-drill-case-spec/v1",
-                    "value": case_stub.model_dump(exclude={"case_digest"}, mode="json"),
-                }
+            case_values["plan_operation_id"] = self._operation_id
+            case_values["case_digest"] = offline_drill_case_id(
+                self._operation_id,
+                case_id,
+                [item.model_dump(mode="json") for item in vectors],
             )
             cases.append(MainGraduationOfflineDrillCaseSpec.model_validate(case_values))
         values: dict[str, Any] = {
             "operation_id": self._operation_id,
-            "repository_digest": self._repository_digest,
-            "protocol_digest": canonical_digest("avo-004.7-c7-protocol-v1"),
-            "configuration_digest": canonical_digest("avo-004.7-c7-configuration-v1"),
-            "policy_digest": canonical_digest("avo-004.7-c7-policy-v1"),
-            "policy_epoch_digest": canonical_digest("avo-004.7-c7-policy-epoch-1"),
-            "activation_digest": canonical_digest("avo-004.7-c7-c6-activation-v1"),
-            "controller_authority_digest": canonical_digest("avo-004.7-c7-controller-authority-v1"),
-            "controller_authority_ref": "refs/avo/c7-controller",
-            "main_before_commit": FIXED_C7_MAIN_COMMIT,
-            "main_before_tree": FIXED_C7_MAIN_TREE,
-            "main_before_parents": (FIXED_C7_MAIN_PARENT,),
+            **{
+                key: self._authority_manifest[key]
+                for key in (
+                    "repository_digest",
+                    "protocol_digest",
+                    "configuration_digest",
+                    "policy_digest",
+                    "policy_epoch_digest",
+                    "activation_digest",
+                    "controller_authority_digest",
+                    "controller_authority_ref",
+                    "execution_authority_digest",
+                    "execution_authority_ref",
+                    "main_before_commit",
+                    "main_before_tree",
+                    "main_before_parents",
+                )
+            },
             "cases": tuple(cases),
         }
         plan_stub = MainGraduationOfflineDrillPlan.model_construct(
@@ -556,22 +543,12 @@ class MainGraduationOfflineDrillService:
         return MainGraduationOfflineDrillCaseResult.model_validate(values)
 
 
-class _FixedClock:
-    def now(self) -> datetime:
-        return FIXED_C7_TIME
-
-
 OfflineDrillService = MainGraduationOfflineDrillService
 OfflineDrillRun = MainGraduationOfflineDrillRun
 OfflineDrillObservationEnvelope = OfflineDrillObservation
 OfflineDrillExecutor = OfflineDrillCaseExecutor
-DeterministicOfflineDrillExecutor = DeterministicOfflineDrillHarness
 
 __all__ = [
-    "FIXED_C7_OPERATION_ID",
-    "FIXED_C7_REPOSITORY_DIGEST",
-    "DeterministicOfflineDrillExecutor",
-    "DeterministicOfflineDrillHarness",
     "MainGraduationOfflineDrillError",
     "MainGraduationOfflineDrillRun",
     "MainGraduationOfflineDrillService",
