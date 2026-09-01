@@ -95,8 +95,7 @@ class HermeticPytestExecutor:
         """Check the immutable execution identity before every run/replay."""
         if not self.workspace.is_dir():
             raise OfflinePytestExecutionError("workspace is unavailable")
-        if self.clock() > authority.expires_at:
-            raise OfflinePytestExecutionError("execution authority expired")
+        self._check_window(authority)
         if not authority.argv or "pytest" not in authority.argv:
             raise OfflinePytestExecutionError("authority argv is not pytest")
         if tuple(authority.argv) != FROZEN_OFFLINE_EXECUTION_ARGV:
@@ -201,7 +200,11 @@ class HermeticPytestExecutor:
         return MainGraduationOfflineExecutionReport.model_validate(values)
 
     def _check_expiry(self, authority: MainGraduationOfflineExecutionAuthority) -> None:
-        if self.clock() > authority.expires_at:
+        self._check_window(authority)
+
+    def _check_window(self, authority: MainGraduationOfflineExecutionAuthority) -> None:
+        now = self.clock()
+        if now < authority.authorized_at or now >= authority.expires_at:
             raise OfflinePytestExecutionError("execution authority expired")
 
     def _measure_workspace(

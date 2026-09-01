@@ -84,7 +84,7 @@ def _load_controller_root(
     """Load the typed controller root using only its out-of-band raw pin."""
     try:
         return load_controller_root(path, expected_raw_digest)
-    except C7ControllerRootError as exc:
+    except (C7ControllerRootError, AttributeError, TypeError) as exc:
         raise RuntimeError("c7_controller_root_mismatch") from exc
 
 
@@ -154,6 +154,11 @@ def run(
     authority = _load_authority(authority_file, expected_authority_artifact_digest)
     _match_controller_root(authority, controller)
     clock = _AuthorityClock()
+    now = clock.now()
+    if not controller.root.authorized_at <= now < controller.root.expires_at:
+        raise RuntimeError("c7_controller_authority_window_mismatch")
+    if not authority.authorized_at <= now < authority.expires_at:
+        raise RuntimeError("c7_controller_authority_window_mismatch")
     verifier = PinnedC7AuthorityVerifier(
         authority.authority_digest,
         expected_authority_artifact_digest,
