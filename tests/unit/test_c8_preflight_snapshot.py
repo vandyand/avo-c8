@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 from concurrent.futures import ThreadPoolExecutor
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -93,6 +93,26 @@ def payloads(owner_type: str = "Organization", *, no_queue: bool = False) -> dic
                 ],
             }
         },
+        base + "/check-runs": [
+            {
+                "id": 101,
+                "name": "validate (ubuntu-latest)",
+                "head_sha": A,
+                "status": "completed",
+                "conclusion": "success",
+                "completed_at": "2026-01-01T00:00:00+00:00",
+                "app": {"id": 15368, "slug": "github-actions", "name": "GitHub Actions"},
+            },
+            {
+                "id": 102,
+                "name": "validate (windows-latest)",
+                "head_sha": A,
+                "status": "completed",
+                "conclusion": "success",
+                "completed_at": "2026-01-01T00:00:00+00:00",
+                "app": {"id": 15368, "slug": "github-actions", "name": "GitHub Actions"},
+            },
+        ],
         "__queue__": no_queue,
     }
 
@@ -126,6 +146,11 @@ class FakeTransport:
                     },
                 }
             return 200, {"data": {"repository": {"mergeQueue": queue}}}
+        if parsed.path.endswith("/check-runs"):
+            runs = self.values["/repos/avo-org/avo/check-runs"]
+            page = int(dict([part.split("=") for part in parsed.query.split("&")])["page"])
+            start = (page - 1) * 100
+            return 200, {"total_count": len(runs), "check_runs": runs[start : start + 100]}
         return 200, self.values[path]
 
 
@@ -156,9 +181,16 @@ def test_phase2_transaction_and_replay_are_single_flight() -> None:
     observer = subject(fake)
     assert observer.capture() is observer
     assert [item[0] for item in fake.calls] == (
-        ["GET"] * 7 + ["POST"] + ["GET"] * 3 + ["POST", "GET"]
+        ["GET"] * 7 + ["POST"] + ["GET"] * 4 + ["POST", "GET", "GET"]
     )
     assert fake.calls[4][1] == "/repos/avo-org/avo/rules/branches/main?per_page=100&page=1"
+    expected_checks_path = (
+        "/repos/avo-org/avo/commits/"
+        + A
+        + "/check-runs?filter=all&per_page=100&page=1"
+    )
+    assert fake.calls[8][1] == expected_checks_path
+    assert fake.calls[8][2] is None
     assert "secret" not in repr(observer.observe_repository())
     count = len(fake.calls)
     assert observer.observe_protection().binding == observer.observe_queue_configuration().binding
@@ -195,13 +227,14 @@ def test_common_binding_and_facts() -> None:
     ]
     assert len({item.binding for item in values}) == 1
     workflow = observer.observe_workflow()
-    assert workflow.validation_check_identity_digest is None
+    assert workflow.validation_check_identity_digest is not None
     assert workflow.pull_request_event is None
     assert workflow.merge_group_event is None
     assert workflow.exact_sha_checkout is None
     assert workflow.checkout_persist_credentials_false is None
-    with pytest.raises(C8PreflightSnapshotUnverifiable):
-        observer.observe_validation_identity()
+    validation = observer.observe_validation_identity()
+    assert validation.app_id == 15368
+    assert validation.identity == "github-actions"
     assert observer.observe_queue_configuration().available
 
 
@@ -226,9 +259,8 @@ def test_valid_authenticated_workflow_fills_static_facts_without_identity_claim(
     assert read.merge_group_event is True
     assert read.exact_sha_checkout is True
     assert read.checkout_persist_credentials_false is True
-    assert read.validation_check_identity_digest is None
-    with pytest.raises(C8PreflightSnapshotUnverifiable):
-        observer.observe_validation_identity()
+    assert read.validation_check_identity_digest is not None
+    assert observer.observe_validation_identity().app_id == 15368
 
 
 def test_concurrent_capture_is_single_flight() -> None:
@@ -237,7 +269,7 @@ def test_concurrent_capture_is_single_flight() -> None:
     with ThreadPoolExecutor(max_workers=8) as pool:
         results = list(pool.map(lambda _: observer.capture(), range(8)))
     assert all(item is observer for item in results)
-    assert len(fake.calls) == 13
+    assert len(fake.calls) == 15
 
 
 def test_absent_queue_maps_through_service_and_unsupported_reads_stay_unverifiable() -> None:
@@ -274,7 +306,7 @@ def test_final_ref_drift_and_malformed_rules_are_redacted() -> None:
     def drift(method: str, url: str, body: Any, headers: dict[str, str]) -> tuple[int, Any]:
         nonlocal calls
         calls += 1
-        if calls == 13:
+        if calls == 15:
             values["/repos/avo-org/avo/git/ref/heads/main"]["object"]["sha"] = "d" * 40
         return original(method, url, body, headers)
 
@@ -315,6 +347,166 @@ def test_sha256_git_blob_oid_is_supported() -> None:
     assert observer.observe_workflow().workflow_digest is not None
 
 
+def test_validation_success_must_remain_fresh_at_final_snapshot_time() -> None:
+    values = payloads()
+    for item in values["/repos/avo-org/avo/check-runs"]:
+        item["completed_at"] = "2025-12-31T23:57:00+00:00"
+    times = iter((NOW, NOW + timedelta(minutes=4)))
+    observer = GitHubC8PreflightSnapshot(
+        owner="avo-org",
+        repo="avo",
+        workflow_path=".github/workflows/validation.yml",
+        token="secret",
+        transport=FakeTransport(values),
+        clock=lambda: next(times),
+    )
+    with pytest.raises(C8PreflightSnapshotUnverifiable):
+        observer.capture()
+
+
+@pytest.mark.parametrize("blocker", ["wrong_app", "terminal_failure"])
+def test_validation_blocker_must_remain_fresh_at_final_snapshot_time(blocker: str) -> None:
+    values = payloads()
+    for item in values["/repos/avo-org/avo/check-runs"]:
+        item["completed_at"] = "2025-12-31T23:57:00+00:00"
+    if blocker == "wrong_app":
+        values["/repos/avo-org/avo/check-runs"][0]["app"] = {
+            "id": 42,
+            "slug": "other",
+            "name": "Other",
+        }
+    else:
+        values["/repos/avo-org/avo/check-runs"][0]["conclusion"] = "failure"
+    times = iter((NOW, NOW + timedelta(minutes=4)))
+    observer = GitHubC8PreflightSnapshot(
+        owner="avo-org",
+        repo="avo",
+        workflow_path=".github/workflows/validation.yml",
+        token="secret",
+        transport=FakeTransport(values),
+        clock=lambda: next(times),
+    )
+    with pytest.raises(C8PreflightSnapshotUnverifiable):
+        observer.capture()
+
+
+@pytest.mark.parametrize("blocker", ["wrong_app", "terminal_failure"])
+def test_fresh_validation_blocker_remains_conclusive(blocker: str) -> None:
+    values = payloads()
+    if blocker == "wrong_app":
+        values["/repos/avo-org/avo/check-runs"][0]["app"] = {
+            "id": 42,
+            "slug": "other",
+            "name": "Other",
+        }
+    else:
+        values["/repos/avo-org/avo/check-runs"][0]["conclusion"] = "failure"
+    observer = GitHubC8PreflightSnapshot(
+        owner="avo-org",
+        repo="avo",
+        workflow_path=".github/workflows/validation.yml",
+        token="secret",
+        transport=FakeTransport(values),
+        clock=lambda: NOW,
+    ).capture()
+    assert observer.observe_validation_identity().app_id is None
+    report = C8HostedPreflightService(observer).run()
+    assert "validation_app15368_identity_unverified" in report.blocker_codes
+
+
+def _with_duplicate_validation_run(values: dict[str, Any]) -> None:
+    checks = values["/repos/avo-org/avo/check-runs"]
+    duplicate = checks[0].copy()
+    duplicate["id"] = 103
+    checks.append(duplicate)
+
+
+def test_duplicate_validation_context_must_remain_fresh_at_final_snapshot_time() -> None:
+    values = payloads()
+    _with_duplicate_validation_run(values)
+    for item in values["/repos/avo-org/avo/check-runs"]:
+        item["completed_at"] = "2025-12-31T23:57:00+00:00"
+    times = iter((NOW, NOW + timedelta(minutes=4)))
+    observer = GitHubC8PreflightSnapshot(
+        owner="avo-org",
+        repo="avo",
+        workflow_path=".github/workflows/validation.yml",
+        token="secret",
+        transport=FakeTransport(values),
+        clock=lambda: next(times),
+    )
+    with pytest.raises(C8PreflightSnapshotUnverifiable):
+        observer.capture()
+
+
+def test_duplicate_validation_context_page_drift_is_rejected() -> None:
+    values = payloads()
+    _with_duplicate_validation_run(values)
+    fake = FakeTransport(values)
+    original = fake.__call__
+    calls = 0
+
+    def drift(method: str, url: str, body: Any, headers: dict[str, str]) -> tuple[int, Any]:
+        nonlocal calls
+        calls += 1
+        if calls == 14:
+            values["/repos/avo-org/avo/check-runs"][2]["details_url"] = "https://drift.invalid"
+        return original(method, url, body, headers)
+
+    observer = GitHubC8PreflightSnapshot(
+        owner="avo-org",
+        repo="avo",
+        workflow_path=".github/workflows/validation.yml",
+        token="secret",
+        transport=drift,
+        clock=lambda: NOW,
+    )
+    with pytest.raises(C8PreflightSnapshotUnverifiable):
+        observer.capture()
+
+
+def test_fresh_duplicate_validation_context_remains_conclusive() -> None:
+    values = payloads()
+    _with_duplicate_validation_run(values)
+    observer = GitHubC8PreflightSnapshot(
+        owner="avo-org",
+        repo="avo",
+        workflow_path=".github/workflows/validation.yml",
+        token="secret",
+        transport=FakeTransport(values),
+        clock=lambda: NOW,
+    ).capture()
+    assert observer.observe_validation_identity().app_id is None
+
+
+def test_unrelated_check_run_page_drift_is_bound_between_configuration_passes() -> None:
+    values = payloads()
+    values["/repos/avo-org/avo/check-runs"].append(
+        {"id": 103, "name": "unrelated", "head_sha": A}
+    )
+    fake = FakeTransport(values)
+    original = fake.__call__
+    calls = 0
+
+    def drift(method: str, url: str, body: Any, headers: dict[str, str]) -> tuple[int, Any]:
+        nonlocal calls
+        calls += 1
+        if calls == 14:
+            values["/repos/avo-org/avo/check-runs"][2]["name"] = "unrelated-drift"
+        return original(method, url, body, headers)
+
+    observer = GitHubC8PreflightSnapshot(
+        owner="avo-org",
+        repo="avo",
+        workflow_path=".github/workflows/validation.yml",
+        token="secret",
+        transport=drift,
+        clock=lambda: NOW,
+    )
+    with pytest.raises(C8PreflightSnapshotUnverifiable):
+        observer.capture()
+
+
 @pytest.mark.parametrize("kind", ["base64", "utf8"])
 def test_bad_workflow_bytes_do_not_retain_exception_context(kind: str) -> None:
     values = payloads()
@@ -353,19 +545,19 @@ def test_configuration_drift_between_passes_is_rejected(field: str) -> None:
     def drift(method: str, url: str, body: Any, headers: dict[str, str]) -> tuple[int, Any]:
         nonlocal calls
         calls += 1
-        if calls == 8 and field == "effective":
+        if calls == 10 and field == "effective":
             values["/repos/avo-org/avo/rules/branches/main?per_page=100&page=1"][0][
                 "parameters"
             ]["max_entries_to_merge"] = 2
             values["/repos/avo-org/avo/rulesets/1"]["rules"][0]["parameters"][
                 "max_entries_to_merge"
             ] = 2
-        if calls == 10 and field == "protection":
+        if calls == 12 and field == "protection":
             values["/repos/avo-org/avo/branches/main/protection"]["required_status_checks"][
                 "checks"
             ][0]["app_id"] = 42
         result = original(method, url, body, headers)
-        if calls == 12 and field == "queue":
+        if calls == 13 and field == "queue":
             result = (
                 result[0],
                 {"data": {"repository": {"mergeQueue": {"configuration": {

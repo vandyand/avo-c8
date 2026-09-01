@@ -24,18 +24,26 @@ from avo_correlate.contracts.c8_hosted_preflight import (
     C8ProtectionRead,
     C8QueueConfigurationRead,
     C8RepositoryRead,
+    C8ValidationIdentityRead,
     C8WorkflowRead,
 )
 from avo_correlate.domain.canonical import canonical_digest
 
 from .c8_phase2 import (
+    C8Phase2Blocked,
     C8Phase2Error,
+    C8ValidationPrincipalBlocked,
     EffectiveMainRules,
     MergeQueueConfiguration,
     RequiredChecksConfiguration,
+    ValidationCheckDiagnostic,
+    ValidationCheckIdentity,
+    ValidationPrincipalEvidence,
     parse_effective_main_rules,
     parse_merge_queue_configuration,
     parse_required_checks,
+    parse_validation_principal_check_runs,
+    revalidate_validation_principal_freshness,
 )
 from .c8_workflow_semantics import (
     C8WorkflowSemanticsUnverifiable,
@@ -75,6 +83,19 @@ class _ConfigurationPass:
     rules: EffectiveMainRules
     queue: MergeQueueConfiguration
     checks: RequiredChecksConfiguration
+    validation: _ValidationEvidence
+
+
+@dataclass(frozen=True)
+class _ValidationEvidence:
+    """Minimal validation-principal facts derived from exact-main check runs."""
+
+    identity_digest: str | None
+    blocked: bool
+    contexts: tuple[str, ...]
+    identities: tuple[ValidationCheckIdentity, ...] = ()
+    page_digests: tuple[str, ...] = ()
+    blockers: tuple[ValidationCheckDiagnostic, ...] = ()
 
 
 class C8PreflightSnapshotUnverifiable(RuntimeError):
@@ -125,6 +146,7 @@ class GitHubC8PreflightSnapshot:
             C8ProtectionRead,
             C8QueueConfigurationRead,
             C8WorkflowRead,
+            C8ValidationIdentityRead,
         ] | None = None
 
     @staticmethod
@@ -221,7 +243,7 @@ class GitHubC8PreflightSnapshot:
                 raise failure
             return self
 
-    def _configuration_pass(self, base: str) -> _ConfigurationPass:
+    def _configuration_pass(self, base: str, commit: str, started: datetime) -> _ConfigurationPass:
         """Read and parse the mutable configuration set once."""
         raw: dict[str, JsonValue] = {}
         effective = self._get(base + "/rules/branches/main?per_page=100&page=1")
@@ -274,7 +296,81 @@ class GitHubC8PreflightSnapshot:
             raise C8PreflightSnapshotUnverifiable()
         rules, checks, queue = parsed
         self._cross_bind_queue(effective, queue)
-        return _ConfigurationPass(raw, rules, queue, checks)
+        validation = self._validation_evidence(base, commit, checks, started)
+        raw["check_runs"] = cast(
+            JsonValue,
+            [item.canonical() for item in (*validation.identities, *validation.blockers)],
+        )
+        raw["check_run_page_digests"] = cast(JsonValue, list(validation.page_digests))
+        raw["validation"] = {
+            "identity_digest": validation.identity_digest,
+            "blocked": validation.blocked,
+            "contexts": list(validation.contexts),
+        }
+        return _ConfigurationPass(raw, rules, queue, checks, validation)
+
+    def _validation_evidence(
+        self,
+        base: str,
+        commit: str,
+        checks: RequiredChecksConfiguration,
+        started: datetime,
+    ) -> _ValidationEvidence:
+        """Read and classify the bounded exact-SHA validation check-run set."""
+        expected = set(checks.validation_contexts)
+        if expected != {"validate (ubuntu-latest)", "validate (windows-latest)"}:
+            raise C8PreflightSnapshotUnverifiable()
+        pages: list[JsonValue] = []
+        page_digests: list[str] = []
+        for page in range(1, 11):
+            response = self._obj(
+                self._get(
+                    base
+                    + f"/commits/{commit}/check-runs?filter=all&per_page=100&page={page}"
+                )
+            )
+            pages.append(response)
+            page_digests.append(canonical_digest(response))
+            # The pure parser owns all pagination and identity validation.  A
+            # page is copied by _get, and is never retained in the snapshot.
+            if len(pages) == 10:
+                break
+            page_runs = response.get("check_runs")
+            total = response.get("total_count")
+            if type(total) is int and isinstance(page_runs, list) and len(pages) * 100 >= total:
+                break
+        try:
+            parsed = parse_validation_principal_check_runs(
+                pages,
+                commit,
+                tuple(sorted(expected)),
+                started,
+                started - self._freshness_window,
+            )
+        except C8ValidationPrincipalBlocked as blocked:
+            return _ValidationEvidence(
+                None,
+                True,
+                tuple(sorted(expected)),
+                page_digests=tuple(page_digests),
+                blockers=blocked.records,
+            )
+        except C8Phase2Blocked:
+            return _ValidationEvidence(
+                None,
+                True,
+                tuple(sorted(expected)),
+                page_digests=tuple(page_digests),
+            )
+        except C8Phase2Error:
+            raise C8PreflightSnapshotUnverifiable() from None
+        return _ValidationEvidence(
+            parsed.identity_digest,
+            False,
+            parsed.contexts,
+            parsed.identities,
+            tuple(page_digests),
+        )
 
     @staticmethod
     def _cross_bind_queue(effective: JsonValue, queue: MergeQueueConfiguration) -> None:
@@ -387,20 +483,22 @@ class GitHubC8PreflightSnapshot:
         except C8WorkflowSemanticsUnverifiable:
             workflow_semantics = None
 
-        first_config = self._configuration_pass(base)
-        second_config = self._configuration_pass(base)
+        first_config = self._configuration_pass(base, commit, started)
+        second_config = self._configuration_pass(base, commit, started)
         if canonical_digest(first_config.raw) != canonical_digest(second_config.raw):
             raise C8PreflightSnapshotUnverifiable()
         if (
             first_config.rules != second_config.rules
             or first_config.queue != second_config.queue
             or first_config.checks != second_config.checks
+            or first_config.validation != second_config.validation
         ):
             raise C8PreflightSnapshotUnverifiable()
         raw["configuration_pass_1"] = first_config.raw
         raw["configuration_pass_2"] = second_config.raw
         rules = first_config.rules
         queue = first_config.queue
+        validation = first_config.validation
 
         final_ref = self._obj(self._get(base + "/git/ref/heads/main"))
         raw["final_ref"] = final_ref
@@ -421,6 +519,20 @@ class GitHubC8PreflightSnapshot:
         if finished < started or finished - started > self._freshness_window:
             raise C8PreflightSnapshotUnverifiable()
         freshness_cutoff = finished - self._freshness_window
+        try:
+            for selected in (first_config.validation, second_config.validation):
+                revalidate_validation_principal_freshness(
+                    ValidationPrincipalEvidence(
+                        selected.identities,
+                        selected.identity_digest or "",
+                        selected.contexts,
+                        selected.blockers,
+                    ),
+                    finished,
+                    freshness_cutoff,
+                )
+        except C8Phase2Error:
+            raise C8PreflightSnapshotUnverifiable() from None
         source = canonical_digest(
             {
                 "responses": raw,
@@ -468,7 +580,7 @@ class GitHubC8PreflightSnapshot:
             path=self.workflow_path,
             workflow_digest=workflow_digest,
             policy_digest=canonical_digest({"path": self.workflow_path, "blob_sha": blob_sha}),
-            validation_check_identity_digest=None,
+            validation_check_identity_digest=validation.identity_digest,
             pull_request_event=(
                 None if workflow_semantics is None else workflow_semantics.pull_request_event
             ),
@@ -484,11 +596,17 @@ class GitHubC8PreflightSnapshot:
                 else workflow_semantics.checkout_persist_credentials_false
             ),
         )
+        validation_read = C8ValidationIdentityRead(
+            binding=binding,
+            app_id=None if validation.blocked else 15368,
+            identity=None if validation.blocked else "github-actions",
+        )
         self._observations = (
             repo_read,
             protection_read,
             queue_read,
             workflow_read,
+            validation_read,
         )
         self._captured = True
 
@@ -510,8 +628,8 @@ class GitHubC8PreflightSnapshot:
     def observe_workflow(self) -> C8WorkflowRead:
         return cast(C8WorkflowRead, self._observation(3))
 
-    def observe_validation_identity(self) -> NoReturn:
-        self._unsupported()
+    def observe_validation_identity(self) -> C8ValidationIdentityRead:
+        return cast(C8ValidationIdentityRead, self._observation(4))
 
     def _unsupported(self) -> NoReturn:
         raise C8PreflightSnapshotUnverifiable()

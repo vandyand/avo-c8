@@ -8,8 +8,10 @@ Callers authenticate and complete responses first, then pass the resulting
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
-from typing import Any
+from datetime import datetime
+from typing import Any, Literal
 
 from avo_correlate.domain.canonical import canonical_digest
 
@@ -30,6 +32,44 @@ class C8Phase2Blocked(C8Phase2Error):
 
 class C8Phase2Unverifiable(C8Phase2Error):
     """The response is malformed, incomplete, or does not establish permission."""
+
+
+@dataclass(frozen=True, slots=True)
+class ValidationCheckDiagnostic:
+    """Sanitized selected expected-context record used for diagnostics."""
+
+    run_id: int
+    context: str
+    app_id: int
+    app_slug: str
+    app_name: str
+    head_sha: str
+    status: str
+    conclusion: str | None
+    completed_at: str
+
+    def canonical(self) -> dict[str, object]:
+        return {
+            "run_id": self.run_id,
+            "context": self.context,
+            "app_id": self.app_id,
+            "app_slug": self.app_slug,
+            "app_name": self.app_name,
+            "head_sha": self.head_sha,
+            "status": self.status,
+            "conclusion": self.conclusion,
+            "completed_at": self.completed_at,
+        }
+
+
+class C8ValidationPrincipalBlocked(C8Phase2Blocked):
+    """Conclusive validation-principal blocker with sanitized selected records."""
+
+    def __init__(
+        self, code: str, records: tuple[ValidationCheckDiagnostic, ...] = ()
+    ) -> None:
+        self.records = records
+        super().__init__(code)
 
 
 @dataclass(frozen=True)
@@ -56,6 +96,55 @@ class RequiredChecksConfiguration:
     validation_contexts: tuple[str, ...]
     release_context: str
     digest: str
+
+
+@dataclass(frozen=True, slots=True)
+class ValidationCheckIdentity:
+    """Sanitized identity for one successful App 15368 check run.
+
+    This intentionally contains no provider URLs, output, annotations,
+    credentials, or mutable response data.
+    """
+
+    run_id: int
+    context: str
+    app_id: int
+    app_slug: str
+    app_name: str
+    head_sha: str
+    status: Literal["completed"]
+    conclusion: Literal["success"]
+    completed_at: str
+
+    def canonical(self) -> dict[str, object]:
+        return {
+            "run_id": self.run_id,
+            "context": self.context,
+            "app_id": self.app_id,
+            "app_slug": self.app_slug,
+            "app_name": self.app_name,
+            "head_sha": self.head_sha,
+            "status": self.status,
+            "conclusion": self.conclusion,
+            "completed_at": self.completed_at,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ValidationPrincipalEvidence:
+    """Verified, sanitized validation-principal check-run evidence."""
+
+    identities: tuple[ValidationCheckIdentity, ...]
+    identity_digest: str
+    contexts: tuple[str, ...]
+    blockers: tuple[ValidationCheckDiagnostic, ...] = ()
+
+    @property
+    def outcome(self) -> Literal["verified"]:
+        return "verified"
+
+
+_GIT_OBJECT = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
 
 
 def _obj(value: JsonValue, code: str) -> dict[str, Any]:
@@ -366,6 +455,267 @@ def parse_required_checks(configuration: JsonValue) -> RequiredChecksConfigurati
         raise C8Phase2Unverifiable("CHECKS_MALFORMED") from None
 
 
+def parse_validation_principal_check_runs(
+    page_payloads: JsonValue,
+    pinned_main_sha: JsonValue,
+    expected_contexts: JsonValue,
+    observed_at: datetime,
+    freshness_cutoff: datetime,
+) -> ValidationPrincipalEvidence:
+    """Parse bounded REST check-run pages for the validation principal.
+
+    The caller supplies already-authenticated page payloads.  This function
+    performs no I/O and returns only canonical identities for the two (or more)
+    configured validation contexts.  A complete, terminal wrong App 15368
+    identity is a conclusive configuration blocker; malformed or incomplete
+    observations remain unverifiable.  The existing C8Phase2 exception types
+    are used so callers cannot accidentally treat either case as verified.
+    """
+
+    failure: C8Phase2Error = C8Phase2Unverifiable("VALIDATION_MALFORMED")
+    try:
+        if type(pinned_main_sha) is not str or _GIT_OBJECT.fullmatch(pinned_main_sha) is None:
+            raise C8Phase2Unverifiable("VALIDATION_SHA_INVALID")
+        if type(observed_at) is not datetime or type(freshness_cutoff) is not datetime:
+            raise C8Phase2Unverifiable("VALIDATION_TIMESTAMP_INVALID")
+        if (
+            observed_at.tzinfo is None
+            or observed_at.utcoffset() is None
+            or freshness_cutoff.tzinfo is None
+            or freshness_cutoff.utcoffset() is None
+        ):
+            raise C8Phase2Unverifiable("VALIDATION_TIMESTAMP_INVALID")
+        if freshness_cutoff > observed_at:
+            raise C8Phase2Unverifiable("VALIDATION_TIMESTAMP_INVALID")
+        if not isinstance(expected_contexts, (list, tuple)):
+            raise C8Phase2Unverifiable("VALIDATION_CONTEXTS_INVALID")
+        contexts = tuple(expected_contexts)
+        if (
+            not contexts
+            or any(type(context) is not str or not context.strip() for context in contexts)
+            or len(set(contexts)) != len(contexts)
+        ):
+            raise C8Phase2Unverifiable("VALIDATION_CONTEXTS_INVALID")
+        if not isinstance(page_payloads, (list, tuple)) or not page_payloads:
+            raise C8Phase2Unverifiable("VALIDATION_PAGINATION_INCOMPLETE")
+        if len(page_payloads) > 10:
+            raise C8Phase2Unverifiable("VALIDATION_PAGINATION_OVERSIZED")
+
+        total_count: int | None = None
+        runs: list[dict[str, Any]] = []
+        seen_ids: set[int] = set()
+        complete_seen = False
+        for page in page_payloads:
+            if complete_seen:
+                raise C8Phase2Unverifiable("VALIDATION_PAGINATION_EXTRA")
+            if not isinstance(page, dict):
+                raise C8Phase2Unverifiable("VALIDATION_PAGE_MALFORMED")
+            total_raw = page.get("total_count")
+            if type(total_raw) is not int or total_raw < 0 or total_raw > 1000:
+                raise C8Phase2Unverifiable("VALIDATION_TOTAL_COUNT_INVALID")
+            if total_count is None:
+                total_count = total_raw
+            elif total_raw != total_count:
+                raise C8Phase2Unverifiable("VALIDATION_TOTAL_COUNT_CHANGED")
+            page_runs = page.get("check_runs")
+            if not isinstance(page_runs, list) or len(page_runs) > 100:
+                raise C8Phase2Unverifiable("VALIDATION_PAGE_MALFORMED")
+            collected = len(runs)
+            expected_page_size = 0 if collected >= total_raw else min(100, total_raw - collected)
+            if len(page_runs) != expected_page_size:
+                raise C8Phase2Unverifiable("VALIDATION_PAGE_CARDINALITY")
+            for raw_run in page_runs:
+                if not isinstance(raw_run, dict):
+                    raise C8Phase2Unverifiable("VALIDATION_RUN_MALFORMED")
+                run_id = raw_run.get("id")
+                if type(run_id) is not int or run_id <= 0:
+                    raise C8Phase2Unverifiable("VALIDATION_RUN_ID_INVALID")
+                if run_id in seen_ids:
+                    raise C8Phase2Unverifiable("VALIDATION_DUPLICATE_RUN_ID")
+                seen_ids.add(run_id)
+                name = raw_run.get("name")
+                head_sha = raw_run.get("head_sha")
+                if (
+                    type(name) is not str
+                    or not name.strip()
+                    or type(head_sha) is not str
+                    or _GIT_OBJECT.fullmatch(head_sha) is None
+                ):
+                    raise C8Phase2Unverifiable("VALIDATION_RUN_INCOMPLETE")
+                if head_sha != pinned_main_sha:
+                    raise C8Phase2Unverifiable("VALIDATION_WRONG_SHA")
+                # Unrelated check runs are part of pagination integrity but
+                # are not validation-principal evidence.  Their status,
+                # conclusion, timestamps, and app payload may be absent or
+                # in progress; only expected contexts require those fields.
+                if name in contexts:
+                    status = raw_run.get("status")
+                    conclusion = raw_run.get("conclusion")
+                    completed_at = raw_run.get("completed_at")
+                    if (
+                        type(status) is not str
+                        or not status
+                        or (
+                            conclusion is not None
+                            and (type(conclusion) is not str or not conclusion)
+                        )
+                        or type(completed_at) is not str
+                        or not completed_at
+                    ):
+                        raise C8Phase2Unverifiable("VALIDATION_RUN_INCOMPLETE")
+                    try:
+                        completed = datetime.fromisoformat(completed_at.replace("Z", "+00:00"))
+                    except (TypeError, ValueError):
+                        raise C8Phase2Unverifiable("VALIDATION_TIMESTAMP_INVALID") from None
+                    if completed.tzinfo is None or completed.utcoffset() is None:
+                        raise C8Phase2Unverifiable("VALIDATION_TIMESTAMP_INVALID")
+                    if completed < freshness_cutoff:
+                        raise C8Phase2Unverifiable("VALIDATION_TIMESTAMP_STALE")
+                    if completed > observed_at:
+                        raise C8Phase2Unverifiable("VALIDATION_TIMESTAMP_FUTURE")
+                    app = raw_run.get("app")
+                    if not isinstance(app, dict):
+                        raise C8Phase2Unverifiable("VALIDATION_APP_METADATA_UNKNOWN")
+                    app_id = app.get("id")
+                    app_slug = app.get("slug")
+                    app_name = app.get("name")
+                    if (
+                        type(app_id) is not int
+                        or isinstance(app_id, bool)
+                        or app_id <= 0
+                        or type(app_slug) is not str
+                        or type(app_name) is not str
+                    ):
+                        raise C8Phase2Unverifiable("VALIDATION_APP_METADATA_UNKNOWN")
+                runs.append(raw_run)
+            if len(runs) == total_raw:
+                complete_seen = True
+        if total_count is None or len(runs) != total_count:
+            raise C8Phase2Unverifiable("VALIDATION_PAGINATION_INCOMPLETE")
+
+        matching: dict[str, list[dict[str, Any]]] = {context: [] for context in contexts}
+        for run in runs:
+            name = run["name"]
+            if name in matching:
+                matching[name].append(run)
+        if any(not values for values in matching.values()):
+            raise C8Phase2Unverifiable("VALIDATION_CONTEXT_ABSENT")
+
+        selected_records = tuple(
+            ValidationCheckDiagnostic(
+                run_id=run["id"],
+                context=context,
+                app_id=run["app"]["id"],
+                app_slug=run["app"]["slug"],
+                app_name=run["app"]["name"],
+                head_sha=run["head_sha"],
+                status=run["status"],
+                conclusion=run["conclusion"],
+                completed_at=run["completed_at"],
+            )
+            for context in sorted(contexts)
+            for run in matching[context]
+        )
+        if any(len(values) > 1 for values in matching.values()):
+            raise C8ValidationPrincipalBlocked("VALIDATION_DUPLICATE_CONTEXT", selected_records)
+
+        identities: list[ValidationCheckIdentity] = []
+        blocked = False
+        for context in sorted(contexts):
+            run = matching[context][0]
+            app = run["app"]
+            if app["id"] != 15368:
+                blocked = True
+            elif app["slug"] != "github-actions" or app["name"] != "GitHub Actions":
+                raise C8Phase2Unverifiable("VALIDATION_APP_METADATA_UNKNOWN")
+            status = run["status"]
+            conclusion = run["conclusion"]
+            if status == "completed" and isinstance(conclusion, str) and conclusion != "success":
+                blocked = True
+            elif status != "completed" or conclusion != "success":
+                raise C8Phase2Unverifiable("VALIDATION_RUN_INCOMPLETE")
+            if blocked:
+                continue
+            completed = datetime.fromisoformat(run["completed_at"].replace("Z", "+00:00"))
+            identities.append(
+                ValidationCheckIdentity(
+                    run_id=run["id"],
+                    context=context,
+                    app_id=15368,
+                    app_slug="github-actions",
+                    app_name="GitHub Actions",
+                    head_sha=pinned_main_sha,
+                    status="completed",
+                    conclusion="success",
+                    completed_at=completed.isoformat(),
+                )
+            )
+        if blocked:
+            raise C8ValidationPrincipalBlocked(
+                "VALIDATION_TERMINAL_NONSUCCESS", tuple(selected_records)
+            )
+        canonical = tuple(identities)
+        return ValidationPrincipalEvidence(
+            identities=canonical,
+            identity_digest=canonical_digest(
+                {"identity": "github-actions", "checks": [item.canonical() for item in canonical]}
+            ),
+            contexts=tuple(sorted(contexts)),
+        )
+    except C8Phase2Error as exc:
+        failure = exc
+    except Exception:
+        failure = C8Phase2Unverifiable("VALIDATION_MALFORMED")
+    failure.__context__ = None
+    failure.__cause__ = None
+    raise failure
+
+
+def revalidate_validation_principal_freshness(
+    evidence: ValidationPrincipalEvidence,
+    observed_at: datetime,
+    freshness_cutoff: datetime,
+) -> ValidationPrincipalEvidence:
+    """Recheck selected identities against the final snapshot time/cutoff.
+
+    Check-run selection can occur before a snapshot finishes.  This pure
+    helper prevents a success that was fresh at selection time becoming stale
+    while the remaining authenticated reads complete.
+    """
+
+    failure: C8Phase2Error = C8Phase2Unverifiable("VALIDATION_TIMESTAMP_INVALID")
+    try:
+        if type(observed_at) is not datetime or type(freshness_cutoff) is not datetime:
+            raise C8Phase2Unverifiable("VALIDATION_TIMESTAMP_INVALID")
+        if (
+            observed_at.tzinfo is None
+            or observed_at.utcoffset() is None
+            or freshness_cutoff.tzinfo is None
+            or freshness_cutoff.utcoffset() is None
+            or freshness_cutoff > observed_at
+        ):
+            raise C8Phase2Unverifiable("VALIDATION_TIMESTAMP_INVALID")
+        for identity in (*evidence.identities, *evidence.blockers):
+            try:
+                completed = datetime.fromisoformat(identity.completed_at.replace("Z", "+00:00"))
+            except (TypeError, ValueError):
+                raise C8Phase2Unverifiable("VALIDATION_TIMESTAMP_INVALID") from None
+            if completed.tzinfo is None or completed.utcoffset() is None:
+                raise C8Phase2Unverifiable("VALIDATION_TIMESTAMP_INVALID")
+            if completed < freshness_cutoff:
+                raise C8Phase2Unverifiable("VALIDATION_TIMESTAMP_STALE")
+            if completed > observed_at:
+                raise C8Phase2Unverifiable("VALIDATION_TIMESTAMP_FUTURE")
+        return evidence
+    except C8Phase2Error as exc:
+        failure = exc
+    except Exception:
+        failure = C8Phase2Unverifiable("VALIDATION_MALFORMED")
+    failure.__context__ = None
+    failure.__cause__ = None
+    raise failure
+
+
 # Descriptive aliases keep the adapter seam stable while its transport naming
 # evolves.
 parse_rules = parse_effective_main_rules
@@ -376,13 +726,19 @@ parse_branch_protection_checks = parse_required_checks
 __all__ = [
     "C8Phase2Blocked",
     "C8Phase2Unverifiable",
+    "C8ValidationPrincipalBlocked",
     "EffectiveMainRules",
     "MergeQueueConfiguration",
     "RequiredChecksConfiguration",
+    "ValidationCheckDiagnostic",
+    "ValidationCheckIdentity",
+    "ValidationPrincipalEvidence",
     "parse_branch_protection_checks",
     "parse_effective_main_rules",
     "parse_merge_queue",
     "parse_merge_queue_configuration",
     "parse_required_checks",
     "parse_rules",
+    "parse_validation_principal_check_runs",
+    "revalidate_validation_principal_freshness",
 ]
