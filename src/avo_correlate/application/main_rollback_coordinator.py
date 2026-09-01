@@ -586,7 +586,19 @@ class MainRollbackCoordinator:
             provider_api_version=self.provider_api_version,
             provider_repository=self._provider_repository(),
         )
-        effective = executor.execute_effective(intent, request)
+        owner = self.journal.read_mutation_dispatch_owner(intent.intent_digest)
+        receipt = self.journal.read_mutation_receipt_for_intent(intent.intent_digest)
+        if owner is not None and receipt is None:
+            # The provider boundary was already reserved.  Recover directly
+            # from an exact read-only observation; execute_effective would
+            # intentionally reject this state after attempting its execute
+            # path, which obscures the no-redispatch rule at this aggregate
+            # boundary.
+            effective = executor.recover_effective(
+                intent, self._observation_request(request), original_request=request
+            )
+        else:
+            effective = executor.execute_effective(intent, request)
         if effective.effective_outcome in {"ambiguous", "reconciliation_required"}:
             effective = executor.recover_effective(
                 intent, self._observation_request(request), original_request=request
@@ -1242,7 +1254,9 @@ class MainRollbackCoordinator:
             not hasattr(observer, name) for name in required
         ):
             raise MainRollbackCoordinatorError("cleanup principal bindings are incomplete")
-        return _digest_record(
+        existing = self.journal.read_rollback_cleanup_intent(authority.operation_id)
+        recorded_at = self.clock.now() if existing is None else existing[0].recorded_at
+        candidate = _digest_record(
             MainRollbackCleanupIntent,
             {
                 "operation_id": authority.operation_id,
@@ -1269,10 +1283,18 @@ class MainRollbackCoordinator:
                 "cleanup_authority_digest": rollback_cleanup_authority_digest(
                     authority.intent.repository_digest, authority.intent.target_ref
                 ),
-                "recorded_at": self.clock.now(),
+                "recorded_at": recorded_at,
             },
             "intent_digest",
         )
+        if existing is not None:
+            durable = _canonical(existing[0], MainRollbackCleanupIntent)
+            if canonical_bytes(durable) != canonical_bytes(candidate):
+                raise MainRollbackCoordinatorError(
+                    "durable rollback cleanup intent differs from exact binding"
+                )
+            return durable
+        return candidate
 
     def _cleanup(self, authority: Any, result: Any, intent: Any) -> tuple[Any, Any, Any]:
         cap = cast(Any, self.cleanup_capability)
@@ -1310,76 +1332,55 @@ class MainRollbackCoordinator:
                     raise MainRollbackCoordinatorError(
                         "read-only cleanup reconciliation is missing"
                     )
-                probe_values = {
-                    "operation_id": intent.operation_id,
-                    "repository_digest": intent.repository_digest,
-                    "target_ref": intent.target_ref,
-                    "intent_digest": intent.intent_digest,
-                    "authorization_digest": intent.authorization_digest,
-                    "candidate_ref": intent.candidate_ref,
-                    "candidate_commit": intent.candidate_commit,
-                    "pull_request_number": intent.pull_request_number,
-                    "pull_request_url": intent.pull_request_url,
-                    "outcome": "reconciliation_required",
-                    "dispatch_started": True,
-                    "response_digest": canonical_digest(
-                        {"recovery": "cleanup-owner-without-receipt"}
-                    ),
-                    "observed_at": self.clock.now(),
-                    "provider_identity": intent.provider_identity,
-                    "provider_api_version": intent.provider_api_version,
-                    "cleanup_principal_identity": intent.cleanup_principal_identity,
-                    "cleanup_principal_app_id": intent.cleanup_principal_app_id,
-                    "cleanup_principal_isolation_digest": intent.cleanup_principal_isolation_digest,
-                    "observer_identity": intent.observer_identity,
-                    "observer_app_id": intent.observer_app_id,
-                    "observer_isolation_digest": intent.observer_isolation_digest,
-                    "observer_provider_identity": intent.observer_provider_identity,
-                    "observer_provider_api_version": intent.observer_provider_api_version,
-                    "cleanup_authority_digest": intent.cleanup_authority_digest,
-                }
-                probe_receipt = _digest_record(
-                    MainRollbackCleanupReceipt, probe_values, "receipt_digest"
-                )
+                receipt_prior = self.journal.read_rollback_cleanup_receipt(authority.operation_id)
+                if receipt_prior is not None:
+                    receipt = _canonical(receipt_prior[0], MainRollbackCleanupReceipt)
+                else:
+                    receipt_value = {
+                        "operation_id": intent.operation_id,
+                        "repository_digest": intent.repository_digest,
+                        "target_ref": intent.target_ref,
+                        "intent_digest": intent.intent_digest,
+                        "authorization_digest": intent.authorization_digest,
+                        "candidate_ref": intent.candidate_ref,
+                        "candidate_commit": intent.candidate_commit,
+                        "pull_request_number": intent.pull_request_number,
+                        "pull_request_url": intent.pull_request_url,
+                        "outcome": "reconciliation_required",
+                        "dispatch_started": True,
+                        "response_digest": canonical_digest(
+                            {"recovery": "cleanup-owner-without-receipt"}
+                        ),
+                        "observed_at": self.clock.now(),
+                        "provider_identity": intent.provider_identity,
+                        "provider_api_version": intent.provider_api_version,
+                        "cleanup_principal_identity": intent.cleanup_principal_identity,
+                        "cleanup_principal_app_id": intent.cleanup_principal_app_id,
+                        "cleanup_principal_isolation_digest": (
+                            intent.cleanup_principal_isolation_digest
+                        ),
+                        "observer_identity": intent.observer_identity,
+                        "observer_app_id": intent.observer_app_id,
+                        "observer_isolation_digest": intent.observer_isolation_digest,
+                        "observer_provider_identity": intent.observer_provider_identity,
+                        "observer_provider_api_version": intent.observer_provider_api_version,
+                        "cleanup_authority_digest": intent.cleanup_authority_digest,
+                    }
+                    receipt = _digest_record(
+                        MainRollbackCleanupReceipt, receipt_value, "receipt_digest"
+                    )
+                    self._record(
+                        "cleanup-receipt",
+                        receipt,
+                        self.journal.record_rollback_cleanup_receipt,
+                    )
                 observed = _canonical(
-                    reconcile(intent, probe_receipt), MainRollbackCleanupObservation
-                )
-                outcome = (
-                    "already_absent"
-                    if observed.outcome in {"absent", "already_absent"}
-                    else "reconciliation_required"
-                )
-                receipt_value = {
-                    "operation_id": intent.operation_id,
-                    "repository_digest": intent.repository_digest,
-                    "target_ref": intent.target_ref,
-                    "intent_digest": intent.intent_digest,
-                    "authorization_digest": intent.authorization_digest,
-                    "candidate_ref": intent.candidate_ref,
-                    "candidate_commit": intent.candidate_commit,
-                    "pull_request_number": intent.pull_request_number,
-                    "pull_request_url": intent.pull_request_url,
-                    "outcome": outcome,
-                    "dispatch_started": outcome != "already_absent",
-                    "response_digest": canonical_digest(observed),
-                    "observed_at": self.clock.now(),
-                    "provider_identity": intent.provider_identity,
-                    "provider_api_version": intent.provider_api_version,
-                    "cleanup_principal_identity": intent.cleanup_principal_identity,
-                    "cleanup_principal_app_id": intent.cleanup_principal_app_id,
-                    "cleanup_principal_isolation_digest": intent.cleanup_principal_isolation_digest,
-                    "observer_identity": intent.observer_identity,
-                    "observer_app_id": intent.observer_app_id,
-                    "observer_isolation_digest": intent.observer_isolation_digest,
-                    "observer_provider_identity": intent.observer_provider_identity,
-                    "observer_provider_api_version": intent.observer_provider_api_version,
-                    "cleanup_authority_digest": intent.cleanup_authority_digest,
-                }
-                receipt = _digest_record(
-                    MainRollbackCleanupReceipt, receipt_value, "receipt_digest"
+                    reconcile(intent, receipt), MainRollbackCleanupObservation
                 )
                 self._record(
-                    "cleanup-receipt", receipt, self.journal.record_rollback_cleanup_receipt
+                    "cleanup-observation",
+                    observed,
+                    self.journal.record_rollback_cleanup_observation,
                 )
         else:
             receipt = receipt[0]
@@ -1399,6 +1400,12 @@ class MainRollbackCoordinator:
             self._verify_named(
                 "verify_rollback_cleanup_observation", observation_value, intent, receipt
             )
+        if (
+            receipt.outcome in {"ambiguous", "reconciliation_required"}
+            and observation_value is not None
+            and observation_value.outcome not in {"absent", "already_absent"}
+        ):
+            return receipt, observation_value, None
         if (
             receipt.outcome in {"ambiguous", "reconciliation_required"}
             and observation_value is None

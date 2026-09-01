@@ -63,11 +63,18 @@ def test_restart_after_cleanup_owner_reconciles_without_second_delete(tmp_path) 
     }
     journal = _journal_with_records(tmp_path, dependencies)
     receipt_box: dict[str, object] = {}
+    observation_box: dict[str, object] = {}
     journal.read_rollback_cleanup_receipt = lambda _operation_id: (
         (receipt_box["value"], None) if "value" in receipt_box else None
     )  # type: ignore[method-assign]
     journal.record_rollback_cleanup_receipt = lambda value: (
         receipt_box.__setitem__("value", value) or None
+    )  # type: ignore[method-assign]
+    journal.read_rollback_cleanup_observation = lambda _operation_id: (
+        (observation_box["value"], None) if "value" in observation_box else None
+    )  # type: ignore[method-assign]
+    journal.record_rollback_cleanup_observation = lambda value: (
+        observation_box.__setitem__("value", value) or None
     )  # type: ignore[method-assign]
     journal.record_rollback_cleanup_terminal = lambda _value: None  # type: ignore[method-assign]
     capability = _Cleanup(observation)
@@ -88,6 +95,7 @@ def test_restart_after_cleanup_owner_reconciles_without_second_delete(tmp_path) 
         authority, result, cleanup
     )
     assert capability.calls == 1
-    assert cleanup_receipt.outcome == "already_absent"
-    assert cleanup_observation is None
+    assert cleanup_receipt.outcome == "reconciliation_required"
+    assert cleanup_observation.outcome == "absent"
+    assert terminal.outcome == "absent"
     assert terminal is not None

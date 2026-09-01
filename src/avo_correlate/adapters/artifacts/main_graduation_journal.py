@@ -5224,6 +5224,13 @@ class MainGraduationJournal:
             self._read("mutation-receipt", receipt_digest),
         )
 
+    def read_mutation_receipt_for_intent(
+        self, intent_digest: Sha256Digest
+    ) -> tuple[MainMutationReceipt, ArtifactRef] | None:
+        """Read the receipt at the intent identity, without any dispatch."""
+
+        return self._read_receipt_for_intent(intent_digest)
+
     def record_release_claim(self, record: MainReleaseClaim) -> ArtifactRef:
         return self._record("release-claim", record)
 
