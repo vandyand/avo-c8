@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -16,25 +17,48 @@ from avo_correlate.adapters.artifacts.main_graduation_offline_drill_journal impo
 from avo_correlate.contracts.base import ArtifactRef
 from avo_correlate.contracts.main_graduation import MainReconciliation
 from avo_correlate.contracts.main_graduation_offline_drill import (
+    FROZEN_OFFLINE_DRILL_CASE_IDS,
+    FROZEN_OFFLINE_DRILL_VECTOR_IDS,
+    FROZEN_OFFLINE_EXECUTION_NODE_IDS,
+    FROZEN_OFFLINE_NODE_ID_BY_VECTOR,
     OFFLINE_EVIDENCE_ROLE_MEDIA,
     MainGraduationOfflineDrillCaseResult,
-    MainGraduationOfflineDrillCrashFacts,
+    MainGraduationOfflineDrillCaseSpec,
     MainGraduationOfflineDrillPlan,
-    MainGraduationOfflineDrillReplayFacts,
     MainGraduationOfflineDrillResult,
+    MainGraduationOfflineDrillVectorSpec,
     MainGraduationOfflineEvidenceKind,
     MainGraduationOfflineEvidenceRef,
     MainGraduationOfflineExecutionAuthority,
+    MainGraduationOfflineExecutionNodeSpec,
     MainGraduationOfflineExecutionReport,
+    MainGraduationOfflineNodeObservation,
+    MainGraduationOfflineWorkspaceIdentity,
+    offline_drill_case_id,
     offline_drill_operation_id,
 )
 from avo_correlate.domain.canonical import canonical_bytes, canonical_digest
-from tests.unit.test_main_graduation_offline_drill_contracts import (
-    _authority,
-    _execution_report,
-    _expected,
-    _plan,
-)
+
+D = "sha256:" + "a" * 64
+BASE = "b" * 40
+TREE = "c" * 40
+PARENT = "d" * 40
+NOW = datetime(2026, 1, 1, tzinfo=UTC)
+
+
+def _digest(domain: str, value: object) -> str:
+    return canonical_digest({"domain": domain, "value": value})
+
+
+def _expected(case_id: str, vector_id: str) -> tuple[str, str]:
+    if case_id == "replay-idempotence":
+        return "replayed", "replayed_read_only"
+    if (case_id, vector_id) in {
+        ("crash-boundary-matrix", "after-hold-success"),
+        ("admission-group-identity", "admission-success"),
+    }:
+        return "passed", "completed"
+    return "reconciliation_required", "failed_closed"
 
 # The journal tests intentionally use compact fixture helpers and protocol
 # doubles; their runtime checks are stricter than static fixture typing.
@@ -108,6 +132,169 @@ class _WrongSignatureVerifier(_Verifier):
         return True
 
 
+def _authority() -> MainGraduationOfflineExecutionAuthority:
+    nodes = tuple(
+        MainGraduationOfflineExecutionNodeSpec(
+            node_id=FROZEN_OFFLINE_NODE_ID_BY_VECTOR[(case_id, vector_id)],
+            parameter_id=vector_id,
+            case_id=case_id,
+            vector_id=vector_id,
+            oracle_expected_outcome=_expected(case_id, vector_id)[0],
+            oracle_expected_state=_expected(case_id, vector_id)[1],
+        )
+        for case_id in FROZEN_OFFLINE_DRILL_CASE_IDS
+        for vector_id in FROZEN_OFFLINE_DRILL_VECTOR_IDS[case_id]
+    )
+    values = {
+        "operation_id": D,
+        "controller_authority_digest": D,
+        "controller_authority_ref": "refs/avo/c7-controller",
+        "issuer_identity": "c7-harness",
+        "repository_digest": D,
+        "target_ref": "refs/heads/main",
+        "source_commit": BASE,
+        "source_tree": TREE,
+        "source_tree_digest": D,
+        "protocol_digest": D,
+        "configuration_digest": D,
+        "policy_digest": D,
+        "activation_digest": D,
+        "lockfile_digest": D,
+        "interpreter_digest": D,
+        "pytest_digest": D,
+        "plugin_set_digest": D,
+        "toolchain_digest": D,
+        "environment_identity_digest": D,
+        "uv_digest": D,
+        "argv": (
+            "pytest",
+            "-q",
+            "tests/unit/test_main_graduation_offline_drill_journal.py",
+        ),
+        "normalized_report_schema_digest": D,
+        "authorized_at": NOW,
+        "expires_at": datetime(2026, 1, 2, tzinfo=UTC),
+        "nodes": nodes,
+    }
+    stub = MainGraduationOfflineExecutionAuthority.model_construct(**values, authority_digest=D)
+    values["authority_digest"] = _digest(
+        "avo-004.7-c7/offline-execution-authority/v1",
+        stub.model_dump(exclude={"authority_digest"}, mode="json"),
+    )
+    return MainGraduationOfflineExecutionAuthority.model_validate(values)
+
+
+def _workspace(
+    authority: MainGraduationOfflineExecutionAuthority,
+) -> MainGraduationOfflineWorkspaceIdentity:
+    return MainGraduationOfflineWorkspaceIdentity(
+        source_commit=authority.source_commit,
+        source_tree=authority.source_tree,
+        source_tree_digest=authority.source_tree_digest,
+        lockfile_digest=authority.lockfile_digest,
+        interpreter_digest=authority.interpreter_digest,
+        pytest_digest=authority.pytest_digest,
+        plugin_set_digest=authority.plugin_set_digest,
+        toolchain_digest=authority.toolchain_digest,
+        environment_identity_digest=authority.environment_identity_digest,
+        uv_digest=authority.uv_digest,
+    )
+
+
+def _junit_xml(authority: MainGraduationOfflineExecutionAuthority) -> bytes:
+    cases = []
+    for node in authority.nodes:
+        path, _, name = node.node_id.partition("::")
+        classname = f"tests.unit.{path[:-3].replace('/', '.')}"
+        cases.append(f'<testcase classname="{classname}" name="{name}" status="passed"/>')
+    return ("<testsuite>" + "".join(cases) + "</testsuite>").encode()
+
+
+def _execution_report(
+    authority: MainGraduationOfflineExecutionAuthority,
+    auth_ref: ArtifactRef | None = None,
+    store: FilesystemArtifactStore | None = None,
+) -> MainGraduationOfflineExecutionReport:
+    if auth_ref is None:
+        auth_role, auth_media = OFFLINE_EVIDENCE_ROLE_MEDIA[
+            MainGraduationOfflineEvidenceKind.EXECUTION_AUTHORITY
+        ]
+        auth_ref = ArtifactRef(
+            digest=authority.authority_digest,
+            size_bytes=1,
+            media_type=auth_media,
+            role=auth_role,
+            created_at=NOW,
+        )
+    refs = (
+        MainGraduationOfflineEvidenceRef(
+            kind=MainGraduationOfflineEvidenceKind.EXECUTION_AUTHORITY, artifact=auth_ref
+        ),
+    )
+    observations = tuple(
+        MainGraduationOfflineNodeObservation(
+            node_id=node.node_id,
+            parameter_id=node.parameter_id,
+            case_id=node.case_id,
+            vector_id=node.vector_id,
+            verification_status="pass",
+            reason_code="oracle-verified",
+            evidence_refs=refs,
+        )
+        for node in authority.nodes
+    )
+    if store is None:
+        junit_ref = ArtifactRef(
+            digest=D,
+            size_bytes=1,
+            media_type="application/vnd.avo.c7.junit+xml",
+            role="c7-junit-xml",
+            created_at=NOW,
+        )
+    else:
+        junit_ref = store.put_bytes(
+            _junit_xml(authority),
+            role="c7-junit-xml",
+            media_type="application/vnd.avo.c7.junit+xml",
+            max_bytes=8 * 1024 * 1024,
+        )
+    values = {
+        "operation_id": authority.operation_id,
+        "authority_digest": authority.authority_digest,
+        "repository_digest": authority.repository_digest,
+        "target_ref": authority.target_ref,
+        "source_commit": authority.source_commit,
+        "source_tree": authority.source_tree,
+        "source_tree_digest": authority.source_tree_digest,
+        "protocol_digest": authority.protocol_digest,
+        "configuration_digest": authority.configuration_digest,
+        "policy_digest": authority.policy_digest,
+        "activation_digest": authority.activation_digest,
+        "lockfile_digest": authority.lockfile_digest,
+        "interpreter_digest": authority.interpreter_digest,
+        "pytest_digest": authority.pytest_digest,
+        "plugin_set_digest": authority.plugin_set_digest,
+        "toolchain_digest": authority.toolchain_digest,
+        "environment_identity_digest": authority.environment_identity_digest,
+        "uv_digest": authority.uv_digest,
+        "argv": authority.argv,
+        "collection_count": len(observations),
+        "collected_node_ids": FROZEN_OFFLINE_EXECUTION_NODE_IDS,
+        "observations": observations,
+        "workspace_before_identity": _workspace(authority),
+        "workspace_after_identity": _workspace(authority),
+        "junit_xml_artifact": junit_ref,
+        "executed_at": datetime(2026, 1, 1, 12, tzinfo=UTC),
+        "authority_expires_at": authority.expires_at,
+    }
+    stub = MainGraduationOfflineExecutionReport.model_construct(**values, report_digest=D)
+    values["report_digest"] = _digest(
+        "avo-004.7-c7/offline-execution-report/v1",
+        stub.model_dump(exclude={"report_digest"}, mode="json"),
+    )
+    return MainGraduationOfflineExecutionReport.model_validate(values)
+
+
 def _authority_and_report(
     store: FilesystemArtifactStore,
 ) -> tuple[
@@ -121,31 +308,12 @@ def _authority_and_report(
         MainGraduationOfflineEvidenceKind.EXECUTION_AUTHORITY
     ]
     auth_ref = store.put_bytes(
-        canonical_bytes(authority), role=auth_role, media_type=auth_media, max_bytes=8 * 1024 * 1024
+        canonical_bytes(authority),
+        role=auth_role,
+        media_type=auth_media,
+        max_bytes=8 * 1024 * 1024,
     )
-    report = _execution_report(authority)
-    obs = tuple(
-        observation.model_copy(
-            update={
-                "evidence_refs": (
-                    MainGraduationOfflineEvidenceRef(
-                        kind=MainGraduationOfflineEvidenceKind.EXECUTION_AUTHORITY,
-                        artifact=auth_ref,
-                    ),
-                )
-            }
-        )
-        for observation in report.observations
-    )
-    values = report.model_dump(mode="json")
-    values["observations"] = [item.model_dump(mode="json") for item in obs]
-    values["report_digest"] = canonical_digest(
-        {
-            "domain": "avo-004.7-c7/offline-execution-report/v1",
-            "value": {key: value for key, value in values.items() if key != "report_digest"},
-        }
-    )
-    report = MainGraduationOfflineExecutionReport.model_validate(values)
+    report = _execution_report(authority, auth_ref, store)
     report_role, report_media = OFFLINE_EVIDENCE_ROLE_MEDIA[
         MainGraduationOfflineEvidenceKind.EXECUTION_REPORT
     ]
@@ -156,6 +324,58 @@ def _authority_and_report(
         max_bytes=8 * 1024 * 1024,
     )
     return authority, auth_ref, report, report_ref
+
+
+def _plan() -> MainGraduationOfflineDrillPlan:
+    cases = []
+    for case_id in FROZEN_OFFLINE_DRILL_CASE_IDS:
+        vectors = []
+        for vector_id in FROZEN_OFFLINE_DRILL_VECTOR_IDS[case_id]:
+            values = {
+                "vector_id": vector_id,
+                "oracle_expected_outcome": _expected(case_id, vector_id)[0],
+                "oracle_expected_state": _expected(case_id, vector_id)[1],
+                "fault_digest": D,
+            }
+            vector_stub = MainGraduationOfflineDrillVectorSpec.model_construct(
+                **values, vector_digest=D
+            )
+            values["vector_digest"] = _digest(
+                "avo-004.7-c7/offline-drill-vector/v1",
+                vector_stub.model_dump(exclude={"vector_digest"}, mode="json"),
+            )
+            vectors.append(MainGraduationOfflineDrillVectorSpec.model_validate(values))
+        case_values = {
+            "case_id": case_id,
+            "vectors": tuple(vectors),
+            "plan_operation_id": D,
+            "case_digest": D,
+        }
+        case_values["case_digest"] = offline_drill_case_id(
+            D, case_id, [item.model_dump(mode="json") for item in vectors]
+        )
+        cases.append(MainGraduationOfflineDrillCaseSpec.model_validate(case_values))
+    values = {
+        "operation_id": D,
+        "repository_digest": D,
+        "target_ref": "refs/heads/main",
+        "protocol_digest": D,
+        "configuration_digest": D,
+        "policy_digest": D,
+        "policy_epoch_digest": D,
+        "activation_digest": D,
+        "controller_authority_digest": D,
+        "controller_authority_ref": "refs/avo/c7-controller",
+        "cases": tuple(cases),
+        "execution_authority_digest": D,
+        "execution_authority_ref": "refs/avo/test-execution-authority",
+    }
+    stub = MainGraduationOfflineDrillPlan.model_construct(**values, plan_digest=D)
+    values["plan_digest"] = _digest(
+        "avo-004.7-c7/offline-drill-plan/v1",
+        stub.model_dump(exclude={"plan_digest"}, mode="json"),
+    )
+    return MainGraduationOfflineDrillPlan.model_validate(values)
 
 
 def _bound_plan(
@@ -180,6 +400,7 @@ def _bound_case(
     case_id: str,
     vector_id: str,
     index: int,
+    junit_xml_digest: str,
 ) -> MainGraduationOfflineDrillCaseResult:
     expected_outcome, expected_state = _expected(case_id, vector_id)
     values = {
@@ -188,32 +409,14 @@ def _bound_case(
         "case_id": case_id,
         "vector_id": vector_id,
         "operation_id": offline_drill_operation_id(plan.operation_id, case_id, vector_id),
-        "expected_outcome": expected_outcome,
-        "observed_outcome": expected_outcome,
-        "expected_state": expected_state,
-        "observed_state": expected_state,
-        "main_before_commit": "b" * 40,
-        "main_before_tree": "c" * 40,
-        "main_before_parents": ("d" * 40,),
-        "main_after_commit": "b" * 40,
-        "main_after_tree": "c" * 40,
-        "main_after_parents": ("d" * 40,),
-        "provider_mutation_count": 0,
-        "reconciliation_mutation_count": 0,
-        "release_mutation_count": 0,
-        "crash_facts": MainGraduationOfflineDrillCrashFacts(
-            crash_injected=False, crash_boundary="none", restart_count=0
-        ),
-        "replay_facts": MainGraduationOfflineDrillReplayFacts(
-            replayed=case_id == "replay-idempotence",
-            byte_identical=case_id == "replay-idempotence",
-            read_only=case_id == "replay-idempotence",
-            mutation_delta=0,
-        ),
-        "injected_fault_digest": "sha256:" + "a" * 64,
-        "reason_code": "expected-rejection",
+        "oracle_expected_outcome": expected_outcome,
+        "oracle_expected_state": expected_state,
+        "verification_status": "pass",
+        "fault_digest": D,
+        "reason_code": "oracle-verified",
         "execution_authority_digest": authority_ref.digest,  # type: ignore[attr-defined]
         "execution_report_digest": report_ref.digest,  # type: ignore[attr-defined]
+        "junit_xml_digest": junit_xml_digest,
         "native_evidence_refs": [
             MainGraduationOfflineEvidenceRef(
                 kind=MainGraduationOfflineEvidenceKind.EXECUTION_AUTHORITY, artifact=authority_ref
@@ -246,15 +449,15 @@ def _bound_result(
         "operation_id": plan.operation_id,
         "plan_digest": plan.plan_digest,
         "repository_digest": plan.repository_digest,
-        "main_before_commit": plan.main_before_commit,
-        "main_before_tree": plan.main_before_tree,
-        "main_before_parents": plan.main_before_parents,
-        "main_after_commit": plan.main_before_commit,
-        "main_after_tree": plan.main_before_tree,
-        "main_after_parents": plan.main_before_parents,
+        "target_ref": plan.target_ref,
+        "workspace_before_identity": report.workspace_before_identity,
+        "workspace_after_identity": report.workspace_after_identity,
         "cases": cases,
         "execution_authority_digest": cases[0].execution_authority_digest,
         "execution_report_digest": cases[0].execution_report_digest,
+        "junit_xml_digest": report.junit_xml_artifact.digest,
+        "proof_class": "deterministic-offline-proof",
+        "deploy_performed": False,
     }
     stub = MainGraduationOfflineDrillResult.model_construct(
         **values, result_digest="sha256:" + "0" * 64
@@ -294,13 +497,20 @@ def _all_cases(
     plan: MainGraduationOfflineDrillPlan,
     authority_ref: ArtifactRef,
     report_ref: ArtifactRef,
+    junit_xml_digest: str,
 ) -> tuple[MainGraduationOfflineDrillCaseResult, ...]:
     cases = []
     index = 1
     for spec in plan.cases:
         for vector in spec.vectors:
             case = _bound_case(
-                plan, authority_ref, report_ref, spec.case_id, vector.vector_id, index
+                plan,
+                authority_ref,
+                report_ref,
+                spec.case_id,
+                vector.vector_id,
+                index,
+                junit_xml_digest,
             )
             journal.record_case_result(case)
             cases.append(case)
@@ -312,7 +522,9 @@ def test_authority_report_plan_and_full_result_reload_exactly(tmp_path: Path) ->
     verifier = _Verifier()
     journal, plan, authority, authority_ref, report, report_ref, _store = _setup(tmp_path, verifier)
     plan_ref = journal.record_plan(plan)
-    cases = _all_cases(journal, plan, authority_ref, report_ref)
+    cases = _all_cases(
+        journal, plan, authority_ref, report_ref, report.junit_xml_artifact.digest
+    )
     result = _bound_result(plan, cases, authority, report)
     result_ref = journal.record_result(result)
     restarted = MainGraduationOfflineDrillJournal(
@@ -341,6 +553,20 @@ def test_authority_report_plan_and_full_result_reload_exactly(tmp_path: Path) ->
     ) == (result, result_ref)
 
 
+def test_report_rereads_raw_junit_and_rejects_tamper(tmp_path: Path) -> None:
+    journal, _plan_value, authority, _authority_ref, report, _report_ref, store = _setup(tmp_path)
+    assert journal.read_execution_report(
+        authority.operation_id, authority.authority_digest, report.report_digest
+    ) == (report, _report_ref)
+    store.path_for_digest(report.junit_xml_artifact.digest).write_bytes(
+        _junit_xml(authority).replace(b"status=\"passed\"", b"status=\"failed\"", 1)
+    )
+    with pytest.raises(MainGraduationOfflineDrillJournalError):
+        journal.read_execution_report(
+            authority.operation_id, authority.authority_digest, report.report_digest
+        )
+
+
 def test_authority_and_report_are_required_before_plan_or_report(tmp_path: Path) -> None:
     store = FilesystemArtifactStore(tmp_path / "artifacts")
     authority = _authority()
@@ -352,11 +578,36 @@ def test_authority_and_report_are_required_before_plan_or_report(tmp_path: Path)
         journal.record_execution_report(report)
 
 
+def test_workspace_identity_drift_is_rejected_at_journal_boundary(tmp_path: Path) -> None:
+    store = FilesystemArtifactStore(tmp_path / "artifacts")
+    authority = _authority()
+    journal = MainGraduationOfflineDrillJournal(tmp_path, _Verifier(), artifact_store=store)
+    authority_ref = journal.record_execution_authority(authority)
+    report = _execution_report(authority, authority_ref, store)
+    altered_identity = report.workspace_before_identity.model_copy(
+        update={"environment_identity_digest": "sha256:" + "f" * 64}
+    )
+    values = report.model_dump(mode="json")
+    values["environment_identity_digest"] = "sha256:" + "f" * 64
+    values["workspace_before_identity"] = altered_identity.model_dump(mode="json")
+    values["workspace_after_identity"] = altered_identity.model_dump(mode="json")
+    values["report_digest"] = _digest(
+        "avo-004.7-c7/offline-execution-report/v1",
+        {key: value for key, value in values.items() if key != "report_digest"},
+    )
+    altered = MainGraduationOfflineExecutionReport.model_validate(values)
+    with pytest.raises(MainGraduationOfflineDrillJournalError):
+        journal.record_execution_report(altered)
+
+
 def test_result_before_cases_and_case_omission_fail_closed(tmp_path: Path) -> None:
     journal, plan, authority, authority_ref, report, report_ref, _store = _setup(tmp_path)
     journal.record_plan(plan)
     cases = tuple(
-        _bound_case(plan, authority_ref, report_ref, spec.case_id, vector.vector_id, i)
+        _bound_case(
+            plan, authority_ref, report_ref, spec.case_id, vector.vector_id, i,
+            report.junit_xml_artifact.digest,
+        )
         for i, (spec, vector) in enumerate(
             (item for spec in plan.cases for item in [(spec, vector) for vector in spec.vectors]), 1
         )
@@ -373,7 +624,10 @@ def test_native_generic_wrong_kind_role_media_and_missing_fail(tmp_path: Path) -
     journal, plan, authority, authority_ref, _report, report_ref, store = _setup(tmp_path)
     journal.record_plan(plan)
     case_id, vector_id = plan.cases[0].case_id, plan.cases[0].vectors[0].vector_id
-    base = _bound_case(plan, authority_ref, report_ref, case_id, vector_id, 1)
+    base = _bound_case(
+        plan, authority_ref, report_ref, case_id, vector_id, 1,
+        _report.junit_xml_artifact.digest,
+    )
     generic = store.put_bytes(
         canonical_bytes({"schema_version": 1, "c7_binding": {"operation_id": plan.operation_id}}),
         role="c7-controller-verifier",
@@ -403,18 +657,21 @@ def test_native_generic_wrong_kind_role_media_and_missing_fail(tmp_path: Path) -
 def test_native_c4_recovery_is_typed_and_case_operation_bound(tmp_path: Path) -> None:
     journal, plan, authority, authority_ref, report, report_ref, _store = _setup(tmp_path)
     case_id, vector_id = plan.cases[0].case_id, plan.cases[0].vectors[0].vector_id
-    case = _bound_case(plan, authority_ref, report_ref, case_id, vector_id, 1)
+    case = _bound_case(
+        plan, authority_ref, report_ref, case_id, vector_id, 1,
+        report.junit_xml_artifact.digest,
+    )
     recovery = MainReconciliation(
         operation_id=case.operation_id,
         repository_digest=authority.repository_digest,
         target_ref=authority.target_ref,
         state="reconciliation_required",
-        main_commit=case.main_after_commit,
-        main_tree=case.main_after_tree,
-        main_parents=list(case.main_after_parents),
-        expected_tree=case.main_after_tree,
-        expected_base_commit=case.main_after_parents[0],
-        queue_generation_digest="sha256:" + "b" * 64,
+        main_commit=authority.source_commit,
+        main_tree=authority.source_tree,
+        main_parents=[PARENT],
+        expected_tree=authority.source_tree,
+        expected_base_commit=PARENT,
+        queue_generation_digest=D,
     )
     parsed = journal._parse_native(  # type: ignore[reportPrivateUsage]
         MainGraduationOfflineEvidenceKind.C4_RECOVERY,
