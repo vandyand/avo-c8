@@ -793,3 +793,157 @@ def test_boundary_tail_rejects_gap_overlap_mismatch_and_silent_omission(case: st
     else:
         with pytest.raises(ValidationError, match="omitted"):
             _boundary_package_with_tail(activation, submissions=[submission], tail=[])
+
+
+def _completed_state(activation: MainLedgerActivation) -> MainLedgerAccumulatorState:
+    return _with_digest(
+        MainLedgerAccumulatorState,
+        {
+            "activation_digest": activation.activation_digest,
+            "last_scheduler_sequence": 10,
+            "streak": 12,
+            "successes": 12,
+            "failures": 0,
+            "boundary_violations": 0,
+            "threshold_complete": True,
+        },
+        "state_digest",
+    )
+
+
+def test_threshold_complete_prior_state_is_irreversible_for_eligible_failure() -> None:
+    activation = _activation()
+    prior = _completed_state(activation)
+    submission = _submission(activation, 11)
+    classification = _with_digest(
+        MainLedgerClassificationEvidence,
+        {
+            "activation_digest": activation.activation_digest,
+            "submission_digest": submission.submission_digest,
+            "operation_id": submission.operation_id,
+            "scheduler_sequence": 11,
+            "classification": "eligible",
+            "empty": False,
+            "ordinary": True,
+            "risk_class": "ordinary",
+            "paths": ["src/feature.py"],
+            "path_manifest_digest": canonical_digest(["src/feature.py"]),
+            "policy_digest": activation.policy_digest,
+            "policy_epoch": activation.policy_epoch,
+            "controller_authority": activation.controller_authority,
+            "issuer_identity": activation.controller_authority.issuer_identity,
+            "issuer_authority_digest": activation.controller_authority.issuer_authority_digest,
+        },
+        "classification_digest",
+    )
+    outcome = _with_digest(
+        MainLedgerTerminalOutcome,
+        {
+            "activation_digest": activation.activation_digest,
+            "submission_digest": submission.submission_digest,
+            "classification_digest": classification.classification_digest,
+            "classification": classification,
+            "operation_id": submission.operation_id,
+            "attempt_id": canonical_digest(
+                {
+                    "domain": "avo.main.ledger.attempt.v2",
+                    "activation_digest": activation.activation_digest,
+                    "scheduler_sequence": 11,
+                    "submission_digest": submission.submission_digest,
+                }
+            ),
+            "scheduler_sequence": 11,
+            "outcome": "failure",
+            "evidence_kind": "failure",
+            "terminal_evidence_digest": DIGEST,
+            "terminal_evidence": _artifact(
+                "ledger-terminal-evidence", "application/vnd.avo.ledger-terminal-evidence+json"
+            ),
+            "reason": "upstream failure",
+            "terminal_at": NOW,
+        },
+        "outcome_digest",
+    )
+    result = _with_digest(
+        MainLedgerAccumulatorState,
+        {
+            "activation_digest": activation.activation_digest,
+            "last_scheduler_sequence": 11,
+            "streak": 0,
+            "successes": 12,
+            "failures": 1,
+            "boundary_violations": 0,
+            "threshold_complete": False,
+        },
+        "state_digest",
+    )
+    values = {
+        "activation_digest": activation.activation_digest,
+        "classification": classification,
+        "prior_state": prior,
+        "prior_state_digest": prior.state_digest,
+        "outcome": outcome,
+        "outcome_digest": outcome.outcome_digest,
+        "reset_applied": True,
+        "resulting_state": result,
+        "resulting_state_digest": result.state_digest,
+    }
+    with pytest.raises(ValidationError, match="cannot follow threshold"):
+        _with_digest(MainLedgerAccumulatorTransition, values, "transition_digest")
+
+
+def test_threshold_complete_prior_state_is_irreversible_for_exclusion() -> None:
+    activation = _activation()
+    prior = _completed_state(activation)
+    submission = _submission(activation, 11)
+    classification = _with_digest(
+        MainLedgerClassificationEvidence,
+        {
+            "activation_digest": activation.activation_digest,
+            "submission_digest": submission.submission_digest,
+            "operation_id": submission.operation_id,
+            "scheduler_sequence": 11,
+            "classification": "excluded",
+            "empty": True,
+            "ordinary": True,
+            "risk_class": "ordinary",
+            "paths": [],
+            "path_manifest_digest": canonical_digest([]),
+            "policy_digest": activation.policy_digest,
+            "policy_epoch": activation.policy_epoch,
+            "controller_authority": activation.controller_authority,
+            "issuer_identity": activation.controller_authority.issuer_identity,
+            "issuer_authority_digest": activation.controller_authority.issuer_authority_digest,
+            "exclusion_reason": "empty",
+            "independent_exclusion_evidence_digest": DIGEST,
+            "independent_exclusion_evidence": _artifact(
+                "ledger-classification-exclusion-evidence",
+                "application/vnd.avo.ledger-exclusion-evidence+json",
+            ),
+        },
+        "classification_digest",
+    )
+    result = _with_digest(
+        MainLedgerAccumulatorState,
+        {
+            "activation_digest": activation.activation_digest,
+            "last_scheduler_sequence": 11,
+            "streak": 12,
+            "successes": 12,
+            "failures": 0,
+            "boundary_violations": 0,
+            "threshold_complete": True,
+        },
+        "state_digest",
+    )
+    values = {
+        "activation_digest": activation.activation_digest,
+        "classification": classification,
+        "prior_state": prior,
+        "prior_state_digest": prior.state_digest,
+        "reset_applied": False,
+        "resulting_state": result,
+        "resulting_state_digest": result.state_digest,
+    }
+    with pytest.raises(ValidationError, match="cannot follow threshold"):
+        _with_digest(MainLedgerAccumulatorTransition, values, "transition_digest")

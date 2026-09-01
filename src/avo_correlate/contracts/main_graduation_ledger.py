@@ -705,6 +705,8 @@ class MainLedgerAccumulatorTransition(StrictModel):
     def validate_transition(self) -> MainLedgerAccumulatorTransition:
         if self.prior_state_digest != self.prior_state.state_digest:
             raise ValueError("CAS prior state digest mismatch")
+        if self.prior_state.threshold_complete:
+            raise ValueError("CAS transition cannot follow threshold completion")
         if self.activation_digest != self.prior_state.activation_digest:
             raise ValueError("CAS activation binding differs")
         if self.classification.activation_digest != self.activation_digest:
