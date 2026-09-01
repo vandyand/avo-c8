@@ -9,6 +9,8 @@ installation), with shell execution disabled and bounded output/timeouts.
 
 from __future__ import annotations
 
+import csv
+import io
 import json
 import os
 import re
@@ -16,10 +18,11 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, cast
 
 from avo_correlate.contracts.main_graduation_offline_drill import (
     FROZEN_OFFLINE_EXECUTION_NODE_IDS,
@@ -48,6 +51,11 @@ _MAX_ARCHIVE_BYTES = 256 * 1024 * 1024
 _MAX_ARCHIVE_ENTRIES = 100_000
 _MAX_ARCHIVE_FILE_BYTES = 64 * 1024 * 1024
 _ZERO_DIGEST = "sha256:" + "0" * 64
+_MAX_RUNTIME_FILES = 100_000
+_MAX_RUNTIME_FILE_BYTES = 64 * 1024 * 1024
+_MAX_RUNTIME_TOTAL_BYTES = 256 * 1024 * 1024
+_MAX_RUNTIME_RECORD_BYTES = 16 * 1024 * 1024
+_MAX_RUNTIME_PATH_BYTES = 16 * 1024
 
 
 class C7WorkspaceIdentityError(RuntimeError):
@@ -380,13 +388,36 @@ def _uv_runtime_identity(
 ) -> tuple[str, str, str]:
     """Measure the interpreter and pytest stack inside the locked uv child."""
     probe = (
-        "import importlib.metadata as m, importlib.util, json, platform, sys; "
+        "import importlib.metadata as m, importlib.util, json, pathlib, platform, "
+        "shutil, sys\n"
+        "def record(d):\n"
+        "    files=tuple(d.files or ())\n"
+        "    records=tuple(item for item in files if item.name == 'RECORD')\n"
+        "    if len(records) != 1: raise RuntimeError('missing RECORD')\n"
+        "    root=pathlib.Path(d.locate_file(''))\n"
+        "    relative=pathlib.PurePosixPath(records[0].as_posix())\n"
+        "    if relative.is_absolute() or '..' in relative.parts:\n"
+        "        raise RuntimeError('unsafe RECORD')\n"
+        "    record_path=root.joinpath(*relative.parts)\n"
+        "    if not record_path.is_file() or record_path.is_symlink():\n"
+        "        raise RuntimeError('bad RECORD')\n"
+        "    return {'name':d.name,'version':d.version,'root':str(root),"
+        "'record':relative.as_posix()}\n"
+        "entries=tuple(m.entry_points(group='pytest11'))\n"
         "plugins=sorted((e.name,e.value,getattr(e.dist,'name',''),"
-        "getattr(e.dist,'version','')) for e in m.entry_points(group='pytest11')); "
-        "p=importlib.util.find_spec('pytest'); "
+        "getattr(e.dist,'version','')) for e in entries)\n"
+        "if any(not item[2] or not item[3] for item in plugins):\n"
+        "    raise RuntimeError('plugin distribution missing')\n"
+        "plugin_dists={(e.dist.name,e.dist.version):record(e.dist) "
+        "for e in entries if e.dist is not None}\n"
+        "p=importlib.util.find_spec('pytest')\n"
         "print(json.dumps({'python':sys.executable,'implementation':platform.python_implementation(),"
-        "'version':platform.python_version(),'pytest':p.origin if p else '',"
-        "'pytest_version':m.version('pytest'),'plugins':plugins},sort_keys=True))"
+        "'version':platform.python_version(),'runtime_root':sys.prefix,"
+        "'pytest':p.origin if p else '',"
+        "'pytest_version':m.version('pytest'),'pytest_launcher':shutil.which('pytest'),"
+        "'pytest_distribution':record(m.distribution('pytest')),'plugins':plugins,"
+        "'plugin_distributions':sorted(plugin_dists.values(),"
+        "key=lambda x:(x['name'],x['version']))},sort_keys=True))"
     )
     try:
         result = subprocess.run(
@@ -406,13 +437,24 @@ def _uv_runtime_identity(
         payload: dict[str, Any] = json.loads(result.stdout.strip())
         if type(payload) is not dict or any(
             not isinstance(payload.get(key), str)
-            for key in ("python", "implementation", "version", "pytest", "pytest_version")
-        ) or not isinstance(payload.get("plugins"), list):
+            for key in (
+                "python",
+                "implementation",
+                "version",
+                "pytest",
+                "pytest_version",
+                "pytest_launcher",
+            )
+        ) or not isinstance(payload.get("plugins"), list) or not isinstance(
+            payload.get("pytest_distribution"), dict
+        ) or not isinstance(payload.get("plugin_distributions"), list):
             raise ValueError("uv runtime probe shape is invalid")
-        python_path = Path(str(payload["python"])).resolve()
-        pytest_path = Path(str(payload["pytest"])).resolve()
-        if not python_path.is_file() or not pytest_path.is_file():
-            raise ValueError("uv runtime paths are unavailable")
+        runtime_root = _runtime_regular_root(payload.get("runtime_root"))
+        python_path = _runtime_regular_file(Path(str(payload["python"])), runtime_root)
+        pytest_path = Path(str(payload["pytest"]))
+        pytest_launcher = _runtime_regular_file(
+            Path(str(payload["pytest_launcher"])), runtime_root
+        )
         if any(
             type(item) is not list
             or len(item) != 4
@@ -420,6 +462,24 @@ def _uv_runtime_identity(
             for item in payload["plugins"]
         ):
             raise ValueError("uv runtime plugin identity is invalid")
+        pytest_distribution = _runtime_distribution_identity(
+            payload["pytest_distribution"], runtime_root
+        )
+        if not pytest_path.is_absolute() or pytest_path.is_symlink():
+            raise ValueError("uv runtime pytest path is unavailable")
+        pytest_path = _runtime_regular_file(pytest_path)
+        if not pytest_path.is_relative_to(Path(str(pytest_distribution["root"]))):
+            raise ValueError("pytest module is outside its distribution")
+        plugin_records = payload["plugin_distributions"]
+        if any(type(item) is not dict for item in plugin_records):
+            raise ValueError("uv runtime plugin distribution identity is invalid")
+        plugin_distributions = [
+            _runtime_distribution_identity(item, runtime_root) for item in plugin_records
+        ]
+        plugin_keys = {(item["name"], item["version"]) for item in plugin_distributions}
+        entry_point_keys = {(item[2], item[3]) for item in payload["plugins"]}
+        if plugin_keys != entry_point_keys:
+            raise ValueError("uv runtime plugin distributions do not match entry points")
         interpreter = canonical_digest(
             {"domain": "avo-004.7-c7/interpreter-uv/v1", "value": {
                 "path": str(python_path), "digest": file_digest(python_path),
@@ -428,10 +488,15 @@ def _uv_runtime_identity(
         pytest = canonical_digest(
             {"domain": "avo-004.7-c7/pytest-uv/v1", "value": {
                 "path": str(pytest_path), "digest": file_digest(pytest_path),
-                "version": payload["pytest_version"]}}
+                "version": payload["pytest_version"],
+                "console_launcher": {
+                    "path": str(pytest_launcher), "digest": file_digest(pytest_launcher)
+                },
+                "distribution": pytest_distribution}}
         )
         plugins = canonical_digest(
-            {"domain": "avo-004.7-c7/pytest-plugins-uv/v1", "value": payload["plugins"]}
+            {"domain": "avo-004.7-c7/pytest-plugins-uv/v2", "value": {
+                "entry_points": payload["plugins"], "distributions": plugin_distributions}}
         )
         return interpreter, pytest, plugins
     except (
@@ -443,6 +508,164 @@ def _uv_runtime_identity(
         json.JSONDecodeError,
     ) as exc:
         raise C7WorkspaceIdentityError("uv runtime identity probe failed") from exc
+
+
+def _runtime_regular_root(raw: object) -> Path:
+    if not isinstance(raw, str) or not raw:
+        raise ValueError("runtime root is unavailable")
+    root = Path(raw)
+    if not root.is_absolute() or root.is_symlink() or not root.is_dir():
+        raise ValueError("runtime root is unavailable")
+    try:
+        resolved = root.resolve(strict=True)
+    except OSError as exc:
+        raise ValueError("runtime root is unavailable") from exc
+    if resolved != root:
+        raise ValueError("runtime root must not resolve through a symlink")
+    return root
+
+
+def _runtime_regular_file(path: Path, containment_root: Path | None = None) -> Path:
+    """Return an absolute, non-symlink regular file within runtime bounds."""
+    if not path.is_absolute() or path.is_symlink():
+        raise ValueError("runtime path is not a regular file")
+    if containment_root is not None:
+        try:
+            if not path.resolve(strict=True).is_relative_to(
+                containment_root.resolve(strict=True)
+            ):
+                raise ValueError("runtime path escapes root")
+        except OSError as exc:
+            raise ValueError("runtime path is unavailable") from exc
+    try:
+        stat = path.stat()
+    except OSError as exc:
+        raise ValueError("runtime path is unavailable") from exc
+    if not path.is_file() or stat.st_size > _MAX_RUNTIME_FILE_BYTES:
+        raise ValueError("runtime path is not a bounded regular file")
+    return path
+
+
+def _runtime_relative_path(raw: object) -> str:
+    if not isinstance(raw, str) or not raw or len(raw.encode("utf-8")) > _MAX_RUNTIME_PATH_BYTES:
+        raise ValueError("runtime RECORD path is invalid")
+    if raw != unicodedata.normalize("NFC", raw):
+        raise ValueError("runtime RECORD path is not normalized")
+    relative = PurePosixPath(raw)
+    if (
+        relative.is_absolute()
+        or not relative.parts
+        or any(part in {"", ".", ".."} for part in relative.parts)
+        or any("\\" in part or ":" in part for part in relative.parts)
+    ):
+        raise ValueError("runtime RECORD path is unsafe")
+    return relative.as_posix()
+
+
+def _runtime_record_path(raw: object) -> str:
+    """Validate a RECORD path, allowing safe ``..`` script entries."""
+    if not isinstance(raw, str) or not raw or len(raw.encode("utf-8")) > _MAX_RUNTIME_PATH_BYTES:
+        raise ValueError("runtime RECORD path is invalid")
+    if raw != unicodedata.normalize("NFC", raw):
+        raise ValueError("runtime RECORD path is not normalized")
+    relative = PurePosixPath(raw)
+    if (
+        relative.is_absolute()
+        or not relative.parts
+        or any(part in {"", "."} for part in relative.parts)
+        or any("\\" in part or ":" in part for part in relative.parts)
+    ):
+        raise ValueError("runtime RECORD path is unsafe")
+    if sum(part == ".." for part in relative.parts) > 8:
+        raise ValueError("runtime RECORD path escapes distribution")
+    return relative.as_posix()
+
+
+def _runtime_member(root: Path, relative: str, containment_root: Path | None = None) -> Path:
+    if not root.is_absolute() or root.is_symlink() or not root.is_dir():
+        raise ValueError("runtime distribution root is unavailable")
+    candidate = root.joinpath(*PurePosixPath(relative).parts)
+    allowed = containment_root or root
+    try:
+        resolved = candidate.resolve(strict=True)
+        if not resolved.is_relative_to(allowed.resolve(strict=True)):
+            raise ValueError("runtime distribution path escapes root")
+        relative_to_allowed = resolved.relative_to(allowed.resolve(strict=True))
+        current = allowed
+        for part in relative_to_allowed.parts:
+            current = current / part
+            if current.is_symlink():
+                raise ValueError("runtime distribution contains a symlink")
+    except OSError as exc:
+        raise ValueError("runtime distribution path is unavailable") from exc
+    return _runtime_regular_file(candidate, allowed)
+
+
+def _runtime_distribution_identity(raw: object, runtime_root: Path) -> dict[str, object]:
+    if not isinstance(raw, dict):
+        raise ValueError("runtime distribution identity is invalid")
+    values = cast(dict[str, object], raw)
+    name = values.get("name")
+    version = values.get("version")
+    root_value = values.get("root")
+    record_value = values.get("record")
+    if (
+        not isinstance(name, str)
+        or not name
+        or not isinstance(version, str)
+        or not version
+        or not isinstance(root_value, str)
+        or not isinstance(record_value, str)
+    ):
+        raise ValueError("runtime distribution identity is invalid")
+    record = _runtime_relative_path(record_value)
+    if not record.casefold().endswith(".dist-info/record"):
+        raise ValueError("runtime distribution RECORD is unavailable")
+    root = Path(root_value)
+    record_path = _runtime_member(root, record, runtime_root)
+    try:
+        record_bytes = record_path.read_bytes()
+    except OSError as exc:
+        raise ValueError("runtime distribution RECORD is unreadable") from exc
+    if len(record_bytes) > _MAX_RUNTIME_RECORD_BYTES:
+        raise ValueError("runtime distribution RECORD exceeds bound")
+    try:
+        rows = list(csv.reader(io.StringIO(record_bytes.decode("utf-8"))))
+    except (UnicodeDecodeError, csv.Error) as exc:
+        raise ValueError("runtime distribution RECORD is malformed") from exc
+    files: list[dict[str, object]] = []
+    seen: set[str] = set()
+    total_bytes = 0
+    for row in rows:
+        if len(files) >= _MAX_RUNTIME_FILES:
+            raise ValueError("runtime distribution has too many files")
+        if len(row) != 3:
+            raise ValueError("runtime distribution RECORD row is malformed")
+        relative = _runtime_record_path(row[0])
+        folded = str(relative).casefold()
+        if folded in seen:
+            raise ValueError("runtime distribution RECORD contains duplicate paths")
+        seen.add(folded)
+        path = _runtime_member(root, relative, runtime_root)
+        size = path.stat().st_size
+        total_bytes += size
+        if total_bytes > _MAX_RUNTIME_TOTAL_BYTES:
+            raise ValueError("runtime distribution exceeds size bound")
+        normalized = path.resolve(strict=True).relative_to(runtime_root.resolve(strict=True))
+        files.append(
+            {"path": normalized.as_posix(), "size": size, "digest": file_digest(path)}
+        )
+    if record.casefold() not in seen:
+        raise ValueError("runtime distribution RECORD does not record itself")
+    files.sort(key=lambda item: str(item["path"]))
+    return {
+        "name": name,
+        "version": version,
+        "root": str(root),
+        "record": record,
+        "files": files,
+        "file_count": len(files),
+    }
 __all__ = [
     "FROZEN_OFFLINE_EXECUTION_ARGV",
     "C7WorkspaceIdentity",

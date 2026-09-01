@@ -3,6 +3,10 @@
 
 from __future__ import annotations
 
+import importlib.metadata
+import importlib.util
+import json
+import shutil
 import sys
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -169,22 +173,130 @@ def test_uv_runtime_probe_uses_one_resolved_absolute_launcher(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     launcher = Path(sys.executable).resolve()
+    pytest_distribution = importlib.metadata.distribution("pytest")
+    record = next(item for item in pytest_distribution.files or () if item.name == "RECORD")
+    pytest_origin = importlib.util.find_spec("pytest")
+    pytest_launcher = shutil.which("pytest")
+    assert pytest_origin is not None and pytest_origin.origin
+    assert pytest_launcher
     calls: list[list[str]] = []
 
     def runner(argv: list[str], **_kwargs: Any) -> CompletedProcess[str]:
         calls.append(argv)
-        payload = (
-            '{"implementation":"CPython","plugins":[],"pytest":"'
-            + str(launcher).replace("\\", "\\\\")
-            + '","pytest_version":"1","python":"'
-            + str(launcher).replace("\\", "\\\\")
-            + '","version":"3"}'
+        payload = json.dumps(
+            {
+                "implementation": "CPython",
+                "plugins": [],
+                "plugin_distributions": [],
+                "pytest": pytest_origin.origin,
+                "pytest_distribution": {
+                    "name": pytest_distribution.name,
+                    "version": pytest_distribution.version,
+                    "root": str(pytest_distribution.locate_file("")),
+                    "record": record.as_posix(),
+                },
+                "pytest_launcher": pytest_launcher,
+                "pytest_version": pytest_distribution.version,
+                "python": str(launcher),
+                "runtime_root": sys.prefix,
+                "version": "3",
+            },
+            sort_keys=True,
         )
         return CompletedProcess(argv, 0, stdout=payload, stderr="")
 
     monkeypatch.setattr(identity_module.subprocess, "run", runner)
     identity_module._uv_runtime_identity(tmp_path, launcher, {"PATH": "unused"})
     assert calls and calls[0][0] == str(launcher)
+
+
+def test_uv_runtime_identity_hashes_non_init_pytest_and_plugin_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime_root = tmp_path / "venv"
+    site_packages = runtime_root / "Lib" / "site-packages"
+    scripts = runtime_root / "Scripts"
+    pytest_package = site_packages / "pytest"
+    pytest_info = site_packages / "pytest-1.0.dist-info"
+    plugin_package = site_packages / "c7plugin"
+    plugin_info = site_packages / "c7plugin-1.0.dist-info"
+    for directory in (
+        pytest_package,
+        pytest_info,
+        plugin_package,
+        plugin_info,
+        scripts,
+    ):
+        directory.mkdir(parents=True)
+    (runtime_root / "python.exe").write_bytes(b"python")
+    (scripts / "pytest.exe").write_bytes(b"launcher")
+    (pytest_package / "__init__.py").write_bytes(b"init")
+    (pytest_package / "core.py").write_bytes(b"pytest core")
+    (pytest_info / "METADATA").write_bytes(b"Name: pytest\nVersion: 1.0\n")
+    (plugin_package / "__init__.py").write_bytes(b"plugin init")
+    (plugin_package / "hooks.py").write_bytes(b"plugin hooks")
+    (plugin_info / "METADATA").write_bytes(b"Name: c7plugin\nVersion: 1.0\n")
+
+    def write_record(info: Path, rows: list[str]) -> str:
+        record = info / "RECORD"
+        record.write_text("".join(f"{row},,\n" for row in rows), encoding="utf-8")
+        return str(record.relative_to(site_packages).as_posix())
+
+    pytest_record = write_record(
+        pytest_info,
+        [
+            "pytest/__init__.py",
+            "pytest/core.py",
+            "pytest-1.0.dist-info/METADATA",
+            "pytest-1.0.dist-info/RECORD",
+            "../../Scripts/pytest.exe",
+        ],
+    )
+    plugin_record = write_record(
+        plugin_info,
+        [
+            "c7plugin/__init__.py",
+            "c7plugin/hooks.py",
+            "c7plugin-1.0.dist-info/METADATA",
+            "c7plugin-1.0.dist-info/RECORD",
+        ],
+    )
+    payload = {
+        "implementation": "CPython",
+        "plugins": [["c7plugin", "c7plugin.hooks", "c7plugin", "1.0"]],
+        "plugin_distributions": [
+            {
+                "name": "c7plugin",
+                "version": "1.0",
+                "root": str(site_packages),
+                "record": plugin_record,
+            }
+        ],
+        "pytest": str(pytest_package / "__init__.py"),
+        "pytest_distribution": {
+            "name": "pytest",
+            "version": "1.0",
+            "root": str(site_packages),
+            "record": pytest_record,
+        },
+        "pytest_launcher": str(scripts / "pytest.exe"),
+        "pytest_version": "1.0",
+        "python": str(runtime_root / "python.exe"),
+        "runtime_root": str(runtime_root),
+        "version": "3.12.0",
+    }
+
+    def runner(argv: list[str], **_kwargs: Any) -> CompletedProcess[str]:
+        return CompletedProcess(argv, 0, stdout=json.dumps(payload), stderr="")
+
+    monkeypatch.setattr(identity_module.subprocess, "run", runner)
+    first = identity_module._uv_runtime_identity(tmp_path, runtime_root / "uv.exe", {})
+    (pytest_package / "core.py").write_bytes(b"tampered pytest core")
+    changed_pytest = identity_module._uv_runtime_identity(tmp_path, runtime_root / "uv.exe", {})
+    assert first[1] != changed_pytest[1]
+    (plugin_package / "hooks.py").write_bytes(b"tampered plugin hooks")
+    changed_plugin = identity_module._uv_runtime_identity(tmp_path, runtime_root / "uv.exe", {})
+    assert first[2] != changed_plugin[2]
 
 
 def test_resolve_uv_path_rejects_missing_environment_path() -> None:
