@@ -286,6 +286,81 @@ class MainRollbackCoordinator:
     run = execute
     resume = execute
 
+    def recover_cleanup(
+        self,
+        *,
+        authority: MainRollbackAuthorityResult,
+        result: MainRollbackResultReceipt,
+        cleanup_intent: MainRollbackCleanupIntent,
+    ) -> tuple[
+        MainRollbackCleanupReceipt,
+        MainRollbackCleanupObservation | None,
+        MainRollbackCleanupTerminalEvidence | None,
+    ]:
+        """Recover cleanup from a durable owner without running lifecycle stages.
+
+        Every supplied record is compared with its journal-backed counterpart
+        before recovery.  The owner marker is mandatory: this seam cannot
+        reserve a cleanup dispatch, and the delegated path only reconciles
+        read-only after the owner boundary.
+        """
+        operation_id = authority.operation_id
+        if (
+            result.operation_id != operation_id
+            or cleanup_intent.operation_id != operation_id
+            or cleanup_intent.result_receipt_digest != result.receipt_digest
+        ):
+            raise MainRollbackCoordinatorError("cleanup recovery operation binding differs")
+
+        durable_intent = self.journal.read_rollback_cleanup_intent(operation_id)
+        if durable_intent is None or canonical_bytes(durable_intent[0]) != canonical_bytes(
+            cleanup_intent
+        ):
+            raise MainRollbackCoordinatorError("durable cleanup intent differs")
+        durable_result = self.journal.read_rollback_result(operation_id)
+        if durable_result is None or canonical_bytes(durable_result[0]) != canonical_bytes(result):
+            raise MainRollbackCoordinatorError("durable rollback result differs")
+
+        ancestry: tuple[tuple[str, object | None, object], ...] = (
+            ("lease", self.journal.read_lease_evidence_record(operation_id), authority.lease),
+            (
+                "composition",
+                self.journal.read_rollback_composition(authority.composition.composition_id),
+                authority.composition,
+            ),
+            (
+                "rollback authorization",
+                self.journal.read_rollback_authorization(operation_id),
+                authority.authorization,
+            ),
+            (
+                "rollback intent",
+                self.journal.read_rollback_intent(operation_id),
+                authority.intent,
+            ),
+            (
+                "attempt authority",
+                self.journal.read_rollback_attempt_authority(operation_id),
+                authority.attempt_authority,
+            ),
+            (
+                "preparation authorization",
+                self.journal.read_rollback_preparation_authorization(operation_id),
+                authority.preparation_authorization,
+            ),
+        )
+        for name, loaded, expected in ancestry:
+            if loaded is None or canonical_bytes(loaded[0]) != canonical_bytes(expected):
+                raise MainRollbackCoordinatorError(f"durable {name} ancestry differs")
+
+        owner_reader = getattr(self.journal, "read_rollback_cleanup_dispatch_owner", None)
+        if not callable(owner_reader):
+            raise MainRollbackCoordinatorError("journal cleanup dispatch-owner reader is missing")
+        owner = owner_reader(cleanup_intent.intent_digest)
+        if owner is None:
+            raise MainRollbackCoordinatorError("durable cleanup dispatch owner is missing")
+        return self._cleanup(authority, result, cleanup_intent)
+
     def _execute_authority(
         self,
         authority: MainRollbackAuthorityResult,
