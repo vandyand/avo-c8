@@ -186,9 +186,7 @@ class C8GitHubSnapshotAdapter:
         except (ValueError, binascii.Error):
             raise C8SnapshotUnverifiable() from None
         size = workflow_raw.get("size")
-        if size is not None and (
-            isinstance(size, bool) or not isinstance(size, int) or size != len(data)
-        ):
+        if size is None or isinstance(size, bool) or not isinstance(size, int) or size != len(data):
             raise C8SnapshotUnverifiable()
         blob_header = f"blob {len(data)}\0".encode() + data
         if len(content_sha) == 40:
@@ -210,10 +208,6 @@ class C8GitHubSnapshotAdapter:
                 },
             }
         )
-        finished = self._clock()
-        if finished.tzinfo is None or finished.utcoffset() is None:
-            raise ValueError("clock must return a timezone-aware timestamp")
-        freshness_cutoff = finished - self._freshness_window
         # Final fence: the ref must not move while the workflow was read.
         final_ref = self._obj(self._get(base + "/git/ref/heads/main"))
         final_object = self._obj(final_ref.get("object"))
@@ -223,9 +217,16 @@ class C8GitHubSnapshotAdapter:
             or self._string(final_object, "sha") != commit
         ):
             raise C8SnapshotUnverifiable()
+        finished = self._clock()
+        if finished.tzinfo is None or finished.utcoffset() is None:
+            raise ValueError("clock must return a timezone-aware timestamp")
+        if finished < started or finished - started > self._freshness_window:
+            raise C8SnapshotUnverifiable()
+        freshness_cutoff = finished - self._freshness_window
         source = canonical_digest(
             {
                 "responses": source,
+                "final_ref": final_ref,
                 "observed_at": finished.isoformat(),
                 "freshness_cutoff": freshness_cutoff.isoformat(),
             }

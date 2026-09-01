@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from typing import Any
 
@@ -80,13 +81,14 @@ class FakeTransport:
 
 
 def adapter(transport: Any, **kwargs: Any) -> C8GitHubSnapshotAdapter:
+    clock = kwargs.pop("clock", lambda: NOW)
     return C8GitHubSnapshotAdapter(
         owner="avo-org",
         repo="avo",
         workflow_path=".github/workflows/validation.yml",
         token="injected-secret",
         transport=transport,
-        clock=lambda: NOW,
+        clock=clock,
         **kwargs,
     )
 
@@ -219,3 +221,93 @@ def test_default_transport_is_bounded_and_origin_pinned() -> None:
             token="secret",
             api_origin="https://evil.example",
         )
+
+
+@pytest.mark.parametrize("encoding", [None, "utf8"])
+def test_workflow_requires_base64_encoding(encoding: str | None) -> None:
+    payloads = responses()
+    workflow = payloads[
+        f"/repos/avo-org/avo/contents/.github/workflows/validation.yml?ref={COMMIT}"
+    ]
+    if encoding is None:
+        del workflow["encoding"]
+    else:
+        workflow["encoding"] = encoding
+    with pytest.raises(C8SnapshotUnverifiable):
+        adapter(FakeTransport(payloads)).capture()
+
+
+@pytest.mark.parametrize("size", [None, True, len(CONTENT) + 1])
+def test_workflow_requires_exact_strict_size(size: Any) -> None:
+    payloads = responses()
+    workflow = payloads[
+        f"/repos/avo-org/avo/contents/.github/workflows/validation.yml?ref={COMMIT}"
+    ]
+    if size is None:
+        del workflow["size"]
+    else:
+        workflow["size"] = size
+    with pytest.raises(C8SnapshotUnverifiable):
+        adapter(FakeTransport(payloads)).capture()
+
+
+@pytest.mark.parametrize("sha", ["d" * 40, "e" * 64])
+def test_workflow_blob_sha_must_match_content(sha: str) -> None:
+    payloads = responses()
+    payloads[f"/repos/avo-org/avo/contents/.github/workflows/validation.yml?ref={COMMIT}"][
+        "sha"
+    ] = sha
+    with pytest.raises(C8SnapshotUnverifiable):
+        adapter(FakeTransport(payloads)).capture()
+
+
+@pytest.mark.parametrize("change", ["sha", "type", "ref"])
+def test_final_main_ref_fence_rejects_drift(change: str) -> None:
+    payloads = responses()
+    ref = payloads["/repos/avo-org/avo/git/ref/heads/main"]
+    if change == "sha":
+        ref["object"]["sha"] = "d" * 40
+    elif change == "type":
+        ref["object"]["type"] = "tag"
+    else:
+        ref["ref"] = "refs/heads/dev"
+    with pytest.raises(C8SnapshotUnverifiable):
+        adapter(FakeTransport(payloads)).capture()
+
+
+def test_concurrent_capture_is_single_flight() -> None:
+    fake = FakeTransport()
+    subject = adapter(fake)
+    with ThreadPoolExecutor(max_workers=20) as pool:
+        results = list(pool.map(lambda _: subject.capture(), range(20)))
+    assert len(fake.calls) == 5
+    assert all(result == results[0] for result in results)
+
+
+@pytest.mark.parametrize("clock", [lambda: datetime(2026, 1, 1)])
+def test_clock_must_be_aware_and_monotonic(clock: Any) -> None:
+    with pytest.raises((ValueError, C8SnapshotUnverifiable)):
+        adapter(FakeTransport(), clock=clock).capture()
+
+
+def test_clock_window_rejects_capture_that_takes_too_long() -> None:
+    ticks = iter([NOW, NOW.replace(hour=1)])
+    with pytest.raises(C8SnapshotUnverifiable):
+        adapter(FakeTransport(), clock=lambda: next(ticks)).capture()
+
+
+def test_clock_rejects_backward_capture_timestamp() -> None:
+    ticks = iter([NOW, NOW.replace(year=2025)])
+    with pytest.raises(C8SnapshotUnverifiable):
+        adapter(FakeTransport(), clock=lambda: next(ticks)).capture()
+
+
+def test_semantic_workflow_analysis_is_explicitly_unverifiable() -> None:
+    subject = adapter(FakeTransport())
+    workflow = subject.observe_workflow()
+    assert workflow.pull_request_event is None
+    assert workflow.merge_group_event is None
+    assert workflow.exact_sha_checkout is None
+    assert workflow.validation_check_identity_digest is None
+    report = C8HostedPreflightService(subject).run()
+    assert "workflow_semantics_unverifiable" in report.unverifiable_codes
