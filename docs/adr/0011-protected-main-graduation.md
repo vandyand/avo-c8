@@ -30,9 +30,16 @@ The atomic authenticated Phase 2 snapshot is Terra-approved at `1d911e3` with 30
 review tests and 82 combined focused checks: two-pass mutable-configuration and final main-ref
 fences, bounded rules pagination, REST/GraphQL cross-binding, SHA-1/SHA-256 binding, and failure
 caching. App checks are configuration-only, not validation-principal identity or issuer authority.
-Workflow semantics are approved. Validation-principal identity remains unverifiable; issuer and
-rollback remain unsupported. The read-only CLI exists, but no live run occurred because
-`GITHUB_TOKEN` is absent. The next local leaf is authenticated validation-principal diagnostics;
+Workflow semantics and validation-principal identity diagnostics are approved and
+provider-evidenced when available. The diagnostic is accepted at exact commit
+`a8af4341be413981da348c772b9d51e1e6f9f27e`; it integrates the pure bounded parser with the
+atomic read-only snapshot, exact main SHA, at most 10 pages/1000 check runs, stable cardinality and
+unique IDs, exact required contexts, App 15368 GitHub Actions metadata, run-ID and two-pass
+raw-page digests, unrelated in-progress tolerance, and final freshness blockers for
+success/wrong-App/failure/duplicate outcomes. It is secret-safe and non-authoritative. Terra
+APPROVE found no P0/P1 issues; 149 focused parent/Terra tests passed and Ruff/scoped
+Pyright/diff were clean. No live run occurred because `GITHUB_TOKEN` is absent. Issuer and
+rollback remain unsupported; no further local diagnostic leaf is currently authority-sufficient.
 C8 remains blocked, with no authority or readiness.
 
 The workflow-semantics and env-only diagnostic CLI gate is Terra-approved at

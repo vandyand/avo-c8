@@ -42,21 +42,31 @@ The following local foundations are recorded by the cited commits:
   fixed origin/defaults, no redirects, sanitized JSON/fixed failures, and no persistence or writer
   options. No App/runtime/check/issuer authority is claimed; no live execution occurred because
   `GITHUB_TOKEN` is absent in the current shell.
+- The validation-principal diagnostic is accepted at exact commit
+  `a8af4341be413981da348c772b9d51e1e6f9f27e`. It integrates the pure bounded parser with the
+  atomic read-only snapshot and records the exact main SHA, bounded check-run pages (at most 10
+  pages / 1000 check runs), stable total/page cardinality and unique run IDs, exact required
+  contexts, and App 15368 GitHub Actions metadata. It binds a run-ID digest and two-pass raw
+  page digests, tolerates unrelated in-progress runs, and applies final freshness binding for
+  success, wrong-App, failure, and duplicate blockers. The diagnostic is secret-safe and
+  non-authoritative. Terra APPROVE found no P0/P1 issues; 149 focused tests passed (parent and
+  Terra), with Ruff, scoped Pyright, and diff checks clean.
 
 ## Boundary and disposition
 
-The Phase 1 snapshot is authenticated transport and immutable diagnostic evidence only. It does
-not verify workflow semantics, validation check identity, effective protection, queue
-configuration, isolated issuer, or rollback namespace ACLs; those observations remain
-unverifiable at the Phase 1 boundary. The later read-only CLI exists; no live execution, hosted
-mutation, concrete trust root, authority-bearing adapter, or readiness evidence is delivered, and
-no hosted repository, queue, check, release, ledger, or `main` mutation occurred. C8 therefore
+The Phase 1 snapshot was authenticated transport and immutable diagnostic evidence only; its
+historical boundary did not verify workflow semantics or validation check identity. The later
+parser, atomic snapshot, workflow-semantics CLI, and validation-principal diagnostic now provide
+provider-evidenced observations when available, but remain read-only and non-authoritative. No
+live execution, hosted mutation, concrete trust root, authority-bearing adapter, or readiness
+evidence is delivered, and no hosted repository, queue, check, release, ledger, or `main`
+mutation occurred. C8 therefore
 remains blocked on the external protocol prerequisites: organization-owned required max-one merge
 queue; a separate isolated release
 issuer, not App 15368; exclusive controller create/delete ruleset/ACL authority for
 `avo/main-rollback/*`; a fresh hosted main rollback drill; then frozen ledger activation and 12
 consecutive eligible successes with 0 failures or boundary violations.
 
-Workflow semantics are approved. Validation-principal identity remains unverifiable, and issuer
-and rollback observations remain unsupported. The read-only CLI exists, but no live run occurred
-because `GITHUB_TOKEN` is absent; no authority or readiness exists.
+Workflow semantics and validation-principal identity diagnostics are approved and
+provider-evidenced when available. Issuer and rollback observations remain unsupported. No live
+run occurred because `GITHUB_TOKEN` is absent; no authority or readiness exists.

@@ -19,7 +19,8 @@ controller-rooted activation plus raw-proof CAS/legacy-compatible ledger schema 
 implemented locally. Phase 1 is now also accepted at `daeff01` through `f38840d`: its immutable
 single-flight snapshot performs five authenticated GETs (repository, main ref, commit, workflow
 blob, final main fence), verifies blob binding, and has 52 focused tests. This remains diagnostic
-only: validation-principal identity and protection/queue/issuer/rollback ACL remain unverifiable.
+only: protection/queue/issuer/rollback ACL remain unsupported; validation-principal diagnostics
+are covered by the later accepted diagnostic gate below.
 The rollback and activation preparers are explicitly non-consumable drafts; there
 is no live execution, concrete trust root, authority-bearing adapter, runner, readiness, or
 hosted mutation.
@@ -35,9 +36,16 @@ absent; validation identity, issuer, and rollback remain unsupported.
 The atomic authenticated Phase 2 snapshot is Terra-approved at `1d911e3` with 30 snapshot/parser
 review tests and 82 combined focused checks: two-pass mutable-configuration and final main-ref
 fences, bounded rules pagination, REST/GraphQL cross-binding, SHA-1/SHA-256 binding, and failure
-caching. App checks are configuration-only, not validation-principal identity. Workflow semantics
-are approved. Validation-principal identity remains unverifiable; issuer and rollback remain
-unsupported. The next local leaf is authenticated validation-principal diagnostics.
+caching. App checks are configuration-only, not issuer authority. Workflow semantics and
+validation-principal identity diagnostics are approved and provider-evidenced when available.
+The diagnostic is accepted at exact commit `a8af4341be413981da348c772b9d51e1e6f9f27e`; it
+integrates the pure bounded parser with the atomic read-only snapshot, exact main SHA, at most 10
+pages/1000 check runs, stable cardinality/unique IDs, exact required contexts, App 15368 metadata,
+run-ID and two-pass raw-page digests, unrelated in-progress tolerance, and final freshness
+blockers for success/wrong-App/failure/duplicate. It is secret-safe and non-authoritative.
+Terra APPROVE found no P0/P1 issues; 149 focused parent/Terra tests passed and Ruff/scoped
+Pyright/diff were clean. No further local diagnostic leaf is currently authority-sufficient;
+issuer and rollback remain unsupported.
 
 This plan is subordinate to the [authoritative roadmap](roadmap.md) and
 [ADR 0011](adr/0011-protected-main-graduation.md). It describes implementation-ready
@@ -134,7 +142,7 @@ accepted and its write scope is reviewed.
 | AVO-004.7-C5 | Main rollback authority | AVO-004.7-C1, AVO-004.7-C3, AVO-004.7-C4 | New `MainRollbackAuthority`, inverse-delta contracts, and tests. No reset, force update, or direct ref update. | Offline acceptance complete at HEAD `e38d0b826f94f3f559fb2e3ef0b26d1d17128c53`: Terra APPROVE, combined 24 passed. Covers aggregate orchestration, terminal cleanup/closure, crash/replay, and adversarial recovery. No hosted/provider/main/deploy mutation. [Result](avo-0047-c5-result.md) |
 | AVO-004.7-C6 | Campaign runner and eligibility ledger | AVO-004.7-C4, AVO-004.7-C5 | New runner, frozen activation record, eligibility ledger, threshold accumulator, and evidence package writer. | Complete for offline acceptance at `e6db424`; [result](avo-0047-c6-result.md). Enforces gap-free scheduler sequence after watermark, exactly one next-sequence admission with no speculative tail, ordinary nonempty eligibility from submission, terminal upstream failure/reset, and exact unresolved-tail closure. Hosted activation remains gated by C8 prerequisites and a fresh hosted rollback drill. |
 | AVO-004.7-C7 | Deterministic offline gate | AVO-004.7-C1 through AVO-004.7-C6 | Offline harness, fault matrix, and result artifact only. No hosted mutation. | Complete at code HEAD `9c70c36074810606692f8c2030b25ce83c10a1e4`: 47 exact frozen case/vector entries passed, replay returned the exact same result with `executor_calls=0` and `clock_calls=0`, and `deploy_performed=false`. Two truthful failed-closed dry attempts exposed datetime-canonicalization and semantic-versus-artifact verifier bugs; both were remediated and reviewed. [Result](avo-0047-c7-result.md) |
-| AVO-004.7-C8 | Hosted organization/queue/release gate | AVO-004.7-C7 | Terra-approved local foundations plus hosted workflow/configuration and operator-controlled state root only after explicit authority. | Phase 1 snapshot is accepted at `daeff01` through `f38840d` with 52 focused tests. The Phase 2 atomic authenticated snapshot is Terra-approved at `1d911e3` with 30 snapshot/parser review tests / 82 combined focused checks, covering two-pass mutable-configuration and final main-ref fences, bounded rules pagination, REST/GraphQL cross-binding, SHA-1/SHA-256 binding, failure caching, and configuration-only App checks. Workflow semantics are approved; validation-principal identity remains unverifiable; issuer and rollback remain unsupported. The read-only CLI exists, but no live run occurred because `GITHUB_TOKEN` is absent. The next local leaf is authenticated validation-principal diagnostics. Final protocol still requires an organization-owned required merge queue with max entries per group=1, a separate isolated issuer (not App 15368), exclusive controller create/delete authority for `avo/main-rollback/*`, a fresh hosted main rollback drill, then ledger activation and 12 consecutive eligible successes with 0 failures/boundary violations. Until those prerequisites exist this leaf is blocked and may not mutate current `main`. |
+| AVO-004.7-C8 | Hosted organization/queue/release gate | AVO-004.7-C7 | Terra-approved local foundations plus hosted workflow/configuration and operator-controlled state root only after explicit authority. | Phase 1 snapshot is accepted at `daeff01` through `f38840d`; the Phase 2 atomic authenticated snapshot is Terra-approved at `1d911e3`. The validation-principal diagnostic is complete at exact commit `a8af4341be413981da348c772b9d51e1e6f9f27e`, integrating the pure bounded parser and atomic read-only snapshot with exact main-SHA binding, bounded pages, stable cardinality/unique IDs, required contexts, App 15368 metadata, run-ID/raw-page digests, unrelated in-progress tolerance, and final freshness blockers. Terra APPROVE found no P0/P1; 149 focused parent/Terra tests passed and Ruff/scoped Pyright/diff were clean. It is secret-safe and non-authoritative. No live run occurred because `GITHUB_TOKEN` is absent; no further local diagnostic leaf is authority-sufficient. Final protocol still requires an organization-owned required max-one merge queue, separate isolated issuer (not App 15368), exclusive controller create/delete authority for `avo/main-rollback/*`, a fresh hosted rollback/activation sequence, then ledger activation and 12 consecutive eligible successes with 0 failures/boundary violations. Until those prerequisites exist this leaf is blocked and may not mutate current `main`. |
 
 ## Contract and evidence boundary
 

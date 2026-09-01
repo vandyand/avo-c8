@@ -24,9 +24,15 @@ hosted mutation occurred.
 The atomic authenticated Phase 2 snapshot is Terra-approved at `1d911e3` with 30 snapshot/parser
 review tests and 82 combined focused checks. It uses two-pass mutable-configuration and final
 main-ref fences, bounded rules pagination, REST/GraphQL cross-binding, SHA-1/SHA-256 binding, and
-failure caching. App checks are configuration-only, not validation-principal identity or issuer
-authority. Workflow semantics are approved. Validation-principal identity remains unverifiable; issuer and
-rollback observations remain unsupported.
+failure caching. App checks are configuration-only, not issuer authority. Workflow semantics and
+validation-principal identity diagnostics are approved and provider-evidenced when available.
+The diagnostic is accepted at exact commit `a8af4341be413981da348c772b9d51e1e6f9f27e`; it
+integrates the pure bounded parser with the atomic read-only snapshot, exact main SHA, at most 10
+pages/1000 check runs, stable cardinality/unique IDs, exact required contexts, App 15368 metadata,
+run-ID and two-pass raw-page digests, unrelated in-progress tolerance, and final freshness
+blockers for success/wrong-App/failure/duplicate. It is secret-safe and non-authoritative.
+Terra APPROVE found no P0/P1 issues; 149 focused parent/Terra tests passed and Ruff/scoped
+Pyright/diff were clean.
 
 The workflow-semantics and env-only diagnostic CLI gate is Terra-approved at
 `7ded390436010844f6044151c59b05a02c74b810` (69 Terra-focused tests; 125 focused parent tests;
@@ -55,10 +61,10 @@ then final `main` ref fence), verifies the Git blob binding, binds all responses
 observation, and caches one result under a single-flight lock. The Phase 1 snapshot itself had no
 CLI/live execution path, writer capability, activation authority, or readiness meaning. Workflow
 semantics and check identity, effective protection and queue configuration, isolated issuer, and
-rollback namespace remained unverifiable at that boundary. The Phase 2 parsers, atomic snapshot,
-workflow semantics, and read-only CLI are delivered and
-approved. Validation-principal identity remains unverifiable; issuer and rollback observations
-remain unsupported. No live run occurred because `GITHUB_TOKEN` is absent.
+rollback namespace remained unverifiable at that historical boundary. The Phase 2 parsers, atomic
+snapshot, workflow semantics, read-only CLI, and validation-principal diagnostic are delivered
+and approved; issuer and rollback observations remain unsupported. No live run occurred because
+`GITHUB_TOKEN` is absent. No further local diagnostic leaf is currently authority-sufficient.
 
 The GitHub REST ref-delete endpoint provides no expected-SHA CAS precondition. Before hosted
 use, protect the `avo/main-rollback/*` namespace with exclusive ACL/ruleset authority. Cleanup
