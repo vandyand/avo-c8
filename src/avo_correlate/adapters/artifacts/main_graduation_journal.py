@@ -2504,15 +2504,21 @@ class MainGraduationJournal:
                 )
 
     def _controller_config_digest(self, operation_id: str) -> str:
+        rollback = self._read("rollback-authorization", operation_id)
+        if rollback is not None:
+            if self._durable_index_present("plan", operation_id) or self._durable_index_present(
+                "preparation-authorization", operation_id
+            ):
+                raise MainGraduationJournalError(
+                    "operation has mixed graduation and rollback authority"
+                )
+            return cast(MainRollbackAuthorization, rollback[0]).controller_config_digest
         prior = self._read("plan", operation_id)
         if prior is not None:
             return cast(MainGraduationPlan, prior[0]).controller_config_digest
-        rollback = self._read("rollback-authorization", operation_id)
-        if rollback is None:
-            raise MainGraduationJournalError(
-                "mutation intent graduation or rollback authority is missing"
-            )
-        return cast(MainRollbackAuthorization, rollback[0]).controller_config_digest
+        raise MainGraduationJournalError(
+            "mutation intent graduation or rollback authority is missing"
+        )
 
     def _verify_completion_prerequisites(
         self, package: MainCompletionPackage, *, require_post_state_durable: bool = True
@@ -3060,13 +3066,15 @@ class MainGraduationJournal:
         auth_prior = self._read("rollback-authorization", preparation.operation_id)
         intent_prior = self._read("rollback-intent", preparation.operation_id)
         lease_prior = self._read("lease-evidence-record", preparation.operation_id)
-        ordinary_plan = self._read("plan", preparation.operation_id)
-        ordinary_preparation = self._read("preparation-authorization", preparation.operation_id)
         if auth_prior is None or intent_prior is None or lease_prior is None:
             raise MainGraduationJournalError(
                 "rollback preparation requires durable authorization, intent, and lease"
             )
-        if ordinary_plan is not None or ordinary_preparation is not None:
+        if self._durable_index_present(
+            "plan", preparation.operation_id
+        ) or self._durable_index_present(
+            "preparation-authorization", preparation.operation_id
+        ):
             raise MainGraduationJournalError(
                 "rollback preparation conflicts with graduation authority"
             )
@@ -3118,8 +3126,46 @@ class MainGraduationJournal:
                 "rollback preparation candidate ref is outside controller namespace"
             )
 
+    def _operation_authority_branch(self, operation_id: str) -> Literal["graduation", "rollback"]:
+        """Classify an operation from its durable authority records.
+
+        Queue/hold/release records intentionally retain their historical wire
+        types, so their branch must come from the authority that authorized the
+        candidate.  A plan and rollback authority for one operation is never a
+        valid fallback combination.
+        """
+
+        rollback = self._read("rollback-authorization", operation_id)
+        if rollback is not None:
+            # Do not parse ordinary graduation artifacts while following a
+            # rollback.  Their durable index presence is enough to reject a
+            # dual branch, including malformed/tampered ordinary artifacts.
+            if self._durable_index_present("plan", operation_id) or self._durable_index_present(
+                "preparation-authorization", operation_id
+            ):
+                raise MainGraduationJournalError(
+                    "operation has mixed graduation and rollback authority"
+                )
+            return "rollback"
+        plan = self._read("plan", operation_id)
+        if plan is not None:
+            return "graduation"
+        raise MainGraduationJournalError(
+            "admission requires durable queue authority"
+        )
+
+    def _durable_index_present(self, kind: str, operation_id: str) -> bool:
+        """Check a branch index without parsing an artifact from the other branch."""
+
+        return (
+            self._indexes / kind / f"{operation_id.removeprefix('sha256:')}.json"
+        ).is_file()
+
     def _require_queue_admission(self, admission: MainQueueAdmissionObservation) -> None:
         """Admission closes the pre-enqueue queue configuration snapshot."""
+        if self._operation_authority_branch(admission.operation_id) == "rollback":
+            self._require_rollback_queue_admission(admission)
+            return
         plan = self._read("plan", admission.operation_id)
         queue_configuration = self._read("queue-configuration", admission.operation_id)
         protection = self._read("protection", admission.operation_id)
@@ -3178,6 +3224,78 @@ class MainGraduationJournal:
         ):
             raise MainGraduationJournalError("admission queue issuer differs")
 
+    def _require_rollback_queue_admission(
+        self, admission: MainQueueAdmissionObservation
+    ) -> None:
+        """Validate the historical admission wire against rollback authority."""
+
+        queue_prior = self._read("queue-configuration", admission.operation_id)
+        protection_prior = self._read("protection", admission.operation_id)
+        preparation_prior = self._read(
+            "rollback-preparation-authorization", admission.operation_id
+        )
+        auth_prior = self._read("rollback-authorization", admission.operation_id)
+        if any(
+            value is None
+            for value in (queue_prior, protection_prior, preparation_prior, auth_prior)
+        ):
+            raise MainGraduationJournalError(
+                "rollback admission requires durable queue, protection, and preparation authority"
+            )
+        assert queue_prior is not None
+        assert protection_prior is not None
+        assert preparation_prior is not None
+        assert auth_prior is not None
+        queue = cast(MainQueueConfigurationObservation, queue_prior[0])
+        protection = cast(MainProtectionManifest, protection_prior[0])
+        preparation = cast(MainRollbackPreparationAuthorization, preparation_prior[0])
+        rollback_auth = cast(MainRollbackAuthorization, auth_prior[0])
+        self._require_rollback_preparation_chain(preparation)
+        if (
+            admission.preparation_authorization_digest != canonical_digest(preparation)
+            or admission.package_digest != preparation.package_digest
+            or admission.composition_digest != preparation.composition_digest
+            or admission.repository_digest != preparation.repository_digest
+            or admission.target_ref != preparation.target_ref
+            or admission.base_commit != preparation.base_commit
+            or admission.base_tree != preparation.base_tree
+            or admission.head_commit != preparation.candidate_commit
+            or admission.head_tree != preparation.candidate_tree
+            or queue.repository_digest != preparation.repository_digest
+            or queue.target_ref != preparation.target_ref
+            or queue.expected_base_commit != preparation.base_commit
+            or queue.expected_base_tree != preparation.base_tree
+            or queue.queue_enabled is not True
+            or queue.max_entries_per_group != 1
+            or queue.bypass_allowed
+            or queue.direct_merge_allowed
+            or admission.queue_configuration_digest != queue.queue_configuration_digest
+            or admission.protection_manifest_digest != protection.manifest_digest
+            or queue.protection_manifest_digest != protection.manifest_digest
+            or queue.protection_epoch != protection.protection_epoch
+            or queue.merge_method != "squash"
+            or queue.provider_identity != protection.provider_identity
+            or queue.provider_api_version != protection.provider_api_version
+        ):
+            raise MainGraduationJournalError("rollback admission package/queue binding differs")
+        if (
+            rollback_auth.release_issuer_identity != protection.isolated_release_issuer
+            or rollback_auth.release_issuer_app_id != protection.release_issuer_app_id
+            or rollback_auth.issuer_isolation_digest != protection.issuer_isolation_digest
+            or queue.isolated_release_issuer != rollback_auth.release_issuer_identity
+            or queue.release_issuer_app_id != rollback_auth.release_issuer_app_id
+            or queue.issuer_isolation_digest != rollback_auth.issuer_isolation_digest
+            or admission.issuer_identity != rollback_auth.release_issuer_identity
+            or admission.release_issuer_app_id != rollback_auth.release_issuer_app_id
+            or admission.issuer_isolation_digest != rollback_auth.issuer_isolation_digest
+            or admission.check_context != protection.release_context
+        ):
+            raise MainGraduationJournalError("rollback admission issuer binding differs")
+        if preparation.authorized_at > admission.observed_at:
+            raise MainGraduationJournalError(
+                "rollback admission predates preparation authorization"
+            )
+
     def _require_admission(self, hold: MainReleaseHoldObservation) -> None:
         prior = self._read("queue-admission", hold.operation_id)
         if prior is None:
@@ -3186,6 +3304,9 @@ class MainGraduationJournal:
         self._require_queue_admission(admission)
         if hold.admission_observation_digest != canonical_digest(admission):
             raise MainGraduationJournalError("hold admission digest differs")
+        if self._operation_authority_branch(hold.operation_id) == "rollback":
+            self._require_rollback_hold(hold, admission)
+            return
         preparation = self._read("preparation-authorization", hold.operation_id)
         intent = self._read("intent", hold.operation_id)
         plan = self._read("plan", hold.operation_id)
@@ -3279,12 +3400,209 @@ class MainGraduationJournal:
         ):
             raise MainGraduationJournalError("admission/hold issuer isolation differs")
 
+    def _require_rollback_hold(
+        self,
+        hold: MainReleaseHoldObservation,
+        admission: MainQueueAdmissionObservation,
+    ) -> None:
+        """Close a rollback admission with exact singleton group evidence."""
+
+        preparation_prior = self._read(
+            "rollback-preparation-authorization", hold.operation_id
+        )
+        auth_prior = self._read("rollback-authorization", hold.operation_id)
+        intent_prior = self._read("rollback-intent", hold.operation_id)
+        lease_prior = self._read("lease-evidence-record", hold.operation_id)
+        if any(
+            value is None
+            for value in (preparation_prior, auth_prior, intent_prior, lease_prior)
+        ):
+            raise MainGraduationJournalError(
+                "rollback hold requires durable rollback preparation authority"
+            )
+        assert preparation_prior is not None
+        assert auth_prior is not None
+        assert intent_prior is not None
+        assert lease_prior is not None
+        preparation = cast(MainRollbackPreparationAuthorization, preparation_prior[0])
+        rollback_auth = cast(MainRollbackAuthorization, auth_prior[0])
+        rollback_intent = cast(MainRollbackIntent, intent_prior[0])
+        lease = cast(MainLeaseEvidenceRecord, lease_prior[0])
+        self._require_rollback_preparation_chain(preparation)
+        queue_prior = self._read("queue", hold.operation_id)
+        protection_prior = self._read("protection", hold.operation_id)
+        attestations_prior = self._read("attestations", hold.operation_id)
+        checks_prior = self._read("merge-group-checks", hold.operation_id)
+        if any(
+            value is None
+            for value in (queue_prior, protection_prior, attestations_prior, checks_prior)
+        ):
+            raise MainGraduationJournalError("rollback hold requires durable queue evidence")
+        assert queue_prior is not None
+        assert protection_prior is not None
+        assert attestations_prior is not None
+        assert checks_prior is not None
+        queue = cast(MainQueueObservation, queue_prior[0])
+        protection = cast(MainProtectionManifest, protection_prior[0])
+        attestations = cast(MainAttestationManifest, attestations_prior[0])
+        checks = cast(MainMergeGroupChecks, checks_prior[0])
+        expected_parents = [preparation.base_commit, preparation.candidate_commit]
+        if (
+            hold.preparation_authorization_digest != canonical_digest(preparation)
+            or hold.package_digest != preparation.package_digest
+            or hold.composition_digest != preparation.composition_digest
+            or hold.repository_digest != preparation.repository_digest
+            or hold.target_ref != preparation.target_ref
+            or hold.pull_request_number != admission.pull_request_number
+            or hold.pull_request_number != queue.pull_request_number
+            or hold.base_commit != preparation.base_commit
+            or hold.base_tree != preparation.base_tree
+            or hold.composition_tree != preparation.candidate_tree
+            or admission.preparation_authorization_digest != canonical_digest(preparation)
+            or admission.package_digest != preparation.package_digest
+            or admission.composition_digest != preparation.composition_digest
+            or admission.base_commit != preparation.base_commit
+            or admission.base_tree != preparation.base_tree
+            or admission.head_commit != preparation.candidate_commit
+            or admission.head_tree != preparation.candidate_tree
+            or rollback_intent.candidate_ref != preparation.candidate_ref
+            or rollback_intent.lease_epoch_digest != lease.lease_epoch_digest
+            or rollback_auth.lease_epoch_digest != lease.lease_epoch_digest
+            or preparation.lease_epoch_digest != lease.lease_epoch_digest
+            or queue.queue_generation_digest != hold.queue_generation_digest
+            or queue.admission_observation_digest != canonical_digest(admission)
+            or queue.expected_base_commit != preparation.base_commit
+            or queue.expected_base_tree != preparation.base_tree
+            or queue.expected_group_parents != expected_parents
+            or queue.protection_manifest_digest != protection.manifest_digest
+            or queue.protection_epoch != protection.protection_epoch
+            or queue.max_entries_per_group != 1
+            or queue.bypass_allowed
+            or queue.direct_merge_allowed
+            or queue.merge_method != "squash"
+            or hold.expected_group_parents != expected_parents
+            or hold.group_parents != expected_parents
+            or hold.group_tree != preparation.candidate_tree
+            or hold.group_sha == admission.head_commit
+            or hold.queue_members != [hold.pull_request_number]
+            or hold.group_topology_digest != queue.group_topology_digest
+            or hold.protection_manifest_digest != protection.manifest_digest
+            or hold.attestation_manifest_digest != canonical_digest(attestations)
+            or hold.other_required_checks != checks
+            or checks.operation_id != hold.operation_id
+            or checks.package_digest != preparation.package_digest
+            or checks.composition_digest != preparation.composition_digest
+            or attestations.operation_id != hold.operation_id
+            or attestations.package_digest != preparation.package_digest
+            or attestations.composition_digest != preparation.composition_digest
+            or attestations.policy_epoch != rollback_auth.policy_epoch
+        ):
+            raise MainGraduationJournalError("rollback hold durable evidence binding differs")
+        if not (
+            hold.issuer_identity
+            == admission.issuer_identity
+            == queue.isolated_release_issuer
+            == protection.isolated_release_issuer
+            == rollback_auth.release_issuer_identity
+            and hold.release_issuer_app_id
+            == admission.release_issuer_app_id
+            == queue.release_issuer_app_id
+            == protection.release_issuer_app_id
+            == rollback_auth.release_issuer_app_id
+            and hold.issuer_isolation_digest
+            == admission.issuer_isolation_digest
+            == queue.issuer_isolation_digest
+            == protection.issuer_isolation_digest
+            == rollback_auth.issuer_isolation_digest
+            and hold.check_context == admission.check_context == protection.release_context
+        ):
+            raise MainGraduationJournalError("rollback hold issuer isolation differs")
+        if not (preparation.authorized_at <= admission.observed_at <= hold.observed_at):
+            raise MainGraduationJournalError("rollback admission/hold chronology differs")
+
+    def _require_rollback_release_authorization(
+        self,
+        authorization: MainReleaseAuthorization,
+        hold: MainReleaseHoldObservation,
+    ) -> None:
+        """Validate final release authority against rollback preparation."""
+
+        preparation_prior = self._read(
+            "rollback-preparation-authorization", authorization.operation_id
+        )
+        rollback_auth_prior = self._read("rollback-authorization", authorization.operation_id)
+        intent_prior = self._read("rollback-intent", authorization.operation_id)
+        lease_prior = self._read("lease-evidence-record", authorization.operation_id)
+        admission_prior = self._read("queue-admission", authorization.operation_id)
+        if any(
+            value is None
+            for value in (
+                preparation_prior,
+                rollback_auth_prior,
+                intent_prior,
+                lease_prior,
+                admission_prior,
+            )
+        ):
+            raise MainGraduationJournalError(
+                "rollback release authorization requires durable rollback authority"
+            )
+        assert preparation_prior is not None
+        assert rollback_auth_prior is not None
+        assert intent_prior is not None
+        assert lease_prior is not None
+        assert admission_prior is not None
+        preparation = cast(MainRollbackPreparationAuthorization, preparation_prior[0])
+        rollback_auth = cast(MainRollbackAuthorization, rollback_auth_prior[0])
+        intent = cast(MainRollbackIntent, intent_prior[0])
+        lease = cast(MainLeaseEvidenceRecord, lease_prior[0])
+        admission = cast(MainQueueAdmissionObservation, admission_prior[0])
+        self._require_rollback_preparation_chain(preparation)
+        if (
+            authorization.hold_observation_digest != canonical_digest(hold)
+            or authorization.admission_observation_digest != canonical_digest(admission)
+            or authorization.preparation_authorization_digest
+            != canonical_digest(preparation)
+            or authorization.package_digest != preparation.package_digest
+            or authorization.composition_digest != preparation.composition_digest
+            or authorization.repository_digest != preparation.repository_digest
+            or authorization.target_ref != preparation.target_ref
+            or authorization.group_sha != hold.group_sha
+            or authorization.hold_run_id != hold.hold_run_id
+            or authorization.hold_nonce != hold.hold_nonce
+            or authorization.queue_generation_digest != hold.queue_generation_digest
+            or authorization.lease_identity != lease.owner
+            or authorization.lease_digest != lease.lease_digest
+            or authorization.policy_epoch != rollback_auth.policy_epoch
+            or preparation.policy_epoch != rollback_auth.policy_epoch
+            or intent.authorization_digest != rollback_auth.authorization_digest
+            or intent.candidate_ref != preparation.candidate_ref
+            or rollback_auth.release_issuer_identity != hold.issuer_identity
+            or rollback_auth.release_issuer_app_id != hold.release_issuer_app_id
+            or rollback_auth.issuer_isolation_digest != hold.issuer_isolation_digest
+            or authorization.release_issuer_identity != rollback_auth.release_issuer_identity
+            or authorization.release_issuer_app_id != rollback_auth.release_issuer_app_id
+            or authorization.issuer_isolation_digest != rollback_auth.issuer_isolation_digest
+            or authorization.authorized_at < hold.observed_at
+            or authorization.authorized_at < rollback_auth.authorized_at
+            or authorization.authorized_at >= rollback_auth.expires_at
+            or authorization.expires_at > rollback_auth.expires_at
+            or authorization.authorized_at >= lease.expires_at
+            or authorization.expires_at > lease.expires_at
+        ):
+            raise MainGraduationJournalError(
+                "rollback release authorization prior-stage binding differs"
+            )
+
     def _require_hold(self, authorization: MainReleaseAuthorization) -> None:
         prior = self._read("release-hold", authorization.operation_id)
         if prior is None:
             raise MainGraduationJournalError("release authorization requires durable pending hold")
         hold = cast(MainReleaseHoldObservation, prior[0])
         self._require_admission(hold)
+        if self._operation_authority_branch(authorization.operation_id) == "rollback":
+            self._require_rollback_release_authorization(authorization, hold)
+            return
         if authorization.hold_observation_digest != canonical_digest(hold):
             raise MainGraduationJournalError("release authorization hold digest differs")
         if (
@@ -3332,6 +3650,15 @@ class MainGraduationJournal:
         if prior is None:
             raise MainGraduationJournalError("transition requires durable release authorization")
         authorization = cast(MainReleaseAuthorization, prior[0])
+        if self._operation_authority_branch(receipt.operation_id) == "rollback":
+            hold_prior = self._read("release-hold", receipt.operation_id)
+            if hold_prior is None:
+                raise MainGraduationJournalError(
+                    "rollback transition requires durable pending hold"
+                )
+            self._require_rollback_release_authorization(
+                authorization, cast(MainReleaseHoldObservation, hold_prior[0])
+            )
         if receipt.release_authorization_digest != authorization.authorization_digest:
             raise MainGraduationJournalError("transition authorization digest differs")
         if not (authorization.authorized_at <= receipt.observed_at <= authorization.expires_at):
