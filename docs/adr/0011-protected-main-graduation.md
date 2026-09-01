@@ -107,10 +107,12 @@ authorization digest, hold run/nonce, merge group, lease epoch, and isolated iss
 Claiming is separate from dispatch, but once dispatch may have begun no recovery path may
 issue a second release transition after a lost or delayed receipt. Authorization expiry
 cannot exceed the lease expiry or configured maximum TTL. The release-transition intent
-must be durably recorded before the authorization or one-use claim can expire. A future
-live executor must use a trusted controller clock to revalidate authorization validity,
-lease validity, and issuer scope immediately before provider dispatch; stale preflight
-state or caller-supplied time is insufficient. Admission and group-hold run
+must be durably recorded before provider dispatch. If authorization or the one-use claim
+expires first, the attempt quarantines without a release mutation and must be regenerated;
+if the intent is already durable, later expiry allows only read-only reconciliation and
+never a second dispatch. A live executor must use a trusted controller clock to revalidate
+authorization validity, lease validity, and issuer scope immediately before provider
+dispatch; stale preflight state or caller-supplied time is insufficient. Admission and group-hold run
 IDs/nonces are deterministic from the operation and exact external identities, including
 the queue generation, so evidence cannot transfer across regenerated PRs or groups.
 These Phase A rules make ambiguous external writes fail closed without guessing or

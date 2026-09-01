@@ -69,11 +69,13 @@ authorization digest, hold run/nonce, group, lease epoch, and issuer. Claiming i
 from dispatch: after dispatch may have begun, recovery must never issue a second release
 transition, even when the receipt is lost. Release authorization expiry is bounded by the
 lease expiry and configured maximum TTL.
-The release-transition intent must be durably recorded before the release authorization or
-one-use claim can expire. Any future live executor must use a trusted controller clock to
-recheck authorization validity, lease validity, and issuer scope immediately before
-dispatching the provider transition; a caller-supplied time or stale preflight check is
-insufficient.
+The release-transition intent must be durably recorded before provider dispatch. If the
+release authorization or one-use claim expires before that intent is durable, the attempt
+quarantines with zero release mutation and a fresh attempt is required. If the intent is
+already durable, later expiry permits only read-only reconciliation; it never authorizes a
+second dispatch. Any live executor must use a trusted controller clock to recheck
+authorization validity, lease validity, and issuer scope immediately before dispatching
+the provider transition; a caller-supplied time or stale preflight check is insufficient.
 
 Admission and group-hold identities are deterministic and operation-bound (including the
 exact PR/group, queue generation, source/head identity, and nonce derivation inputs), so a
