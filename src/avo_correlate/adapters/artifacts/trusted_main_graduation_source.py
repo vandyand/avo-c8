@@ -40,6 +40,22 @@ class TrustedMainGraduationSourceError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class TrustedMainGraduationEvidenceRef:
+    """Public, immutable locator for an accepted forward evidence source."""
+
+    operation_id: Sha256Digest
+    plan_digest: Sha256Digest
+    plan_ref: ArtifactRef
+    package_digest: Sha256Digest
+    composition_digest: Sha256Digest
+    base_commit: str
+    base_tree: str
+    candidate_commit: str
+    candidate_tree: str
+    candidate_ref: str
+
+
+@dataclass(frozen=True)
 class TrustedMainGraduationJournalConfiguration:
     """Controller-pinned inputs for constructing the read-only source port."""
 
@@ -222,6 +238,7 @@ class TrustedMainGraduationOfflineResult:
     reason: str
     rollback_completion_present: bool = False
     ledger_present: bool = False
+    evidence_ref: TrustedMainGraduationEvidenceRef | None = None
 
 
 @dataclass(frozen=True)
@@ -346,6 +363,18 @@ class TrustedMainGraduationEvidenceReader:
                 reason="verified_forward_source",
                 rollback_completion_present=source.rollback_completion is not None,
                 ledger_present=source.ledger_started is not None,
+                evidence_ref=TrustedMainGraduationEvidenceRef(
+                    operation_id=source.intent.operation_id,
+                    plan_digest=canonical_digest(source.plan),
+                    plan_ref=source.plan_ref,
+                    package_digest=source.plan.package.package_digest,
+                    composition_digest=source.plan.composition.composition_digest,
+                    base_commit=source.plan.composition.base_commit,
+                    base_tree=source.plan.composition.base_tree,
+                    candidate_commit=source.plan.composition.candidate_commit,
+                    candidate_tree=source.plan.composition.candidate_tree,
+                    candidate_ref=source.plan.composition.candidate_ref,
+                ),
             )
         except (TrustedMainGraduationSourceError, MainGraduationJournalError, ValueError) as exc:
             return TrustedMainGraduationOfflineResult(
@@ -602,6 +631,7 @@ def build_trusted_main_graduation_evidence_reader(
 
 __all__ = [
     "TrustedMainGraduationEvidenceReader",
+    "TrustedMainGraduationEvidenceRef",
     "TrustedMainGraduationJournalConfiguration",
     "TrustedMainGraduationOfflineResult",
     "TrustedMainGraduationSourceError",

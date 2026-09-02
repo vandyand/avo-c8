@@ -1,0 +1,71 @@
+{
+  "additionalProperties": false,
+  "description": "Terminal evidence that cannot be self-attested as successful.",
+  "properties": {
+    "activation_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Activation Digest",
+      "type": "string"
+    },
+    "completed_at": {
+      "format": "date-time",
+      "title": "Completed At",
+      "type": "string"
+    },
+    "completion_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Completion Digest",
+      "type": "string"
+    },
+    "operation_id": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Operation Id",
+      "type": "string"
+    },
+    "outcome": {
+      "const": "applied",
+      "title": "Outcome",
+      "type": "string"
+    },
+    "post_state_observation_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Post State Observation Digest",
+      "type": "string"
+    },
+    "receipt_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Receipt Digest",
+      "type": "string"
+    },
+    "reconciliation_digest": {
+      "anyOf": [
+        {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reconciliation Digest"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "activation_digest",
+    "operation_id",
+    "receipt_digest",
+    "post_state_observation_digest",
+    "outcome",
+    "completed_at",
+    "completion_digest"
+  ],
+  "title": "MainPersonalExactCasCompletion",
+  "type": "object"
+}

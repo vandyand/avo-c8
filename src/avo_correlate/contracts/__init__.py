@@ -216,6 +216,18 @@ from avo_correlate.contracts.main_graduation_offline_drill import (
     offline_drill_operation_id,
     offline_drill_result_id,
 )
+from avo_correlate.contracts.main_personal_exact_cas import (
+    MainPersonalExactCasActivation,
+    MainPersonalExactCasAuthorization,
+    MainPersonalExactCasCompletion,
+    MainPersonalExactCasDispatchStarted,
+    MainPersonalExactCasIntent,
+    MainPersonalExactCasPostStateObservation,
+    MainPersonalExactCasReceipt,
+    MainPersonalExactCasReconciliation,
+    personal_cas_claim_digest,
+    personal_cas_operation_id,
+)
 from avo_correlate.contracts.policy import PolicyDecision
 from avo_correlate.contracts.prepublication import (
     RollbackOperationQuarantine,
@@ -410,6 +422,14 @@ __all__ = [
     "MainMutationIntent",
     "MainMutationReceipt",
     "MainMutationStage",
+    "MainPersonalExactCasActivation",
+    "MainPersonalExactCasAuthorization",
+    "MainPersonalExactCasCompletion",
+    "MainPersonalExactCasDispatchStarted",
+    "MainPersonalExactCasIntent",
+    "MainPersonalExactCasPostStateObservation",
+    "MainPersonalExactCasReceipt",
+    "MainPersonalExactCasReconciliation",
     "MainPreparationAuthorization",
     "MainProtectionManifest",
     "MainProviderPostStateObservation",
@@ -493,6 +513,8 @@ __all__ = [
     "offline_drill_case_id",
     "offline_drill_operation_id",
     "offline_drill_result_id",
+    "personal_cas_claim_digest",
+    "personal_cas_operation_id",
     "rollback_cleanup_authority_digest",
     "verify_campaign_package_artifact",
 ]

@@ -1,0 +1,181 @@
+{
+  "additionalProperties": false,
+  "description": "Controller-issued precondition/authorization; not dispatch authority.",
+  "properties": {
+    "activation_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Activation Digest",
+      "type": "string"
+    },
+    "authorization_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Authorization Digest",
+      "type": "string"
+    },
+    "authorized_at": {
+      "format": "date-time",
+      "title": "Authorized At",
+      "type": "string"
+    },
+    "base_commit": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Base Commit",
+      "type": "string"
+    },
+    "base_tree": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Base Tree",
+      "type": "string"
+    },
+    "candidate_commit": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Candidate Commit",
+      "type": "string"
+    },
+    "candidate_parents": {
+      "items": {
+        "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+        "type": "string"
+      },
+      "title": "Candidate Parents",
+      "type": "array"
+    },
+    "candidate_ref": {
+      "pattern": "^refs/heads/avo/candidate/[0-9a-f]{64}$",
+      "title": "Candidate Ref",
+      "type": "string"
+    },
+    "candidate_tree": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Candidate Tree",
+      "type": "string"
+    },
+    "claim_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Claim Digest",
+      "type": "string"
+    },
+    "claim_nonce": {
+      "minLength": 1,
+      "title": "Claim Nonce",
+      "type": "string"
+    },
+    "deploy_performed": {
+      "const": false,
+      "default": false,
+      "title": "Deploy Performed",
+      "type": "boolean"
+    },
+    "lease_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Lease Digest",
+      "type": "string"
+    },
+    "lease_expires_at": {
+      "format": "date-time",
+      "title": "Lease Expires At",
+      "type": "string"
+    },
+    "lease_identity": {
+      "minLength": 1,
+      "title": "Lease Identity",
+      "type": "string"
+    },
+    "one_use": {
+      "const": true,
+      "default": true,
+      "title": "One Use",
+      "type": "boolean"
+    },
+    "operation_id": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Operation Id",
+      "type": "string"
+    },
+    "protection_ruleset_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Protection Ruleset Digest",
+      "type": "string"
+    },
+    "repository_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Repository Digest",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "source_composition_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Source Composition Digest",
+      "type": "string"
+    },
+    "source_operation_id": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Source Operation Id",
+      "type": "string"
+    },
+    "source_package_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Source Package Digest",
+      "type": "string"
+    },
+    "source_plan_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Source Plan Digest",
+      "type": "string"
+    },
+    "target_ref": {
+      "const": "refs/heads/main",
+      "default": "refs/heads/main",
+      "title": "Target Ref",
+      "type": "string"
+    },
+    "writer_app_id": {
+      "exclusiveMinimum": 0,
+      "title": "Writer App Id",
+      "type": "integer"
+    },
+    "writer_identity": {
+      "minLength": 1,
+      "title": "Writer Identity",
+      "type": "string"
+    },
+    "writer_installation_id": {
+      "exclusiveMinimum": 0,
+      "title": "Writer Installation Id",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "activation_digest",
+    "operation_id",
+    "repository_digest",
+    "source_operation_id",
+    "source_plan_digest",
+    "source_package_digest",
+    "source_composition_digest",
+    "base_commit",
+    "base_tree",
+    "candidate_commit",
+    "candidate_tree",
+    "candidate_ref",
+    "candidate_parents",
+    "protection_ruleset_digest",
+    "writer_app_id",
+    "writer_installation_id",
+    "writer_identity",
+    "lease_identity",
+    "lease_digest",
+    "lease_expires_at",
+    "claim_nonce",
+    "claim_digest",
+    "authorized_at",
+    "authorization_digest"
+  ],
+  "title": "MainPersonalExactCasAuthorization",
+  "type": "object"
+}

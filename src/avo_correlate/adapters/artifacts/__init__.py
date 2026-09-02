@@ -40,6 +40,12 @@ from avo_correlate.adapters.artifacts.main_graduation_offline_drill_journal impo
     OfflineDrillJournalError,
     OfflineDrillRecordConflictError,
 )
+from avo_correlate.adapters.artifacts.main_personal_exact_cas_journal import (
+    MainPersonalExactCasAuthorityVerifier,
+    MainPersonalExactCasJournal,
+    MainPersonalExactCasJournalError,
+    MainPersonalExactCasRecordConflictError,
+)
 from avo_correlate.adapters.artifacts.rollback_bundle_authority import (
     RollbackBundleAuthorityJournal,
     RollbackPublicationAuthorizationJournal,
@@ -49,6 +55,7 @@ from avo_correlate.adapters.artifacts.rollback_quarantine import (
 )
 from avo_correlate.adapters.artifacts.trusted_main_graduation_source import (
     TrustedMainGraduationEvidenceReader,
+    TrustedMainGraduationEvidenceRef,
     TrustedMainGraduationJournalConfiguration,
     TrustedMainGraduationOfflineResult,
     TrustedMainGraduationSourceError,
@@ -78,6 +85,10 @@ __all__ = [
     "MainLedgerJournal",
     "MainLedgerJournalError",
     "MainLedgerRecordConflictError",
+    "MainPersonalExactCasAuthorityVerifier",
+    "MainPersonalExactCasJournal",
+    "MainPersonalExactCasJournalError",
+    "MainPersonalExactCasRecordConflictError",
     "MainPhaseAAuthorityVerifier",
     "MainRollbackAuthorityVerifier",
     "OfflineDrillAuthorityVerifier",
@@ -88,6 +99,7 @@ __all__ = [
     "RollbackOperationQuarantineJournal",
     "RollbackPublicationAuthorizationJournal",
     "TrustedMainGraduationEvidenceReader",
+    "TrustedMainGraduationEvidenceRef",
     "TrustedMainGraduationJournalConfiguration",
     "TrustedMainGraduationOfflineResult",
     "TrustedMainGraduationSourceError",

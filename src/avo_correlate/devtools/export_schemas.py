@@ -180,6 +180,16 @@ from avo_correlate.contracts.main_graduation_offline_drill import (
     MainGraduationOfflineNodeObservation,
     MainGraduationOfflineWorkspaceIdentity,
 )
+from avo_correlate.contracts.main_personal_exact_cas import (
+    MainPersonalExactCasActivation,
+    MainPersonalExactCasAuthorization,
+    MainPersonalExactCasCompletion,
+    MainPersonalExactCasDispatchStarted,
+    MainPersonalExactCasIntent,
+    MainPersonalExactCasPostStateObservation,
+    MainPersonalExactCasReceipt,
+    MainPersonalExactCasReconciliation,
+)
 from avo_correlate.contracts.model import ModelInvocationRecord, ModelRequest, ModelResponse
 from avo_correlate.contracts.operations import (
     DryRunReport,
@@ -269,6 +279,14 @@ MODELS: tuple[type[StrictModel], ...] = (
     MainExactCasTopologyObservation,
     MainExactCasReconciliation,
     MainExactCasTransportResponse,
+    MainPersonalExactCasActivation,
+    MainPersonalExactCasAuthorization,
+    MainPersonalExactCasCompletion,
+    MainPersonalExactCasDispatchStarted,
+    MainPersonalExactCasIntent,
+    MainPersonalExactCasPostStateObservation,
+    MainPersonalExactCasReceipt,
+    MainPersonalExactCasReconciliation,
     SandboxExecutionSpec,
     SandboxExecutionResult,
     DryRunReport,

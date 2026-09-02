@@ -1,0 +1,194 @@
+{
+  "$defs": {
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Digest",
+          "type": "string"
+        },
+        "media_type": {
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "role": {
+          "minLength": 1,
+          "title": "Role",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "size_bytes": {
+          "minimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "digest",
+        "size_bytes",
+        "media_type",
+        "role",
+        "created_at"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Frozen activation binding an accepted trusted source to personal CAS.",
+  "properties": {
+    "activated_at": {
+      "format": "date-time",
+      "title": "Activated At",
+      "type": "string"
+    },
+    "activation_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Activation Digest",
+      "type": "string"
+    },
+    "base_commit": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Base Commit",
+      "type": "string"
+    },
+    "base_tree": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Base Tree",
+      "type": "string"
+    },
+    "candidate_commit": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Candidate Commit",
+      "type": "string"
+    },
+    "candidate_parents": {
+      "items": {
+        "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+        "type": "string"
+      },
+      "title": "Candidate Parents",
+      "type": "array"
+    },
+    "candidate_reachable": {
+      "default": true,
+      "title": "Candidate Reachable",
+      "type": "boolean"
+    },
+    "candidate_ref": {
+      "pattern": "^refs/heads/avo/candidate/[0-9a-f]{64}$",
+      "title": "Candidate Ref",
+      "type": "string"
+    },
+    "candidate_ref_immutable": {
+      "default": true,
+      "title": "Candidate Ref Immutable",
+      "type": "boolean"
+    },
+    "candidate_tree": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Candidate Tree",
+      "type": "string"
+    },
+    "deploy_performed": {
+      "const": false,
+      "default": false,
+      "title": "Deploy Performed",
+      "type": "boolean"
+    },
+    "protection_ruleset_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Protection Ruleset Digest",
+      "type": "string"
+    },
+    "repository_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Repository Digest",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "source_composition_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Source Composition Digest",
+      "type": "string"
+    },
+    "source_operation_id": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Source Operation Id",
+      "type": "string"
+    },
+    "source_package_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Source Package Digest",
+      "type": "string"
+    },
+    "source_plan_artifact": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "source_plan_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Source Plan Digest",
+      "type": "string"
+    },
+    "target_ref": {
+      "const": "refs/heads/main",
+      "default": "refs/heads/main",
+      "title": "Target Ref",
+      "type": "string"
+    },
+    "writer_app_id": {
+      "exclusiveMinimum": 0,
+      "title": "Writer App Id",
+      "type": "integer"
+    },
+    "writer_identity": {
+      "minLength": 1,
+      "title": "Writer Identity",
+      "type": "string"
+    },
+    "writer_installation_id": {
+      "exclusiveMinimum": 0,
+      "title": "Writer Installation Id",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "activation_digest",
+    "repository_digest",
+    "source_operation_id",
+    "source_plan_digest",
+    "source_plan_artifact",
+    "source_package_digest",
+    "source_composition_digest",
+    "base_commit",
+    "base_tree",
+    "candidate_commit",
+    "candidate_tree",
+    "candidate_ref",
+    "candidate_parents",
+    "protection_ruleset_digest",
+    "writer_app_id",
+    "writer_installation_id",
+    "writer_identity",
+    "activated_at"
+  ],
+  "title": "MainPersonalExactCasActivation",
+  "type": "object"
+}
