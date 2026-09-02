@@ -44,10 +44,32 @@ execution result.
 - No organization target was selected or created, and no transfer, ruleset, protection, queue,
   app, branch, or ref mutation occurred.
 
+## Official capability research — 2026-09-02
+
+The following capability distinctions are based on the official GitHub documentation:
+
+- **Supported:** Merge queues are supported for public repositories owned by an organization,
+  including GitHub Free, and merge-group size can be configured to one. See [Managing a merge
+  queue](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue).
+- **Supported with scope limits:** Public repositories can use repository rulesets on GitHub Free;
+  organization-level rulesets require Team or Enterprise. See [About rulesets](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/managing-rulesets/about-rulesets).
+- **Ambiguous for AVO:** A repository-level ruleset can target `avo/main-rollback/*` and restrict
+  ref creation/deletion. Strict controller-only authority is nevertheless unproven and may be
+  incompatible with administrator/organization-owner authority and bypass semantics. This must
+  be experimentally proven on the selected target before hosted rollback.
+- **Technically supported but not authorized:** A custom isolated GitHub App with Checks:write
+  permission is supported, but AVO still needs nonce, one-use, and replay protection semantics;
+  no such App is installed or authorized. See [Repository permissions for GitHub Apps](https://docs.github.com/en/rest/using-the-rest-api/permissions-required-for-github-apps).
+- **Not established:** The current evidence does not select an organization target or authorize
+  using `kikker-stickers`; the recommended direction is a newly selected and explicitly authorized
+  public organization repository rather than silently transferring `vandyand/avo`.
+
 ## Permission-limited unknowns
 
 - The authenticated credential lacks `admin:org` (or an equivalent least-privilege capability),
-  so effective organization rules and action policies could not be inspected or provisioned.
+  so effective organization rules and action policies could not be inspected. This does not mean
+  `admin:org` is required for repository-local queue/rules provisioning: a least-privilege,
+  fine-grained repository Administration channel is preferable for the selected target.
 - Some unauthenticated `/user`, `/user/orgs`, branch-protection, installation, Actions permission,
   or variable probes returned HTTP 401; those responses do not override the authenticated facts
   above.
@@ -75,8 +97,9 @@ Before hosted C8 work can proceed, an operator must explicitly provide and autho
 2. An isolated non-App-15368 issuer authority for one-use PR-head admission and group release hold.
 3. Exclusive rollback namespace ACL/ruleset authority for controller create/delete operations under
    `avo/main-rollback/*`, with authoritative post-state cleanup checks.
-4. An authenticated token channel with `admin:org` (or equivalent least-privilege capability) and
-   any other narrowly scoped permissions required for the read and write observations/actions.
+4. An authenticated least-privilege channel for the selected repository's Administration controls
+   and required read/write observations; `admin:org` is needed only if organization-level policy
+   inspection or provisioning is selected.
 
 Only after those dependencies are satisfied may the operator run a fresh hosted rollback and
 activation sequence; then ledger activation and the preregistered 12 consecutive eligible
