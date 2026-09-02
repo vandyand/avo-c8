@@ -2,7 +2,7 @@
 
 Status: accepted for the AVO-004.7 architecture; C4, C5, C6, and C7 complete for offline
 acceptance, with the separately reviewed personal exact-CAS boundary approved offline and
-hosted coverage remediation in progress.
+the hosted canonical CI coverage gate passing at the unchanged 85% floor.
 Live `main` mutation remains blocked because only bootstrap topology protection is provisioned;
 the final writer-restricting ruleset and isolated writer principal are not provisioned.
 
@@ -53,8 +53,14 @@ The separately reviewed personal exact-CAS boundary is Terra-approved offline at
 [vandyand/avo](https://github.com/vandyand/avo) remained unchanged. Hosted run
 [33668978939](https://github.com/vandyand/avo-c8/actions/runs/33668978939) passed its early
 quality checks but closed at 82.52% coverage and exposed two portable test assertions; those
-assertions are fixed locally at `a624a8a` and meaningful coverage remediation continues without
-lowering the 85% floor. The boundary is a fixed `PATCH` of `main` with `force=false`, exact B-to-C sole-parent
+assertions were fixed at `a624a8a`. The subsequent canonical hosted run
+[33688935928](https://github.com/vandyand/avo-c8/actions/runs/33688935928), on exact commit
+`2f35d65381774b83fdbe622539ef7185d2b465ff`, passed both Ubuntu and Windows. Ubuntu reported
+2,600 passed, two skipped, and 85.20% coverage with the literal 85% threshold enforced; Windows
+reported 2,589 passed and six skipped. Commit `bbc4d827` pins the literal threshold in all three
+authoritative Linux/WSL coverage invocations, and `2f35d653` adds meaningful adversarial coverage
+without lowering the floor or excluding production files. The boundary is a fixed `PATCH` of
+`main` with `force=false`, exact B-to-C sole-parent
 topology, no force/delete/generic-ref capability, durable request ID, 409-only conflicts, and
 conservative 422 handling. No live CAS attempt or rollback occurred. This separately reviewed
 protocol supersedes the organization/merge-queue blocker only for this personal path; the queue
@@ -414,8 +420,9 @@ Any material protocol or configuration change starts a new campaign and threshol
   gate because no such operator authority was supplied. Hosting transfer is a prerequisite
   decision, not an implementation side effect.
 * **Use a custom exact-CAS writer immediately.** The separately reviewed personal exact-CAS
-  boundary is approved offline at `9e59638` and pushed to `vandyand/avo-c8`; hosted coverage
-  remediation is in progress. It uses fixed `PATCH` `main` with `force=false`, exact B-to-C sole-parent topology,
+  boundary is approved offline at `9e59638` and pushed to `vandyand/avo-c8`; canonical hosted
+  CI now passes the unchanged 85% floor. It uses fixed `PATCH` `main` with `force=false`, exact
+  B-to-C sole-parent topology,
   durable request ID, 409-only conflicts, conservative 422 handling, and no force/delete/
   generic-ref capability. Bootstrap topology protection is live, but this does not authorize a live
   write until the final ruleset, isolated writer principal, hosted denial tests, and durable

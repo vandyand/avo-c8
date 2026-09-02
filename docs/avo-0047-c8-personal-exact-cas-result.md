@@ -1,7 +1,7 @@
 # AVO-004.7 C8 personal exact-CAS result
 
-Status: Terra-approved offline personal-repository exact-CAS boundary; hosted coverage
-remediation in progress.
+Status: Terra-approved offline personal-repository exact-CAS boundary; hosted canonical CI
+passes the unchanged 85% coverage floor.
 No live `main` CAS attempt or rollback occurred.
 
 ## Boundary and evidence
@@ -22,9 +22,16 @@ and coverage gaps. The expanded run
 `4dd1ce3`, passed roadmap, Ruff, Pyright, image-build, and platform-overhead checks, then
 reported 2,172 Ubuntu tests passing, two new portability-assertion failures, and 82.52% coverage
 against the unchanged 85% floor; Windows reported 2,164 passing, four skips, and one of the
-same portability failures. Commit `a624a8a` fixes those assertions locally without changing
-production behavior. Additional meaningful recovery/authority coverage remains in progress;
-the floor was not lowered and production files were not excluded.
+same portability failures. Commit `a624a8a` fixes those assertions without changing production
+behavior. The canonical hosted run
+[33688935928](https://github.com/vandyand/avo-c8/actions/runs/33688935928), on exact commit
+`2f35d65381774b83fdbe622539ef7185d2b465ff`, then passed both required platform legs. Ubuntu
+reported 2,600 passed, two skipped, and an exactly enforced total of 85.20%; Windows reported
+2,589 passed and six skipped. Roadmap validation, Ruff, Pyright, image-build, platform-overhead,
+and schema-parity checks also passed. Commit `bbc4d827` makes the literal
+`--cov-fail-under=85` threshold explicit in all three authoritative Linux/WSL coverage commands,
+and `2f35d653` adds meaningful adversarial coverage. The floor was not lowered and production
+files were not excluded.
 
 This result records a reviewed protocol boundary, not hosted readiness or successful mutation.
 Bootstrap `main` branch protection is live on `vandyand/avo-c8` with

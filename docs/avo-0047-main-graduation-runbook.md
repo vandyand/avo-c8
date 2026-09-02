@@ -79,8 +79,12 @@ fixed `PATCH` of `main` uses `force=false`, requires exact B-to-C sole-parent to
 a durable request ID, accepts only a `409` conflict, and treats `422` conservatively. It has no
 force, delete, or generic-ref capability. Hosted run
 [33668978939](https://github.com/vandyand/avo-c8/actions/runs/33668978939) closed at 82.52%
-coverage and exposed two portable test assertions; `a624a8a` fixes those assertions locally,
-while meaningful coverage remediation continues against the unchanged 85% floor. The strict
+coverage and exposed two portable test assertions; `a624a8a` fixes those assertions. Canonical
+hosted run [33688935928](https://github.com/vandyand/avo-c8/actions/runs/33688935928) on exact
+commit `2f35d65381774b83fdbe622539ef7185d2b465ff` subsequently passed Ubuntu (2,600 passed,
+two skipped, 85.20% with the literal floor enforced) and Windows (2,589 passed, six skipped).
+Commits `bbc4d827` and `2f35d653` enforce the unchanged floor and add meaningful adversarial
+coverage without excluding production files. The strict
 Pyright baseline repair is recorded at `a0d1a7d`.
 
 This boundary is offline evidence only: no live CAS attempt or rollback occurred. Bootstrap
