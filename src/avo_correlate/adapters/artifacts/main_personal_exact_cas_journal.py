@@ -51,6 +51,13 @@ class MainPersonalExactCasAuthorityVerifier(Protocol):
         activation: MainPersonalExactCasActivation,
     ) -> object: ...
 
+    def verify_receipt(
+        self,
+        receipt: MainPersonalExactCasReceipt,
+        intent: MainPersonalExactCasIntent,
+        dispatch_marker: MainPersonalExactCasDispatchStarted,
+    ) -> object: ...
+
     def verify_post_state(
         self,
         observation: MainPersonalExactCasPostStateObservation,
@@ -102,6 +109,7 @@ class MainPersonalExactCasJournal:
         required = (
             "verify_activation",
             "verify_authorization",
+            "verify_receipt",
             "verify_post_state",
             "verify_reconciliation",
             "verify_completion",
@@ -197,13 +205,13 @@ class MainPersonalExactCasJournal:
             or receipt.dispatch_marker_digest != marker.dispatch_marker_digest
         ):
             raise MainPersonalExactCasJournalError("receipt authority binding differs")
+        self._verify("receipt", receipt, intent, marker)
         return self._record("receipt", receipt.operation_id, receipt)
 
     def record_post_state(
         self, observation: MainPersonalExactCasPostStateObservation
     ) -> ArtifactRef:
-        receipt = self._require("receipt", observation.operation_id, MainPersonalExactCasReceipt)
-        self._require_trusted_activation(receipt.activation_digest)
+        receipt = self._require_verified_receipt(observation.operation_id)
         self._assert_scope(observation, receipt)
         if (
             observation.authorization_digest != receipt.authorization_digest
@@ -218,8 +226,7 @@ class MainPersonalExactCasJournal:
     def record_reconciliation(
         self, reconciliation: MainPersonalExactCasReconciliation
     ) -> ArtifactRef:
-        receipt = self._require("receipt", reconciliation.operation_id, MainPersonalExactCasReceipt)
-        self._require_trusted_activation(receipt.activation_digest)
+        receipt = self._require_verified_receipt(reconciliation.operation_id)
         observation = self._require(
             "post-state", reconciliation.operation_id, MainPersonalExactCasPostStateObservation
         )
@@ -231,8 +238,7 @@ class MainPersonalExactCasJournal:
         return self._record("reconciliation", reconciliation.operation_id, reconciliation)
 
     def record_completion(self, completion: MainPersonalExactCasCompletion) -> ArtifactRef:
-        receipt = self._require("receipt", completion.operation_id, MainPersonalExactCasReceipt)
-        self._require_trusted_activation(receipt.activation_digest)
+        receipt = self._require_verified_receipt(completion.operation_id)
         observation = self._require(
             "post-state", completion.operation_id, MainPersonalExactCasPostStateObservation
         )
@@ -368,6 +374,25 @@ class MainPersonalExactCasJournal:
                 raise MainPersonalExactCasJournalError(f"{kind} identity differs")
         return record
 
+    def _require_verified_receipt(self, operation_id: str) -> MainPersonalExactCasReceipt:
+        """Read a receipt and authenticate its complete intent/dispatch binding."""
+
+        intent = self._require("intent", operation_id, MainPersonalExactCasIntent)
+        self._require_trusted_activation(intent.activation_digest)
+        marker = self._require(
+            "dispatch-started", operation_id, MainPersonalExactCasDispatchStarted
+        )
+        receipt = self._require("receipt", operation_id, MainPersonalExactCasReceipt)
+        self._assert_scope(receipt, intent)
+        if (
+            receipt.authorization_digest != intent.authorization_digest
+            or receipt.intent_digest != intent.intent_digest
+            or receipt.dispatch_marker_digest != marker.dispatch_marker_digest
+        ):
+            raise MainPersonalExactCasJournalError("receipt authority binding differs")
+        self._verify("receipt", receipt, intent, marker)
+        return receipt
+
     def _revalidate_chain(self, operation_id: str, *, through: str) -> None:
         activation_result = self._read_raw(
             "activation", "activation", MainPersonalExactCasActivation
@@ -417,6 +442,7 @@ class MainPersonalExactCasJournal:
             or receipt.dispatch_marker_digest != marker.dispatch_marker_digest
         ):
             raise MainPersonalExactCasJournalError("receipt authority binding differs")
+        self._verify("receipt", receipt, intent, marker)
         if through == "receipt":
             return
         observation_result = self._read_raw(

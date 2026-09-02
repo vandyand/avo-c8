@@ -42,6 +42,9 @@ class Authority:
     def verify_authorization(self, *_values: Any) -> bool:
         return True
 
+    def verify_receipt(self, *_values: Any) -> bool:
+        return True
+
     def verify_post_state(self, *_values: Any) -> bool:
         return True
 
@@ -203,6 +206,19 @@ def _chain(activation: MainPersonalExactCasActivation) -> tuple[Any, ...]:
     return authorization, intent, marker, receipt, observation, completion
 
 
+def _journal_through_dispatch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> tuple[MainPersonalExactCasJournal, Any, Any, Any, Any, Any]:
+    source_journal, source, journal = _journal(monkeypatch, tmp_path)
+    activation = _activation(source_journal, source)
+    journal.record_activation(activation, source)
+    authorization, intent, marker, receipt, _, _ = _chain(activation)
+    journal.record_authorization(authorization)
+    journal.record_intent(intent)
+    journal.record_dispatch_started(marker)
+    return journal, source, activation, intent, marker, receipt
+
+
 def test_constructor_requires_concrete_pinned_source_reader(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -229,6 +245,80 @@ def test_genuine_source_drives_activation_and_full_chain(
     journal.record_post_state(observation)
     journal.record_completion(completion)
     assert journal.read_completion(intent.operation_id) is not None
+
+
+def test_fabricated_receipt_is_rejected_before_any_receipt_publication(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    journal, _source, _activation, intent, marker, receipt = _journal_through_dispatch(
+        monkeypatch, tmp_path
+    )
+    expected_digest = receipt.receipt_digest
+
+    def verify_receipt(
+        candidate: Any, candidate_intent: Any, candidate_marker: Any
+    ) -> bool:
+        return (
+            candidate.receipt_digest == expected_digest
+            and candidate_intent.intent_digest == intent.intent_digest
+            and candidate_marker.dispatch_marker_digest == marker.dispatch_marker_digest
+        )
+
+    monkeypatch.setattr(journal._authority, "verify_receipt", verify_receipt)
+    fabricated = MainPersonalExactCasReceipt.build(
+        **receipt.model_copy(
+            update={"response_digest": canonical_digest({"response": "fabricated"})}
+        ).model_dump(exclude={"receipt_digest"})
+    )
+    with pytest.raises(
+        MainPersonalExactCasJournalError, match="receipt authority verification"
+    ):
+        journal.record_receipt(fabricated)
+    assert not journal._index_path("receipt", intent.operation_id).exists()
+
+
+@pytest.mark.parametrize("verdict", [False, None, RuntimeError("verifier unavailable")])
+def test_receipt_verifier_rejects_false_none_and_exception(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, verdict: object
+) -> None:
+    journal, _source, _activation, intent, _marker, receipt = _journal_through_dispatch(
+        monkeypatch, tmp_path
+    )
+
+    def reject(*_values: Any) -> object:
+        if isinstance(verdict, Exception):
+            raise verdict
+        return verdict
+
+    monkeypatch.setattr(journal._authority, "verify_receipt", reject)
+    with pytest.raises(
+        MainPersonalExactCasJournalError, match="receipt authority verification"
+    ):
+        journal.record_receipt(receipt)
+    assert not journal._index_path("receipt", intent.operation_id).exists()
+
+
+def test_reopened_read_rejects_receipt_after_verifier_changes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    journal, _source, _activation, intent, _marker, receipt = _journal_through_dispatch(
+        monkeypatch, tmp_path
+    )
+    journal.record_receipt(receipt)
+
+    def reject(*_values: Any) -> bool:
+        return False
+
+    monkeypatch.setattr(journal._authority, "verify_receipt", reject)
+    reopened = MainPersonalExactCasJournal(
+        journal.root,
+        authority_verifier=journal._authority,
+        trusted_source_reader=journal._trusted_source_reader,
+    )
+    with pytest.raises(
+        MainPersonalExactCasJournalError, match="receipt authority verification"
+    ):
+        reopened.read_receipt(intent.operation_id)
 
 
 def test_forged_activation_binding_is_rejected_even_with_accepted_dto(
