@@ -2,7 +2,9 @@
 
 Status: read-only provider inventory; C8 remains blocked and AVO-004.7 remains in progress.
 
-Inventory date: 2026-09-01.
+Initial inventory date: 2026-09-01.
+
+Authenticated update date: 2026-09-02.
 
 This record captures the hosted-capability boundary observed during the C8 diagnostic. It is
 evidence for the roadmap's current position, not a readiness result, authority grant, or live
@@ -22,12 +24,33 @@ execution result.
 - No external or filesystem mutation was performed. The worktree was clean before and after the
   inventory.
 
+## Authenticated update — 2026-09-02
+
+- Windows `gh` 2.98.0 was authenticated as `vandyand` through the keyring; WSL was also active as
+  `vandyand`.
+- `vandyand/avo` is public, user-owned, and the authenticated identity has confirmed admin/push
+  access.
+- Read-only `avoctl c8 preflight --owner vandyand --repo avo` used a transient keyring-derived
+  credential and returned the non-authoritative, non-consumable result `unverifiable` (exit 2),
+  digest `sha256:c25e4c97b5a17c9dbceab0d0250d54be24085d48ca566221d48c30d4330fa9c2`. All seven read
+  categories were unverifiable; no mutation occurred.
+- The visible `kikker-stickers` organization is on the Free plan; `vandyand` is an active admin,
+  repository creation is enabled, and the organization has two repositories. No AVO-named target
+  exists there. Its existing public organization repository is master/unprotected with no
+  repository rulesets and is not an AVO target.
+- Organization rule/action-policy inspection requires `admin:org`; the current credential scopes
+  include `read:org`, `repo`, and `workflow` but not `admin:org`. The organization installation
+  list shows only Netlify app 13473, not App 15368.
+- No organization target was selected or created, and no transfer, ruleset, protection, queue,
+  app, branch, or ref mutation occurred.
+
 ## Permission-limited unknowns
 
-- `gh` is not installed and `GITHUB_TOKEN` is absent.
-- `/user`, `/user/orgs`, branch-protection details, installation details, Actions permissions or
-  variables returned HTTP 401, so the inventory could not authenticate the caller or inspect those
-  controls.
+- The authenticated credential lacks `admin:org` (or an equivalent least-privilege capability),
+  so effective organization rules and action policies could not be inspected or provisioned.
+- Some unauthenticated `/user`, `/user/orgs`, branch-protection, installation, Actions permission,
+  or variable probes returned HTTP 401; those responses do not override the authenticated facts
+  above.
 - A merge-queue endpoint returned HTTP 404. That response is inconclusive and must not be treated
   as evidence that merge queues are absent.
 - The inventory therefore does not establish effective organization rulesets, queue configuration
@@ -52,8 +75,8 @@ Before hosted C8 work can proceed, an operator must explicitly provide and autho
 2. An isolated non-App-15368 issuer authority for one-use PR-head admission and group release hold.
 3. Exclusive rollback namespace ACL/ruleset authority for controller create/delete operations under
    `avo/main-rollback/*`, with authoritative post-state cleanup checks.
-4. An authenticated token channel that permits the required read and narrowly scoped write
-   observations/actions.
+4. An authenticated token channel with `admin:org` (or equivalent least-privilege capability) and
+   any other narrowly scoped permissions required for the read and write observations/actions.
 
 Only after those dependencies are satisfied may the operator run a fresh hosted rollback and
 activation sequence; then ledger activation and the preregistered 12 consecutive eligible

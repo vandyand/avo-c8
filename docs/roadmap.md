@@ -1,8 +1,8 @@
 # AVO Roadmap
 
-Status date: 2026-09-01.
+Status date: 2026-09-02.
 
-Review date: 2026-09-01.
+Review date: 2026-09-02.
 
 Authority: This file is AVO's sole authority for outcomes, priority, sequencing, milestone status, and decision gates.
 
@@ -98,11 +98,13 @@ production authority outside the proposing agent's control.
   with pinned PyYAML 6.0.3/YAML 1.2 `on`, bounded fail-closed parsing, static PR/merge_group
   facts, every checkout `uses` pinned to a lowercase full 40-hex commit, `with.ref` exactly
   `${{ github.sha }}`, and `persist-credentials=false`, plus env-only sanitized read-only
-  `avoctl c8 preflight`. No live execution occurred because `GITHUB_TOKEN` is absent. It claims
-  no validation identity, issuer, rollback authority, or readiness.
+  `avoctl c8 preflight`. The prior env-only diagnostic had no live execution; the authenticated
+  2026-09-02 inventory now records the credential-backed preflight result. It claims no validation
+  identity, issuer, rollback authority, or readiness.
   Workflow semantics are approved. The validation-principal diagnostic is provider-evidenced
-  complete at `a8af4341be413981da348c772b9d51e1e6f9f27e`; no live execution occurred. Issuer and
-  rollback remain unsupported, with no authority or readiness. There is no live
+  complete at `a8af4341be413981da348c772b9d51e1e6f9f27e`; the authenticated preflight remained
+  unverifiable and non-consumable, with no live mutation. Issuer and rollback remain unsupported,
+  with no authority or readiness. There is no live
   execution, concrete trust root, authority-bearing adapter, runner, readiness, or hosted mutation.
   The [C8 hosted-capability inventory](avo-0047-c8-hosted-capability-inventory.md) records the
   read-only repository/organization observations, permission-limited unknowns, and prohibited
@@ -161,7 +163,7 @@ approving every ordinary patch.
 | C5 — main rollback authority | complete | Offline acceptance passed at HEAD `e38d0b826f94f3f559fb2e3ef0b26d1d17128c53` with Terra APPROVE and combined 24 passed, covering rollback contracts/journaling, inverse composition, authority verification, aggregate orchestration, terminal cleanup/closure, crash/replay, and adversarial recovery. No hosted/provider/main/deploy mutation occurred. [Result](avo-0047-c5-result.md) |
 | C6 — campaign runner and eligibility ledger | complete | Offline acceptance complete at final code HEAD `e6db424cc671d7a5d63b9b8a7246a316c4867f91`; [result](avo-0047-c6-result.md). Hosted ledger activation still requires blocked C8 prerequisites and a fresh hosted rollback drill. |
 | C7 — deterministic offline gate | complete | Offline acceptance complete at code HEAD `9c70c36074810606692f8c2030b25ce83c10a1e4`; 47 exact frozen case/vector entries passed, replay used `executor_calls=0` and `clock_calls=0`, and `deploy_performed=false`. [Result](avo-0047-c7-result.md). No hosted mutation. |
-| C8 — hosted organization/queue/release gate | blocked | Terra-approved local foundations and Phase 1 snapshot are recorded in the [C8 local-foundations result](avo-0047-c8-local-foundations-result.md). The Phase 2 atomic authenticated snapshot is Terra-approved at `1d911e3`; the completed validation-principal diagnostic is provider-evidenced at exact commit `a8af4341be413981da348c772b9d51e1e6f9f27e`. It integrates the pure bounded parser with the atomic read-only snapshot, binds exact main SHA, at most 10 pages/1000 check runs, stable cardinality/unique IDs, exact required contexts, App 15368 GitHub Actions metadata, run-ID and two-pass raw-page digests, unrelated in-progress tolerance, and final freshness blockers for success/wrong-App/failure/duplicate outcomes. It is secret-safe and non-authoritative. Terra APPROVE found no P0/P1 issues; 149 focused parent/Terra tests passed and Ruff/scoped Pyright/diff were clean. No live run occurred because the token is absent. The [C8 hosted-capability inventory](avo-0047-c8-hosted-capability-inventory.md) records confirmed repository facts, permission-limited unknowns, and prohibited mutations. No further local diagnostic leaf is currently authority-sufficient. Hosted completion still requires an explicitly authorized organization-owned repository target with a max-one merge queue, a separate isolated issuer (not App 15368), exclusive controller create/delete authority for `avo/main-rollback/*`, and an authenticated token channel; then a fresh hosted rollback/activation sequence, ledger activation, and 12 consecutive eligible successes with 0 failures/boundary violations. |
+| C8 — hosted organization/queue/release gate | blocked | Terra-approved local foundations and Phase 1 snapshot are recorded in the [C8 local-foundations result](avo-0047-c8-local-foundations-result.md). The Phase 2 atomic authenticated snapshot is Terra-approved at `1d911e3`; the completed validation-principal diagnostic is provider-evidenced at exact commit `a8af4341be413981da348c772b9d51e1e6f9f27e`. It integrates the pure bounded parser with the atomic read-only snapshot, binds exact main SHA, at most 10 pages/1000 check runs, stable cardinality/unique IDs, exact required contexts, App 15368 GitHub Actions metadata, run-ID and two-pass raw-page digests, unrelated in-progress tolerance, and final freshness blockers for success/wrong-App/failure/duplicate outcomes. It is secret-safe and non-authoritative. Terra APPROVE found no P0/P1 issues; 149 focused parent/Terra tests passed and Ruff/scoped Pyright/diff were clean. The authenticated 2026-09-02 preflight was non-authoritative/non-consumable `unverifiable` with all seven read categories unverifiable and no mutation; see the [C8 hosted-capability inventory](avo-0047-c8-hosted-capability-inventory.md). No further local diagnostic leaf is currently authority-sufficient. Hosted completion still requires an explicitly authorized organization-owned repository target with a max-one merge queue, `admin:org` or equivalent least-privilege capability to verify/provision queue/rules, a separate isolated issuer (not App 15368), exclusive controller create/delete authority for `avo/main-rollback/*`, and an authenticated token channel; then a fresh hosted rollback/activation sequence, ledger activation, and 12 consecutive eligible successes with 0 failures/boundary violations. |
 
 The roadmap gate was completed first because the operator explicitly authorized it. The green test
 and coverage baseline, controlling repository, public remote, baseline tag, recovery rehearsal, and
