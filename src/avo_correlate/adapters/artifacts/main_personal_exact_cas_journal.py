@@ -192,6 +192,29 @@ class MainPersonalExactCasJournal:
             raise MainPersonalExactCasJournalError("dispatch marker intent binding differs")
         return self._record("dispatch-started", marker.operation_id, marker)
 
+    def claim_dispatch_started(
+        self, marker: MainPersonalExactCasDispatchStarted
+    ) -> tuple[ArtifactRef, bool]:
+        """Create the dispatch marker and report whether this caller won.
+
+        The create-once index is the dispatch ownership claim.  Ownership is
+        reported from the exact ``O_EXCL`` publication outcome, so it remains
+        correct across processes as well as threads.  A caller that observes
+        an existing marker must reconcile and never invoke a provider
+        capability.
+        """
+
+        intent = self._require("intent", marker.operation_id, MainPersonalExactCasIntent)
+        self._require_trusted_activation(intent.activation_digest)
+        self._assert_scope(marker, intent)
+        if marker.intent_digest != intent.intent_digest:
+            raise MainPersonalExactCasJournalError("dispatch marker intent binding differs")
+        created: list[bool] = []
+        reference = self._record(
+            "dispatch-started", marker.operation_id, marker, created_out=created
+        )
+        return reference, created[0]
+
     def record_receipt(self, receipt: MainPersonalExactCasReceipt) -> ArtifactRef:
         intent = self._require("intent", receipt.operation_id, MainPersonalExactCasIntent)
         self._require_trusted_activation(intent.activation_digest)
@@ -621,7 +644,14 @@ class MainPersonalExactCasJournal:
             )
         return qualification
 
-    def _record(self, kind: str, key: str, record: StrictModel) -> ArtifactRef:
+    def _record(
+        self,
+        kind: str,
+        key: str,
+        record: StrictModel,
+        *,
+        created_out: list[bool] | None = None,
+    ) -> ArtifactRef:
         model = _RECORDS[kind]
         if type(record) is not model:
             raise TypeError(f"{kind} requires its concrete contract")
@@ -681,6 +711,8 @@ class MainPersonalExactCasJournal:
                     os.fsync(handle.fileno())
                 _fsync_directory(index.parent)
                 _fsync_directory(index.parent.parent)
+                if created_out is not None:
+                    created_out.append(True)
                 return reference
             except FileExistsError:
                 try:
@@ -689,6 +721,8 @@ class MainPersonalExactCasJournal:
                 except (OSError, RuntimeError, TypeError, ValueError) as exc:
                     raise MainPersonalExactCasJournalError(f"{kind} index is malformed") from exc
                 if old_data == data and old.digest == reference.digest:
+                    if created_out is not None:
+                        created_out.append(False)
                     return old
                 raise MainPersonalExactCasRecordConflictError(f"conflicting {kind}") from None
             except OSError as exc:

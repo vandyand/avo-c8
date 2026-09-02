@@ -27,6 +27,15 @@ from avo_correlate.application.main_graduation_offline_pytest_executor import (
     HermeticPytestExecutor,
     OfflinePytestExecutionError,
 )
+from avo_correlate.application.main_personal_exact_cas_controller import (
+    MainPersonalExactCasController,
+    MainPersonalExactCasControllerError,
+    MainPersonalExactCasControllerResult,
+    MainPersonalExactCasDispatchPort,
+    MainPersonalExactCasLeasePort,
+    MainPersonalExactCasPostStateReader,
+    MainPersonalExactCasTrustedClock,
+)
 from avo_correlate.application.main_rollback_authority import (
     MainRollbackAuthority,
     MainRollbackAuthorityError,
@@ -53,6 +62,13 @@ __all__ = [
     "MainGraduationOfflineDrillRun",
     "MainGraduationOfflineDrillService",
     "MainLedgerStatus",
+    "MainPersonalExactCasController",
+    "MainPersonalExactCasControllerError",
+    "MainPersonalExactCasControllerResult",
+    "MainPersonalExactCasDispatchPort",
+    "MainPersonalExactCasLeasePort",
+    "MainPersonalExactCasPostStateReader",
+    "MainPersonalExactCasTrustedClock",
     "MainRollbackAuthority",
     "MainRollbackAuthorityError",
     "MainRollbackAuthorityPreview",
