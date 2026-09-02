@@ -43,15 +43,19 @@ def test_child_environment_identity_rejects_unsafe_and_oversized_values() -> Non
     ("which", "expected"),
     [
         (None, "unavailable"),
-        ("missing", "system cannot"),
+        ("missing", None),
     ],
 )
 def test_resolve_uv_path_rejects_unavailable_launcher(
-    monkeypatch: pytest.MonkeyPatch, which: str | None, expected: str
+    monkeypatch: pytest.MonkeyPatch, which: str | None, expected: str | None
 ) -> None:
     monkeypatch.setattr(module.shutil, "which", lambda *_args, **_kwargs: which)
-    with pytest.raises((C7WorkspaceIdentityError, OSError), match=expected):
-        resolve_uv_path({"PATH": "test"})
+    if expected is None:
+        with pytest.raises(OSError):
+            resolve_uv_path({"PATH": "test"})
+    else:
+        with pytest.raises(C7WorkspaceIdentityError, match=expected):
+            resolve_uv_path({"PATH": "test"})
 
 
 def test_resolve_uv_path_rejects_directory_and_symlink(
@@ -153,7 +157,10 @@ def test_runtime_member_rejects_symlink_and_escape(tmp_path: Path) -> None:
         link.symlink_to(outside)
     except OSError:
         pytest.skip("symlink creation unavailable")
-    with pytest.raises(ValueError, match="symlink"):
+    # Resolving an outward-pointing symlink may reject it either as the symlink
+    # itself or, on POSIX, at the earlier containment fence. Both are the same
+    # fail-closed boundary.
+    with pytest.raises(ValueError, match=r"symlink|escapes"):
         module._runtime_member(root, "link")
     with pytest.raises(ValueError, match="escapes"):
         module._runtime_member(root, "../outside", tmp_path)
