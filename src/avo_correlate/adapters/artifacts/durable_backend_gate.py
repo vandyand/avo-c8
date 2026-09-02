@@ -21,7 +21,7 @@ import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PurePath, PurePosixPath
-from typing import cast
+from typing import TypedDict, cast
 
 _MOUNTINFO_PATH = Path("/proc/self/mountinfo")
 _ALLOWED_FILESYSTEMS = frozenset({"ext4", "xfs", "btrfs"})
@@ -77,6 +77,16 @@ class DurableBackendQualification:
     wsl_kernel: bool = False
 
 
+class _CommonQualificationFields(TypedDict):
+    """Shared kernel facts passed to every qualification result."""
+
+    filesystem_type: str
+    mount_point: PurePath
+    mount_id: int
+    device: str
+    wsl_kernel: bool
+
+
 def qualify_durable_backend(root: Path) -> DurableBackendQualification:
     """Return whether ``root`` is safe to use for a future durable journal.
 
@@ -105,7 +115,7 @@ def qualify_durable_backend(root: Path) -> DurableBackendQualification:
     mount = _mount_for_path(resolved, entries)
     if mount is None:
         return _rejected(resolved, "path_has_no_matching_mount", wsl_kernel=wsl_kernel)
-    common = {
+    common: _CommonQualificationFields = {
         "filesystem_type": mount.filesystem_type,
         "mount_point": mount.mount_point,
         "mount_id": mount.mount_id,
