@@ -1,0 +1,97 @@
+{
+  "additionalProperties": false,
+  "description": "Authenticated read-only exact B-to-C topology used for reconciliation.",
+  "properties": {
+    "base_commit": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Base Commit",
+      "type": "string"
+    },
+    "base_tree": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Base Tree",
+      "type": "string"
+    },
+    "candidate_commit": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Candidate Commit",
+      "type": "string"
+    },
+    "candidate_tree": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Candidate Tree",
+      "type": "string"
+    },
+    "observation_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Observation Digest",
+      "type": "string"
+    },
+    "observed_at": {
+      "format": "date-time",
+      "title": "Observed At",
+      "type": "string"
+    },
+    "observed_commit": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Observed Commit",
+      "type": "string"
+    },
+    "observed_parents": {
+      "items": {
+        "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+        "type": "string"
+      },
+      "title": "Observed Parents",
+      "type": "array"
+    },
+    "observed_ref": {
+      "const": "refs/heads/main",
+      "default": "refs/heads/main",
+      "title": "Observed Ref",
+      "type": "string"
+    },
+    "observed_tree": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Observed Tree",
+      "type": "string"
+    },
+    "operation_id": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Operation Id",
+      "type": "string"
+    },
+    "repository_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Repository Digest",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "target_ref": {
+      "const": "refs/heads/main",
+      "default": "refs/heads/main",
+      "title": "Target Ref",
+      "type": "string"
+    }
+  },
+  "required": [
+    "operation_id",
+    "repository_digest",
+    "base_commit",
+    "base_tree",
+    "candidate_commit",
+    "candidate_tree",
+    "observed_commit",
+    "observed_tree",
+    "observed_parents",
+    "observed_at",
+    "observation_digest"
+  ],
+  "title": "MainExactCasTopologyObservation",
+  "type": "object"
+}

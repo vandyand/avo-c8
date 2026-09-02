@@ -47,6 +47,13 @@ from .github import (
     github_repository_digest,
 )
 from .github_transport import GitHubJsonTransport
+from .main_exact_cas_github import (
+    ExactCasTransport,
+    GitHubPersonalExactCasWriter,
+    MainExactCasDispatchVerifier,
+    MainExactCasError,
+    MainExactCasReconciliationVerifier,
+)
 from .protected_main import (
     MainGraduationAttester,
     MainMergeGroupObservation,
@@ -76,6 +83,7 @@ __all__ = [
     "C8WorkflowSemantics",
     "C8WorkflowSemanticsUnverifiable",
     "EffectiveMainRules",
+    "ExactCasTransport",
     "GitHubC8PreflightAdapter",
     "GitHubC8PreflightSnapshot",
     "GitHubC8SnapshotAdapter",
@@ -83,6 +91,7 @@ __all__ = [
     "GitHubEvidenceSnapshot",
     "GitHubIntegrationProvider",
     "GitHubJsonTransport",
+    "GitHubPersonalExactCasWriter",
     "GitHubProtectionPolicy",
     "GitHubProvider",
     "GitHubPullRequestBinding",
@@ -90,6 +99,9 @@ __all__ = [
     "GitHubRESTProvider",
     "GitHubRefObservation",
     "GitHubRollbackTopology",
+    "MainExactCasDispatchVerifier",
+    "MainExactCasError",
+    "MainExactCasReconciliationVerifier",
     "MainGraduationAttester",
     "MainMergeGroupObservation",
     "MainProtectedProvider",

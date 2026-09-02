@@ -1,0 +1,431 @@
+{
+  "$defs": {
+    "MainExactCasReceipt": {
+      "additionalProperties": false,
+      "description": "Immutable result of the one PATCH attempt; ambiguity is never success.",
+      "properties": {
+        "authorization_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Authorization Digest",
+          "type": "string"
+        },
+        "base_commit": {
+          "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+          "title": "Base Commit",
+          "type": "string"
+        },
+        "base_tree": {
+          "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+          "title": "Base Tree",
+          "type": "string"
+        },
+        "candidate_commit": {
+          "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+          "title": "Candidate Commit",
+          "type": "string"
+        },
+        "candidate_parents": {
+          "items": {
+            "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+            "type": "string"
+          },
+          "title": "Candidate Parents",
+          "type": "array"
+        },
+        "candidate_reachable": {
+          "default": true,
+          "title": "Candidate Reachable",
+          "type": "boolean"
+        },
+        "candidate_ref": {
+          "pattern": "^refs/heads/avo/candidate/[0-9a-f]{64}$",
+          "title": "Candidate Ref",
+          "type": "string"
+        },
+        "candidate_ref_immutable": {
+          "default": true,
+          "title": "Candidate Ref Immutable",
+          "type": "boolean"
+        },
+        "candidate_tree": {
+          "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+          "title": "Candidate Tree",
+          "type": "string"
+        },
+        "claim_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Claim Digest",
+          "type": "string"
+        },
+        "claim_nonce": {
+          "minLength": 1,
+          "title": "Claim Nonce",
+          "type": "string"
+        },
+        "deploy_performed": {
+          "const": false,
+          "default": false,
+          "title": "Deploy Performed",
+          "type": "boolean"
+        },
+        "dispatch_started": {
+          "title": "Dispatch Started",
+          "type": "boolean"
+        },
+        "error_code": {
+          "anyOf": [
+            {
+              "enum": [
+                "cas_conflict",
+                "auth_failed",
+                "protection_failed",
+                "configuration_failed",
+                "rate_limited",
+                "lease_expired",
+                "verifier_rejected",
+                "malformed_response",
+                "stale_response",
+                "server_ambiguous",
+                "transport_ambiguous",
+                "reconciliation_unverified"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Error Code"
+        },
+        "http_status": {
+          "anyOf": [
+            {
+              "maximum": 599,
+              "minimum": 100,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Http Status"
+        },
+        "intent_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Intent Digest",
+          "type": "string"
+        },
+        "lease_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Lease Digest",
+          "type": "string"
+        },
+        "lease_expires_at": {
+          "format": "date-time",
+          "title": "Lease Expires At",
+          "type": "string"
+        },
+        "lease_identity": {
+          "minLength": 1,
+          "title": "Lease Identity",
+          "type": "string"
+        },
+        "observed_at": {
+          "format": "date-time",
+          "title": "Observed At",
+          "type": "string"
+        },
+        "one_use": {
+          "const": true,
+          "default": true,
+          "title": "One Use",
+          "type": "boolean"
+        },
+        "operation_id": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Operation Id",
+          "type": "string"
+        },
+        "outcome": {
+          "enum": [
+            "applied",
+            "rejected",
+            "ambiguous"
+          ],
+          "title": "Outcome",
+          "type": "string"
+        },
+        "protection_ruleset_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Protection Ruleset Digest",
+          "type": "string"
+        },
+        "raw_request_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Raw Request Digest",
+          "type": "string"
+        },
+        "receipt_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Receipt Digest",
+          "type": "string"
+        },
+        "repository_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Repository Digest",
+          "type": "string"
+        },
+        "request_id": {
+          "anyOf": [
+            {
+              "maxLength": 128,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Request Id"
+        },
+        "response_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Response Digest",
+          "type": "string"
+        },
+        "response_ref": {
+          "anyOf": [
+            {
+              "const": "refs/heads/main",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Response Ref"
+        },
+        "response_sha": {
+          "anyOf": [
+            {
+              "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Response Sha"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "target_ref": {
+          "const": "refs/heads/main",
+          "default": "refs/heads/main",
+          "title": "Target Ref",
+          "type": "string"
+        },
+        "writer_app_id": {
+          "exclusiveMinimum": 0,
+          "title": "Writer App Id",
+          "type": "integer"
+        },
+        "writer_identity": {
+          "minLength": 1,
+          "title": "Writer Identity",
+          "type": "string"
+        },
+        "writer_installation_id": {
+          "exclusiveMinimum": 0,
+          "title": "Writer Installation Id",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "operation_id",
+        "repository_digest",
+        "base_commit",
+        "base_tree",
+        "candidate_commit",
+        "candidate_tree",
+        "candidate_ref",
+        "candidate_parents",
+        "protection_ruleset_digest",
+        "writer_app_id",
+        "writer_installation_id",
+        "writer_identity",
+        "lease_identity",
+        "lease_digest",
+        "lease_expires_at",
+        "claim_nonce",
+        "claim_digest",
+        "raw_request_digest",
+        "authorization_digest",
+        "intent_digest",
+        "response_digest",
+        "observed_at",
+        "outcome",
+        "dispatch_started",
+        "receipt_digest"
+      ],
+      "title": "MainExactCasReceipt",
+      "type": "object"
+    },
+    "MainExactCasTopologyObservation": {
+      "additionalProperties": false,
+      "description": "Authenticated read-only exact B-to-C topology used for reconciliation.",
+      "properties": {
+        "base_commit": {
+          "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+          "title": "Base Commit",
+          "type": "string"
+        },
+        "base_tree": {
+          "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+          "title": "Base Tree",
+          "type": "string"
+        },
+        "candidate_commit": {
+          "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+          "title": "Candidate Commit",
+          "type": "string"
+        },
+        "candidate_tree": {
+          "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+          "title": "Candidate Tree",
+          "type": "string"
+        },
+        "observation_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Observation Digest",
+          "type": "string"
+        },
+        "observed_at": {
+          "format": "date-time",
+          "title": "Observed At",
+          "type": "string"
+        },
+        "observed_commit": {
+          "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+          "title": "Observed Commit",
+          "type": "string"
+        },
+        "observed_parents": {
+          "items": {
+            "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+            "type": "string"
+          },
+          "title": "Observed Parents",
+          "type": "array"
+        },
+        "observed_ref": {
+          "const": "refs/heads/main",
+          "default": "refs/heads/main",
+          "title": "Observed Ref",
+          "type": "string"
+        },
+        "observed_tree": {
+          "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+          "title": "Observed Tree",
+          "type": "string"
+        },
+        "operation_id": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Operation Id",
+          "type": "string"
+        },
+        "repository_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Repository Digest",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "target_ref": {
+          "const": "refs/heads/main",
+          "default": "refs/heads/main",
+          "title": "Target Ref",
+          "type": "string"
+        }
+      },
+      "required": [
+        "operation_id",
+        "repository_digest",
+        "base_commit",
+        "base_tree",
+        "candidate_commit",
+        "candidate_tree",
+        "observed_commit",
+        "observed_tree",
+        "observed_parents",
+        "observed_at",
+        "observation_digest"
+      ],
+      "title": "MainExactCasTopologyObservation",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Durable reconciliation result that retains the original ambiguity.",
+  "properties": {
+    "ambiguous_receipt": {
+      "$ref": "#/$defs/MainExactCasReceipt"
+    },
+    "observation": {
+      "$ref": "#/$defs/MainExactCasTopologyObservation"
+    },
+    "operation_id": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Operation Id",
+      "type": "string"
+    },
+    "outcome": {
+      "enum": [
+        "applied",
+        "ambiguous"
+      ],
+      "title": "Outcome",
+      "type": "string"
+    },
+    "reconciled_at": {
+      "format": "date-time",
+      "title": "Reconciled At",
+      "type": "string"
+    },
+    "reconciliation_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Reconciliation Digest",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "operation_id",
+    "ambiguous_receipt",
+    "observation",
+    "outcome",
+    "reconciled_at",
+    "reconciliation_digest"
+  ],
+  "title": "MainExactCasReconciliation",
+  "type": "object"
+}

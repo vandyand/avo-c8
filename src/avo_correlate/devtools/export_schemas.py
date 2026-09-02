@@ -140,6 +140,15 @@ from avo_correlate.contracts.main_graduation import (
     MainUnresolvedMutationFence,
     MainValidationIdentity,
 )
+from avo_correlate.contracts.main_graduation_exact_cas import (
+    MainExactCasAuthorization,
+    MainExactCasIntent,
+    MainExactCasPostStateObservation,
+    MainExactCasReceipt,
+    MainExactCasReconciliation,
+    MainExactCasTopologyObservation,
+    MainExactCasTransportResponse,
+)
 from avo_correlate.contracts.main_graduation_ledger import (
     MainLedgerAccumulatorStateV2,
     MainLedgerAccumulatorTransitionV2,
@@ -253,6 +262,13 @@ MODELS: tuple[type[StrictModel], ...] = (
     IntegrationProviderReconciliation,
     PromotionLeaseEvidence,
     PromotionMutationAuthorization,
+    MainExactCasAuthorization,
+    MainExactCasIntent,
+    MainExactCasReceipt,
+    MainExactCasPostStateObservation,
+    MainExactCasTopologyObservation,
+    MainExactCasReconciliation,
+    MainExactCasTransportResponse,
     SandboxExecutionSpec,
     SandboxExecutionResult,
     DryRunReport,
