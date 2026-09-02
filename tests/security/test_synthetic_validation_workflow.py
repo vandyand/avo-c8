@@ -70,4 +70,5 @@ def test_workflow_contains_complete_trusted_validation_surface() -> None:
         "git diff --exit-code -- schemas",
     ):
         assert command in text
+    assert text.count("--cov-fail-under=85") == 1
     assert "actions/upload-artifact" not in text

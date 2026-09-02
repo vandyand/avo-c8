@@ -75,7 +75,7 @@ jobs:
         run: uv run avoctl platform benchmark
       - name: Run complete canonical suite with coverage
         if: runner.os == 'Linux'
-        run: uv run pytest --cov=avo_correlate --cov-report=term
+        run: uv run pytest --cov=avo_correlate --cov-report=term --cov-fail-under=85
       - name: Run native Windows portability suite
         if: runner.os == 'Windows'
         run: >-

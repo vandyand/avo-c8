@@ -48,7 +48,7 @@ jobs:
         run: uv run avoctl platform benchmark
       - name: Run complete canonical suite with coverage
         if: runner.os == 'Linux'
-        run: uv run pytest --cov=avo_correlate --cov-report=term
+        run: uv run pytest --cov=avo_correlate --cov-report=term --cov-fail-under=85
       - name: Run native Windows portability suite
         if: runner.os == 'Windows'
         run: >-
@@ -124,4 +124,4 @@ jobs:
           $head = (wsl.exe --cd $wslProjectPath --exec git rev-parse HEAD).Trim()
           $status = (wsl.exe --cd $wslProjectPath --exec git status --porcelain).Trim()
           if ($head -ne $env:GITHUB_SHA -or $status) { throw "WSL workspace changed before canonical tests" }
-          wsl.exe --cd $wslProjectPath --exec uv run pytest --cov=avo_correlate --cov-report=term
+          wsl.exe --cd $wslProjectPath --exec uv run pytest --cov=avo_correlate --cov-report=term --cov-fail-under=85
