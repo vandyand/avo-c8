@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
+import tempfile
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
@@ -76,25 +78,38 @@ def test_exclusive_durable_handles_long_identity_path_without_replacing_winner(
 ) -> None:
     """Keep temp publication below Windows MAX_PATH for long identity indexes."""
 
-    target_parent = tmp_path
     fixed_parent = Path("main-graduation-index") / "mutation-dispatch-owner-identity"
-    while len(str(target_parent / fixed_parent)) < 180:
-        target_parent /= "x" * 10
-    target_parent /= fixed_parent
-    target_parent.mkdir(parents=True)
-    target = target_parent / ("a" * 64 + ".json")
-    target_length = len(str(target))
-    assert 240 <= target_length < 260
-    old_temp_length = len(str(target_parent)) + 1 + len(f".{target.name}.") + 8 + len(".tmp")
-    new_temp_length = len(str(target_parent)) + 1 + len(".tmp-") + 8
-    assert old_temp_length >= 260
-    assert new_temp_length < 260
+    target_name = "a" * 64 + ".json"
+    cleanup_root: Path | None = None
+    if Path.cwd().anchor != "/":
+        # Hosted Windows pytest temp paths can already consume the MAX_PATH budget.
+        cleanup_root = Path(tempfile.mkdtemp(prefix="c7-long-", dir=Path.cwd().anchor))
+        target_parent = cleanup_root
+    else:
+        target_parent = tmp_path
+    try:
+        while len(str(target_parent / fixed_parent / target_name)) < 248:
+            target = target_parent / fixed_parent / target_name
+            remaining = 248 - len(str(target))
+            target_parent /= "x" * min(10, max(1, remaining - 1))
+        target_parent /= fixed_parent
+        target_parent.mkdir(parents=True)
+        target = target_parent / target_name
+        target_length = len(str(target))
+        assert 240 <= target_length < 260
+        old_temp_length = len(str(target_parent)) + 1 + len(f".{target.name}.") + 8 + len(".tmp")
+        new_temp_length = len(str(target_parent)) + 1 + len(".tmp-") + 8
+        assert old_temp_length >= 260
+        assert new_temp_length < 260
 
-    _write_exclusive_durable(target, b"winner")
-    assert target.read_bytes() == b"winner"
-    with pytest.raises(FileExistsError):
-        _write_exclusive_durable(target, b"loser")
-    assert target.read_bytes() == b"winner"
+        _write_exclusive_durable(target, b"winner")
+        assert target.read_bytes() == b"winner"
+        with pytest.raises(FileExistsError):
+            _write_exclusive_durable(target, b"loser")
+        assert target.read_bytes() == b"winner"
+    finally:
+        if cleanup_root is not None:
+            shutil.rmtree(cleanup_root, ignore_errors=True)
 
 
 def _chain(journal: MainGraduationJournal) -> tuple[Any, dict[str, Any]]:

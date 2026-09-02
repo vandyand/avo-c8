@@ -16,7 +16,9 @@ from scripts.run_avo0047_offline_gate import main, run
 
 @pytest.fixture
 def short_root() -> Any:
-    root = Path(tempfile.mkdtemp(prefix="c7-script-", dir=Path.cwd().anchor))
+    anchor = Path.cwd().anchor
+    temp_dir = anchor if anchor != "/" else None
+    root = Path(tempfile.mkdtemp(prefix="c7-script-", dir=temp_dir))
     try:
         yield root
     finally:

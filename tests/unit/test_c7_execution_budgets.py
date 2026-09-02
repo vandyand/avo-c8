@@ -3,10 +3,7 @@
 
 from __future__ import annotations
 
-import importlib.metadata
-import importlib.util
 import json
-import shutil
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
@@ -91,44 +88,72 @@ def test_executor_rejects_authority_window_over_bound(tmp_path: Path) -> None:
         executor.validate_authority(authority)
 
 
+def _runtime_probe_fixture(tmp_path: Path) -> tuple[Path, dict[str, object]]:
+    runtime_root = tmp_path / "runtime"
+    site_packages = runtime_root / "Lib" / "site-packages"
+    scripts_name = "Scripts" if sys.platform == "win32" else "bin"
+    launcher_name = "pytest.exe" if sys.platform == "win32" else "pytest"
+    scripts = runtime_root / scripts_name
+    pytest_package = site_packages / "pytest"
+    pytest_info = site_packages / "pytest-1.0.dist-info"
+    for directory in (pytest_package, pytest_info, scripts):
+        directory.mkdir(parents=True)
+
+    python_path = runtime_root / ("python.exe" if sys.platform == "win32" else "python")
+    uv_path = runtime_root / ("uv.exe" if sys.platform == "win32" else "uv")
+    pytest_launcher = scripts / launcher_name
+    python_path.write_bytes(b"python")
+    uv_path.write_bytes(b"uv")
+    pytest_launcher.write_bytes(b"launcher")
+    pytest_module = pytest_package / "__init__.py"
+    pytest_module.write_bytes(b"pytest")
+    record_path = pytest_info / "RECORD"
+    record_path.write_text(
+        "\n".join(
+            (
+                "pytest/__init__.py,,",
+                "pytest-1.0.dist-info/RECORD,,",
+                f"../../{scripts_name}/{launcher_name},,",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    payload: dict[str, object] = {
+        "implementation": "CPython",
+        "plugins": [],
+        "plugin_distributions": [],
+        "pytest": str(pytest_module),
+        "pytest_distribution": {
+            "name": "pytest",
+            "version": "1.0",
+            "root": str(site_packages),
+            "record": "pytest-1.0.dist-info/RECORD",
+        },
+        "pytest_launcher": str(pytest_launcher),
+        "pytest_version": "1.0",
+        "python": str(python_path),
+        "runtime_root": str(runtime_root),
+        "version": "3.12.0",
+    }
+    return uv_path, payload
+
+
 def test_identity_probe_uses_short_finite_timeout(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    launcher = Path(sys.executable).resolve()
-    pytest_distribution = importlib.metadata.distribution("pytest")
-    record = next(item for item in pytest_distribution.files or () if item.name == "RECORD")
-    pytest_origin = importlib.util.find_spec("pytest")
-    pytest_launcher = shutil.which("pytest")
-    assert pytest_origin is not None and pytest_origin.origin
-    assert pytest_launcher
+    launcher, payload = _runtime_probe_fixture(tmp_path)
     calls: list[dict[str, Any]] = []
 
     def runner(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
         calls.append(kwargs)
-        payload = json.dumps(
-            {
-                "implementation": "CPython",
-                "plugins": [],
-                "plugin_distributions": [],
-                "pytest": pytest_origin.origin,
-                "pytest_distribution": {
-                    "name": pytest_distribution.name,
-                    "version": pytest_distribution.version,
-                    "root": str(pytest_distribution.locate_file("")),
-                    "record": record.as_posix(),
-                },
-                "pytest_launcher": pytest_launcher,
-                "pytest_version": pytest_distribution.version,
-                "python": str(launcher),
-                "runtime_root": sys.prefix,
-                "version": "3",
-            },
-            sort_keys=True,
+        return subprocess.CompletedProcess(
+            argv, 0, stdout=json.dumps(payload, sort_keys=True), stderr=""
         )
-        return subprocess.CompletedProcess(argv, 0, stdout=payload, stderr="")
 
     monkeypatch.setattr(identity_module.subprocess, "run", runner)
     identity_module._uv_runtime_identity(tmp_path, launcher, {"PATH": "unused"})
+    assert len(calls) == 1
     assert calls[0]["timeout"] == identity_module._IDENTITY_COMMAND_TIMEOUT_SECONDS
 
 
