@@ -1,9 +1,10 @@
 # ADR 0011: Protected-main graduation boundary
 
 Status: accepted for the AVO-004.7 architecture; C4, C5, C6, and C7 complete for offline
-acceptance, implementation and hosted gate in progress.
-Live `main` mutation is blocked by current GitHub hosting capability and missing isolated
-release-hold authority.
+acceptance, with the separately reviewed personal exact-CAS boundary approved offline and
+hosted coverage remediation in progress.
+Live `main` mutation remains blocked because only bootstrap topology protection is provisioned;
+the final writer-restricting ruleset and isolated writer principal are not provisioned.
 
 C4 coordinator and recovery gate: complete on 2026-09-01 at code HEAD
 `82ace056cf9f0453b43c71845179c437914a041b`, with Terra approval. See the [final C4 result](../avo-0047-c4-result.md).
@@ -40,7 +41,32 @@ success/wrong-App/failure/duplicate outcomes. It is secret-safe and non-authorit
 APPROVE found no P0/P1 issues; 149 focused parent/Terra tests passed and Ruff/scoped
 Pyright/diff were clean. No live run occurred because `GITHUB_TOKEN` is absent. Issuer and
 rollback remain unsupported; no further local diagnostic leaf is currently authority-sufficient.
-C8 remains blocked, with no authority or readiness.
+C8 remains in progress with no writer authority or readiness. The bootstrap `main` branch
+protection on `vandyand/avo-c8` has `enforce_admins=true`, `required_linear_history=true`,
+`allow_force_pushes=false`, `allow_deletions=false`, and no PR/status requirements. Terra
+reviewed it as a topology guard only. The final ruleset must restrict updates/deletions to the
+dedicated writer GitHub App as the only Always bypass, and hosted denial tests must pass.
+
+The separately reviewed personal exact-CAS boundary is Terra-approved offline at commit
+`9e59638`, after strict Pyright baseline repair at `a0d1a7d`. It was pushed to the public
+[personal repository](https://github.com/vandyand/avo-c8), which was created and seeded while
+[vandyand/avo](https://github.com/vandyand/avo) remained unchanged. Hosted run
+[33668978939](https://github.com/vandyand/avo-c8/actions/runs/33668978939) passed its early
+quality checks but closed at 82.52% coverage and exposed two portable test assertions; those
+assertions are fixed locally at `a624a8a` and meaningful coverage remediation continues without
+lowering the 85% floor. The boundary is a fixed `PATCH` of `main` with `force=false`, exact B-to-C sole-parent
+topology, no force/delete/generic-ref capability, durable request ID, 409-only conflicts, and
+conservative 422 handling. No live CAS attempt or rollback occurred. This separately reviewed
+protocol supersedes the organization/merge-queue blocker only for this personal path; the queue
+protocol remains an alternate, not-selected design.
+
+The real read-only trusted-source adapter is Terra-approved offline at `ae65b73`; the
+fail-closed durable-backend gate is approved at `d9f6d3d`; and the offline exact-CAS contracts/
+journal are approved at `a26fd7a` after 15 focused tests passed with two Windows symlink-
+privilege skips. The journal reopens genuine pinned source evidence on each authority-dependent
+write/read and orders same-mount content-addressed object durability before its create-once index.
+These leaves expose no provider, HTTP, token, or hosted writer surface. The live controller and
+transport remain unimplemented.
 
 The workflow-semantics and env-only diagnostic CLI gate is Terra-approved at
 `7ded390436010844f6044151c59b05a02c74b810` (69 Terra-focused tests; 125 focused parent tests;
@@ -49,7 +75,8 @@ features and unbounded input, validates static PR/merge_group facts and exact lo
 `github.sha` checkout refs with `persist-credentials=false`, and exposes only a fixed-origin,
 no-redirect, sanitized env-only `avoctl c8 preflight`. No live execution occurred because the
 token is absent; validation identity, issuer/rollback authority, readiness, and hosted mutation
-remain unsupported. C8 remains blocked.
+remain unsupported. The selected personal exact-CAS route remains blocked from hosted activation
+until its final writer boundary and durable controller are provisioned.
 
 ## Context
 
@@ -281,13 +308,14 @@ The preferred live protocol is:
 5. The coordinator observes the resulting `main` commit, tree, and complete parent list,
    then records queue/PR/check/protection receipts and cleanup evidence.
 
-The current public repository is user-owned and does not expose the required merge queue
-under its present hosting capability. Therefore live main mutation is blocked. No transfer
-of repository ownership, branch-protection mutation, queue enablement, or main write is
-authorized by this ADR. An operator must explicitly authorize a move to an organization
-that meets the hosting requirement, or authorize a separately reviewed exact-CAS writer
-design. Until then, offline implementation and evidence work may proceed, but no hosted
-AVO-004.7 attempt may mutate `main`.
+The current public repository is user-owned and does not expose the required merge queue;
+that blocker applies to the preferred queue protocol. The separately reviewed personal
+exact-CAS protocol is now the selected hosted direction. Bootstrap topology protection is
+live on `vandyand/avo-c8`, but live main mutation remains blocked until its final ruleset
+restricts updates/deletions to the dedicated writer GitHub App as the only Always bypass,
+hosted denial tests pass, an isolated writer principal is provisioned, and a durable
+controller/journal exists. No transfer, protection/queue mutation, or main write is authorized
+by this ADR. The queue protocol remains an alternate, not-selected design.
 
 The GitHub REST ref-delete endpoint has no expected-SHA CAS precondition. Consequently,
 rollback cleanup cannot treat a delete response as proof that the expected ref was deleted.
@@ -385,9 +413,13 @@ Any material protocol or configuration change starts a new campaign and threshol
 * **Transfer the repository or mutate protections automatically.** Rejected for this
   gate because no such operator authority was supplied. Hosting transfer is a prerequisite
   decision, not an implementation side effect.
-* **Use a custom exact-CAS writer immediately.** Deferred. It may be considered only as a
-  separately reviewed provider design with equivalent protection, attestation, recovery,
-  and rollback evidence.
+* **Use a custom exact-CAS writer immediately.** The separately reviewed personal exact-CAS
+  boundary is approved offline at `9e59638` and pushed to `vandyand/avo-c8`; hosted coverage
+  remediation is in progress. It uses fixed `PATCH` `main` with `force=false`, exact B-to-C sole-parent topology,
+  durable request ID, 409-only conflicts, conservative 422 handling, and no force/delete/
+  generic-ref capability. Bootstrap topology protection is live, but this does not authorize a live
+  write until the final ruleset, isolated writer principal, hosted denial tests, and durable
+  controller/journal exist.
 
 ## Consequences
 
@@ -402,6 +434,7 @@ scope.
 ## Related evidence
 
 * [AVO roadmap](../roadmap.md)
+* [C8 personal exact-CAS result](../avo-0047-c8-personal-exact-cas-result.md)
 * [PR-native integration promotion ADR](0009-pr-native-integration-promotion.md)
 * [Exact-SHA attestation ADR](0010-exact-sha-attestation-and-failure-drills.md)
 * [AVO-004.7 implementation plan](../avo-0047-main-graduation-plan.md)

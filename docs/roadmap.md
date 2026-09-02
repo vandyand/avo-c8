@@ -110,14 +110,35 @@ production authority outside the proposing agent's control.
   read-only repository/organization observations, permission-limited unknowns, and prohibited
   mutations. The rollback and activation preparers remain explicitly
   non-consumable drafts.
-  Live `main` mutation is currently blocked on both required capabilities: the preferred
-  merge-queue protocol needs an organization-owned repository with max-one-entry queue and
-  exact admission/hold capability, while the current public repository is user-owned, and no
-  isolated release-hold issuer/operator authority exists. No transfer, protection/queue
-  mutation, admission or release transition, or main write is authorized until both hosting
-  authority and admission/hold authority are explicitly resolved. GitHub REST ref deletion has no
-  expected-SHA CAS; before hosted use, the `avo/main-rollback/*` namespace must have exclusive
-  ACL/ruleset authority for rollback cleanup.
+  A separately reviewed personal exact-CAS boundary is Terra-approved offline at commit
+  `9e59638` after the strict Pyright baseline was repaired at `a0d1a7d`. The public
+  [personal repository](https://github.com/vandyand/avo-c8) was created and seeded while
+  [vandyand/avo](https://github.com/vandyand/avo) remained unchanged; commit `9e59638` was
+  pushed. Hosted run [33668978939](https://github.com/vandyand/avo-c8/actions/runs/33668978939)
+  closed at 82.52% coverage and exposed two portable test assertions; `a624a8a` fixes those
+  assertions locally, and meaningful coverage remediation continues against the unchanged 85%
+  floor. Its fixed `PATCH` main operation uses `force=false`, exact B-to-C
+  sole-parent topology, durable request IDs, 409-only conflicts, conservative 422 handling,
+  and no force/delete/generic-ref capability. This does not record a live CAS attempt or
+  rollback: bootstrap `main` branch protection is live on `vandyand/avo-c8` with
+  `enforce_admins=true`, `required_linear_history=true`, `allow_force_pushes=false`,
+  `allow_deletions=false`, and no PR/status requirements. Terra reviewed it as a topology
+  guard only, not writer isolation or readiness. The final ruleset restricting updates/deletions
+  to the dedicated writer GitHub App as the only Always bypass, hosted denial tests, and durable
+  controller/journal work are next. The read-only trusted-source adapter (`ae65b73`) and the
+  fail-closed durable-backend gate (`d9f6d3d`) and offline exact-CAS contracts/journal
+  (`a26fd7a`; 15 passed, two Windows symlink-privilege skips) are Terra-approved offline; none
+  enables an HTTP/provider mutation. The organization/merge-queue path is superseded only for this
+  separately reviewed protocol and remains an alternate, not-selected path. The live controller/
+  transport is next, followed by protected hosted rollback, ledger activation, and
+  12 consecutive successes.
+  Live `main` mutation remains blocked: bootstrap protection is a topology guard only; the
+  final writer-restricting ruleset, isolated writer principal, hosted denial tests, and durable
+  live controller/transport integration is not yet implemented. No hosted CAS write, admission/release transition, or
+  rollback is authorized. The queue protocol remains an alternate, not-selected path and
+  still requires organization hosting plus admission/hold authority. GitHub REST ref deletion
+  has no expected-SHA CAS; before hosted use, the `avo/main-rollback/*` namespace must have
+  exclusive ACL/ruleset authority for rollback cleanup.
 
 ## Milestone register
 
@@ -150,7 +171,7 @@ approving every ordinary patch.
 | AVO-004.4 | complete | Dry-run promotion controller producing a content-addressed promotion bundle without merging. | [ADR 0008](adr/0008-dry-run-promotion-controller.md) and the [v1 result](avo-004-promotion-dry-run-v1-result.md) pass deterministic replay, trusted-base evaluation, provenance, adversarial review, coverage, and compare-and-swap checks. |
 | AVO-004.5 | complete | Controller-driven ordinary-change promotion to a protected integration branch under the documented temporary exact-validation bridge. | The sanitized live campaign passes required trusted checks, independent review quorum, private regression evaluation, exact synthetic reconstruction, integration soak, protected merge, and durable recovery evidence. [Result](avo-0045-sanitized-live-result.md) |
 | AVO-004.6 | complete | Rollback and failure drills with immutable evidence, plus production-grade exact-SHA attestation for the declared trusted-repository boundary. | The offline eight-case package and live protected canary/rollback fail closed, reconstruct, clean up, and replay idempotently through the pinned GitHub Actions App 15368 check identity executing the base-controlled exact-SHA workflow, with `main` unchanged and no deployment. [Result](avo-0046-live-failure-drill-result.md) |
-| AVO-004.7 | in_progress | Graduate ordinary changes from integration to automatic protected-main promotion through a dedicated, queue-aware main boundary with one-use PR-head admission and isolated group release hold. | The offline architecture and rollback matrix pass; then, after both organization-hosting/merge-queue capability (max one entry per group) and isolated admission/hold authority unblock the live protocol, a fresh hosted main rollback drill passes before ledger activation, followed by 12 consecutive eligible attempts with 0 failures and 0 boundary violations. [ADR](adr/0011-protected-main-graduation.md), [plan](avo-0047-main-graduation-plan.md), and [runbook](avo-0047-main-graduation-runbook.md). |
+| AVO-004.7 | in_progress | Graduate ordinary changes from integration to automatic protected-main promotion through the selected personal exact-CAS boundary; retain the queue-aware one-use admission/isolated-hold design only as an alternate protocol. | The offline architecture and rollback matrix pass; then the final ruleset restricts `main` updates/deletions to the dedicated writer GitHub App as the only Always bypass, the isolated writer principal and controller/transport/journal are verified, hosted denial tests and rollback-namespace ACL checks pass, and a fresh protected hosted main rollback drill passes before ledger activation, followed by 12 consecutive eligible attempts with 0 failures and 0 boundary violations. [ADR](adr/0011-protected-main-graduation.md), [plan](avo-0047-main-graduation-plan.md), and [runbook](avo-0047-main-graduation-runbook.md). |
 
 #### AVO-004.7 implementation sequence
 
@@ -163,7 +184,7 @@ approving every ordinary patch.
 | C5 — main rollback authority | complete | Offline acceptance passed at HEAD `e38d0b826f94f3f559fb2e3ef0b26d1d17128c53` with Terra APPROVE and combined 24 passed, covering rollback contracts/journaling, inverse composition, authority verification, aggregate orchestration, terminal cleanup/closure, crash/replay, and adversarial recovery. No hosted/provider/main/deploy mutation occurred. [Result](avo-0047-c5-result.md) |
 | C6 — campaign runner and eligibility ledger | complete | Offline acceptance complete at final code HEAD `e6db424cc671d7a5d63b9b8a7246a316c4867f91`; [result](avo-0047-c6-result.md). Hosted ledger activation still requires blocked C8 prerequisites and a fresh hosted rollback drill. |
 | C7 — deterministic offline gate | complete | Offline acceptance complete at code HEAD `9c70c36074810606692f8c2030b25ce83c10a1e4`; 47 exact frozen case/vector entries passed, replay used `executor_calls=0` and `clock_calls=0`, and `deploy_performed=false`. [Result](avo-0047-c7-result.md). No hosted mutation. |
-| C8 — hosted organization/queue/release gate | blocked | Terra-approved local foundations and Phase 1 snapshot are recorded in the [C8 local-foundations result](avo-0047-c8-local-foundations-result.md). The Phase 2 atomic authenticated snapshot is Terra-approved at `1d911e3`; the completed validation-principal diagnostic is provider-evidenced at exact commit `a8af4341be413981da348c772b9d51e1e6f9f27e`. It integrates the pure bounded parser with the atomic read-only snapshot, binds exact main SHA, at most 10 pages/1000 check runs, stable cardinality/unique IDs, exact required contexts, App 15368 GitHub Actions metadata, run-ID and two-pass raw-page digests, unrelated in-progress tolerance, and final freshness blockers for success/wrong-App/failure/duplicate outcomes. It is secret-safe and non-authoritative. Terra APPROVE found no P0/P1 issues; 149 focused parent/Terra tests passed and Ruff/scoped Pyright/diff were clean. The authenticated 2026-09-02 preflight was non-authoritative/non-consumable `unverifiable` with all seven read categories unverifiable and no mutation; see the [C8 hosted-capability inventory](avo-0047-c8-hosted-capability-inventory.md). No further local diagnostic leaf is currently authority-sufficient. Hosted completion still requires an explicitly authorized organization-owned repository target with a max-one merge queue, Repository Administration for repository rulesets/protection, separate Merge queues read/write permission for queue inspection/provisioning, any other exact permission required by selected endpoints/actions, a separate isolated issuer (not App 15368), experimentally proven exclusive controller create/delete authority for `avo/main-rollback/*`, and an authenticated token channel; `admin:org` is needed only if organization-level policy is selected. Then a fresh hosted rollback/activation sequence, ledger activation, and 12 consecutive eligible successes with 0 failures/boundary violations remain required. |
+| C8 — hosted personal exact-CAS gate | in_progress | Terra-approved local foundations and Phase 1 snapshot are recorded in the [C8 local-foundations result](avo-0047-c8-local-foundations-result.md). The organization/merge-queue protocol remains alternate/not selected. The personal exact-CAS boundary is Terra-approved offline at `9e59638`; [vandyand/avo-c8](https://github.com/vandyand/avo-c8) was created/seeded and [vandyand/avo](https://github.com/vandyand/avo) remained unchanged. Hosted run [33668978939](https://github.com/vandyand/avo-c8/actions/runs/33668978939) closed at 82.52% coverage; portable assertions are fixed at `a624a8a`, with meaningful coverage remediation continuing against the unchanged 85% floor. The [personal exact-CAS result](avo-0047-c8-personal-exact-cas-result.md) records the fixed no-force/no-delete protocol and no live CAS/rollback. Offline trusted-source (`ae65b73`), durable-backend (`d9f6d3d`), and exact-CAS journal (`a26fd7a`) leaves are Terra-approved but expose no provider/HTTP writer. Bootstrap protection remains topology-only; the live controller/transport, final writer ruleset/principal, and hosted denial tests are incomplete. Then a protected hosted rollback drill, ledger activation, and 12 consecutive eligible successes with 0 failures/boundary violations remain. |
 
 The roadmap gate was completed first because the operator explicitly authorized it. The green test
 and coverage baseline, controlling repository, public remote, baseline tag, recovery rehearsal, and
@@ -183,14 +204,13 @@ C4–C7 offline evidence do not establish hosted/live readiness, and AVO-004.7 r
 progress. C7 deterministic offline gate is complete; see the [C7 result](avo-0047-c7-result.md).
 The clean-run threshold
 and main-specific rollback evidence remain preregistered in the linked ADR, plan, and runbook. The
-later live gate is blocked by two hosting/authority prerequisites: the preferred required merge queue
-with max one entry per group and exact PR-head admission/group-hold capability is available for
-an organization-owned public repository, but the current public repository is user-owned; and
-a dedicated isolated release issuer has not been authorized. No repository transfer,
-protection/queue mutation, admission or hold-success transition, or live `main` write is
-authorized until both boundaries are explicitly resolved (or an exact-CAS writer design is
-separately reviewed). GitHub REST ref deletion has no expected-SHA CAS; before hosted use, the
-`avo/main-rollback/*` namespace must have exclusive ACL/ruleset authority for rollback cleanup.
+separately reviewed personal exact-CAS protocol is now the selected hosted direction: its bootstrap
+branch protection is live as a topology guard, while the final writer-restricting ruleset, isolated
+writer principal, hosted denial tests, and durable controller/journal remain required before any
+hosted CAS write. The preferred organization-owned merge-queue protocol is superseded only for this
+separately reviewed protocol and remains an alternate, not-selected path. GitHub REST ref deletion
+has no expected-SHA CAS; before hosted use, the `avo/main-rollback/*` namespace must have exclusive
+ACL/ruleset authority for rollback cleanup.
 
 ### AVO-004.6 failure-drill sequence
 

@@ -4,9 +4,8 @@ Status: activation and evidence runbook; C4 coordinator/recovery gate complete o
 2026-09-01 at HEAD `82ace056cf9f0453b43c71845179c437914a041b` with Terra approval; C5 main
 rollback authority complete for offline acceptance on HEAD `e38d0b826f94f3f559fb2e3ef0b26d1d17128c53`
 with Terra APPROVE and combined 24 passed; live `main`
-mutation is blocked until both
-organization-hosting/merge-queue capability and isolated release-hold authority are
-explicitly authorized. C7 deterministic offline gate is complete at code HEAD
+mutation remains blocked until the selected personal exact-CAS route has its final writer ruleset,
+an isolated writer principal, and a durable controller/journal. C7 deterministic offline gate is complete at code HEAD
 `9c70c36074810606692f8c2030b25ce83c10a1e4`.
 
 C8 local Wave 1/2 foundations are Terra-approved through commits `ecd773c`, `935363c`, and
@@ -50,8 +49,9 @@ repository transfer, branch-protection mutation, or direct ref writes.
 C4–C7 completion is offline coordinator/recovery/ledger/gate evidence only. C7 passed all 47
 exact frozen case/vector entries; replay returned the exact same result with `executor_calls=0` and
 `clock_calls=0`, and `deploy_performed=false`. See the [durable C7 result](avo-0047-c7-result.md).
-No provider or `main` mutation is authorized by this status. C8 remains blocked pending
-organization-hosting/merge-queue capability and isolated release-hold authority.
+No provider or `main` mutation is authorized by this status. The organization/merge-queue
+protocol remains an alternate, not-selected route. The separately reviewed personal exact-CAS
+boundary is recorded in the [C8 personal exact-CAS result](avo-0047-c8-personal-exact-cas-result.md).
 
 ## 1A. Local Phase 1 diagnostic boundary
 
@@ -69,6 +69,31 @@ and approved; issuer and rollback observations remain unsupported. No live run o
 The GitHub REST ref-delete endpoint provides no expected-SHA CAS precondition. Before hosted
 use, protect the `avo/main-rollback/*` namespace with exclusive ACL/ruleset authority. Cleanup
 must be exact-ref scoped and close only after authoritative post-state observation.
+
+## 1B. Personal exact-CAS route
+
+The selected hosted direction is the separately reviewed personal exact-CAS protocol at commit
+`9e59638`, pushed to the seeded public [vandyand/avo-c8](https://github.com/vandyand/avo-c8)
+repository; the original [vandyand/avo](https://github.com/vandyand/avo) is unchanged. Its
+fixed `PATCH` of `main` uses `force=false`, requires exact B-to-C sole-parent topology, carries
+a durable request ID, accepts only a `409` conflict, and treats `422` conservatively. It has no
+force, delete, or generic-ref capability. Hosted run
+[33668978939](https://github.com/vandyand/avo-c8/actions/runs/33668978939) closed at 82.52%
+coverage and exposed two portable test assertions; `a624a8a` fixes those assertions locally,
+while meaningful coverage remediation continues against the unchanged 85% floor. The strict
+Pyright baseline repair is recorded at `a0d1a7d`.
+
+This boundary is offline evidence only: no live CAS attempt or rollback occurred. Bootstrap
+protection is already live as a topology guard; before any hosted write, provision and independently
+check the final writer-restricting ruleset, isolated writer principal, and durable controller/journal.
+The real read-only trusted-source adapter (`ae65b73`), fail-closed durable-backend gate
+(`d9f6d3d`), and offline exact-CAS contracts/journal (`a26fd7a`; 15 passed and two Windows
+symlink-privilege skips) are Terra-approved. They expose no provider, HTTP, token, or hosted writer
+surface; the live controller/transport remains unimplemented.
+Then run the protected hosted rollback drill,
+activate the ledger, and count 12 consecutive eligible successes. App 15368 remains validation
+only. The merge-queue route and its organization-hosting requirements remain an alternate,
+not-selected protocol.
 
 ## 1. Activation prerequisites
 
@@ -89,23 +114,43 @@ record containing:
 * the preregistered threshold: 12 consecutive eligible attempts, 12 successes, 0
   failures, and 0 boundary violations.
 
-The current user-owned public repository cannot satisfy the preferred required merge-queue
-protocol, and no isolated release-hold issuer has been authorized. Stop activation at this
-point and mark the hosted leaf blocked on both prerequisites. An operator must explicitly
-authorize organization-hosting authority or a separately reviewed exact-CAS writer design,
-and separately authorize the dedicated least-privilege release issuer. Do not transfer the
-repository, alter protections, enable a queue, create a main PR, or write `main` as an
-implied implementation step. App 15368 is validation-only and cannot satisfy the release
-issuer requirement. The isolated issuer is a bounded AVO-004.7 dependency under this
-trusted-team boundary, not an automatic AVO-008 escalation.
+The selected route is the separately reviewed personal exact-CAS protocol, not the preferred
+organization-owned merge queue. Bootstrap `main` branch protection is live on `vandyand/avo-c8`
+with `enforce_admins=true`, `required_linear_history=true`, `allow_force_pushes=false`,
+`allow_deletions=false`, and no PR/status requirements. Terra reviewed this as a topology
+guard only, not writer isolation or readiness. Activation remains blocked until a repository
+ruleset restricts updates/deletions to the dedicated writer GitHub App as the only Always
+bypass, hosted denial tests pass, and the durable controller/journal exists. App 15368 is
+validation-only. The queue route remains an alternate, not-selected protocol.
 
-After that authority exists, independently capture the organization-owned repository
-identity, protected-main rules, required merge queue, and workflows triggered by both
-`pull_request` and `merge_group`. GitHub's [merge queue documentation](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/incorporating-changes-from-a-pull-request/merging-a-pull-request-with-a-merge-queue)
-describes availability for organization-owned public repositories. The [merge_group event](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#merge_group)
-must report checks for the exact merge-group SHA.
+After that authority exists, independently capture the personal repository identity, final
+ruleset, dedicated writer isolation, workflow identity, and rollback namespace authority. The
+alternative queue route still requires an organization-owned repository and workflows
+triggered by both `pull_request` and `merge_group`.
 
-## 2. Hosted rollback prerequisite (before ledger activation)
+## 2. Selected personal exact-CAS execution and rollback prerequisite
+
+After the final ruleset, dedicated writer isolation, hosted denial tests, and durable
+controller/journal are independently verified, use only the fixed personal exact-CAS operation:
+
+1. Read the current `refs/heads/main` value as `B`, construct the immutable result commit `C`
+   with exactly one parent `B`, and durably journal the operation intent and request ID before
+   dispatch.
+2. Issue only `PATCH refs/heads/main` with `force=false`, expected old head `B`, and new head `C`.
+   The writer has no force, delete, or generic-ref capability. Treat only `409` as a conflict;
+   handle `422` conservatively and fail closed on every other unexpected response.
+3. Reconcile the authoritative post-state. Success requires `main=C` with the exact expected
+   sole-parent topology and durable receipt; a timeout or lost response is read-only
+   reconciliation and never a blind retry.
+4. Run a fresh protected hosted rollback drill under the same exact-CAS boundary before freezing
+   ledger activation. Rollback is current-tip-only, uses the exact inverse delta, and repeats the
+   same expected-base `PATCH` contract; any advanced, conflicting, ambiguous, or non-invertible
+   state fails closed. No live CAS or rollback evidence exists yet.
+
+The merge-queue chronology in sections 4–9 remains an alternate, not-selected route and is not
+evidence for the personal exact-CAS protocol.
+
+## 2A. Alternate queue rollback prerequisite (before ledger activation)
 
 After both hosting prerequisites are authorized, run a fresh main rollback drill under the
 final live protocol before freezing ledger activation. This drill is separate from the
@@ -212,7 +257,7 @@ hold run to success. The transition is the sole irreversible main-mutation trigg
 15368 only validates; it cannot transition the hold. The coordinator performs no provider
 queue/merge request after release authorization.
 
-## 6. Hosted execution (only after activation is unblocked)
+## 6. Hosted execution — alternate queue route (only if selected later)
 
 1. Publish the immutable candidate to the controller-owned ref and record the publication
    receipt. Reconcile an exact existing ref; quarantine a wrong or preseeded ref.
@@ -315,7 +360,7 @@ before any new preflight. It uses the same operation and state root.
 Replay of a completed operation must return the same plan, attempt, completion, and result
 digests, issue no provider mutation, and leave `main` unchanged from the recorded result.
 
-## 9. Main rollback drill
+## 9. Alternate queue main rollback drill
 
 Rollback requires a separately issued main-specific rollback authorization. It must bind the
 completed graduation package, failed/current main head, exact original delta, inverse
@@ -360,7 +405,7 @@ Completion requires:
   violations, with a gap-free scheduler sequence and every post-watermark submission
   accounted for by an eligible attempt or terminal durable disposition;
 * deterministic offline crash/adversarial rollback matrix passed;
-* one fresh hosted main rollback drill under the final queue protocol passed;
+* one fresh hosted main rollback drill under the selected personal exact-CAS protocol passed;
 * final audit reconstructs every package, delta, composition, exact check/queue/protection
   observation, journal boundary, result, rollback, cleanup, reset/exclusion, and replay;
 * no deployment or irreversible effect occurred; and

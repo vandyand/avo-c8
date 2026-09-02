@@ -3,14 +3,16 @@
 Status: implementation plan; C4 complete on 2026-09-01 at HEAD
 `82ace056cf9f0453b43c71845179c437914a041b` and C5 complete for offline acceptance on
 2026-09-01 at HEAD `e38d0b826f94f3f559fb2e3ef0b26d1d17128c53` with Terra APPROVE and combined
-24 passed; hosted `main` mutation blocked
-pending organization-hosting/merge-queue (max-one-entry plus admission/hold) capability
-and explicit isolated release-hold issuer authority.
+24 passed; the separately reviewed personal exact-CAS boundary is approved offline at
+`9e59638` and hosted coverage remediation is in progress. Live `main` mutation remains blocked until final
+writer-restricting protections,
+an isolated writer principal, and a durable controller/journal are provisioned.
 C6 is complete for offline acceptance at final code HEAD `e6db424cc671d7a5d63b9b8a7246a316c4867f91`;
 C7 deterministic offline gate is complete for offline acceptance at final code HEAD
 `9c70c36074810606692f8c2030b25ce83c10a1e4`; see the [C7 result](avo-0047-c7-result.md).
 The 47 exact frozen case/vector entries passed, replay used `executor_calls=0` and `clock_calls=0`, and
-`deploy_performed=false`. C8 remains blocked.
+`deploy_performed=false`. The organization/merge-queue blocker is superseded only for the
+separately reviewed personal exact-CAS protocol; queue remains an alternate, not-selected path.
 
 C8 local Wave 1/2 foundations are Terra-approved through commits `ecd773c`, `935363c`, and
 `49fb84e`; see the [local-foundations result](avo-0047-c8-local-foundations-result.md).
@@ -19,8 +21,8 @@ controller-rooted activation plus raw-proof CAS/legacy-compatible ledger schema 
 implemented locally. Phase 1 is now also accepted at `daeff01` through `f38840d`: its immutable
 single-flight snapshot performs five authenticated GETs (repository, main ref, commit, workflow
 blob, final main fence), verifies blob binding, and has 52 focused tests. This remains diagnostic
-only: protection/queue/issuer/rollback ACL remain unsupported; validation-principal diagnostics
-are covered by the later accepted diagnostic gate below.
+only: the final writer ruleset, queue/issuer authority, and rollback ACL remain unsupported;
+validation-principal diagnostics are covered by the later accepted diagnostic gate below.
 The rollback and activation preparers are explicitly non-consumable drafts; there
 is no live execution, concrete trust root, authority-bearing adapter, runner, readiness, or
 hosted mutation.
@@ -46,6 +48,26 @@ blockers for success/wrong-App/failure/duplicate. It is secret-safe and non-auth
 Terra APPROVE found no P0/P1 issues; 149 focused parent/Terra tests passed and Ruff/scoped
 Pyright/diff were clean. No further local diagnostic leaf is currently authority-sufficient;
 issuer and rollback remain unsupported.
+
+The public personal repository [vandyand/avo-c8](https://github.com/vandyand/avo-c8) was
+created and seeded while [vandyand/avo](https://github.com/vandyand/avo) remained unchanged.
+Strict Pyright baseline repair is recorded at `a0d1a7d`; the Terra-approved offline exact-CAS
+boundary is at `9e59638`, pushed to the personal repository. Hosted run
+[33668978939](https://github.com/vandyand/avo-c8/actions/runs/33668978939) closed at 82.52%
+coverage after exposing two portability assertions; `a624a8a` fixes those assertions locally,
+and coverage remediation continues without lowering the 85% floor. It fixes `PATCH` `main` with `force=false`, exact B-to-C sole-parent topology,
+durable request ID, 409-only conflicts, conservative 422 handling, and no force/delete/
+generic-ref capability. No live CAS attempt or rollback occurred. Bootstrap `main` branch
+protection on `vandyand/avo-c8` is live with `enforce_admins=true`,
+`required_linear_history=true`, `allow_force_pushes=false`, `allow_deletions=false`, and no
+PR/status requirements; Terra reviewed it as a topology guard only, not writer isolation or
+readiness. The final writer-restricting ruleset, isolated writer
+principal, hosted denial tests, and live controller/transport integration are not provisioned. The
+read-only trusted-source adapter is Terra-approved at `ae65b73`, the fail-closed durable-
+backend gate at `d9f6d3d`, and the offline exact-CAS contracts/journal at `a26fd7a` (15 passed,
+two Windows symlink-privilege skips). None enables provider/HTTP mutation. The live controller/
+transport remains next, followed by protected hosted rollback, ledger activation, and
+12 consecutive eligible successes.
 
 This plan is subordinate to the [authoritative roadmap](roadmap.md) and
 [ADR 0011](adr/0011-protected-main-graduation.md). It describes implementation-ready
@@ -142,7 +164,7 @@ accepted and its write scope is reviewed.
 | AVO-004.7-C5 | Main rollback authority | AVO-004.7-C1, AVO-004.7-C3, AVO-004.7-C4 | New `MainRollbackAuthority`, inverse-delta contracts, and tests. No reset, force update, or direct ref update. | Offline acceptance complete at HEAD `e38d0b826f94f3f559fb2e3ef0b26d1d17128c53`: Terra APPROVE, combined 24 passed. Covers aggregate orchestration, terminal cleanup/closure, crash/replay, and adversarial recovery. No hosted/provider/main/deploy mutation. [Result](avo-0047-c5-result.md) |
 | AVO-004.7-C6 | Campaign runner and eligibility ledger | AVO-004.7-C4, AVO-004.7-C5 | New runner, frozen activation record, eligibility ledger, threshold accumulator, and evidence package writer. | Complete for offline acceptance at `e6db424`; [result](avo-0047-c6-result.md). Enforces gap-free scheduler sequence after watermark, exactly one next-sequence admission with no speculative tail, ordinary nonempty eligibility from submission, terminal upstream failure/reset, and exact unresolved-tail closure. Hosted activation remains gated by C8 prerequisites and a fresh hosted rollback drill. |
 | AVO-004.7-C7 | Deterministic offline gate | AVO-004.7-C1 through AVO-004.7-C6 | Offline harness, fault matrix, and result artifact only. No hosted mutation. | Complete at code HEAD `9c70c36074810606692f8c2030b25ce83c10a1e4`: 47 exact frozen case/vector entries passed, replay returned the exact same result with `executor_calls=0` and `clock_calls=0`, and `deploy_performed=false`. Two truthful failed-closed dry attempts exposed datetime-canonicalization and semantic-versus-artifact verifier bugs; both were remediated and reviewed. [Result](avo-0047-c7-result.md) |
-| AVO-004.7-C8 | Hosted organization/queue/release gate | AVO-004.7-C7 | Terra-approved local foundations plus hosted workflow/configuration and operator-controlled state root only after explicit authority. | Phase 1 snapshot is accepted at `daeff01` through `f38840d`; the Phase 2 atomic authenticated snapshot is Terra-approved at `1d911e3`. The validation-principal diagnostic is complete at exact commit `a8af4341be413981da348c772b9d51e1e6f9f27e`, integrating the pure bounded parser and atomic read-only snapshot with exact main-SHA binding, bounded pages, stable cardinality/unique IDs, required contexts, App 15368 metadata, run-ID/raw-page digests, unrelated in-progress tolerance, and final freshness blockers. Terra APPROVE found no P0/P1; 149 focused parent/Terra tests passed and Ruff/scoped Pyright/diff were clean. It is secret-safe and non-authoritative. No live run occurred because `GITHUB_TOKEN` is absent; no further local diagnostic leaf is authority-sufficient. Final protocol still requires an organization-owned required max-one merge queue, separate isolated issuer (not App 15368), exclusive controller create/delete authority for `avo/main-rollback/*`, a fresh hosted rollback/activation sequence, then ledger activation and 12 consecutive eligible successes with 0 failures/boundary violations. Until those prerequisites exist this leaf is blocked and may not mutate current `main`. |
+| AVO-004.7-C8 | Hosted personal exact-CAS gate | AVO-004.7-C7 | Terra-approved local foundations plus hosted workflow/configuration and operator-controlled state root only after explicit authority. | The organization/merge-queue protocol remains alternate/not selected. Terra approved the personal exact-CAS boundary offline at `9e59638`; [vandyand/avo-c8](https://github.com/vandyand/avo-c8) was created/seeded and [vandyand/avo](https://github.com/vandyand/avo) remained unchanged. Hosted run [33668978939](https://github.com/vandyand/avo-c8/actions/runs/33668978939) closed at 82.52% coverage; portable assertions are fixed at `a624a8a`, and meaningful coverage remediation continues against the unchanged 85% floor. The [personal exact-CAS result](avo-0047-c8-personal-exact-cas-result.md) records the fixed no-force/no-delete protocol and no live CAS/rollback. Offline trusted-source (`ae65b73`), durable-backend (`d9f6d3d`), and exact-CAS journal (`a26fd7a`) leaves are Terra-approved, but expose no provider/HTTP writer. Bootstrap protection remains topology-only; the live controller/transport, final writer ruleset/principal, and hosted denial tests are incomplete. Then a protected hosted rollback drill, ledger activation, and 12 consecutive eligible successes with 0 failures/boundary violations remain. |
 
 ## Contract and evidence boundary
 
@@ -200,15 +222,14 @@ See the [C7 result](avo-0047-c7-result.md). This gate produced no hosted mutatio
 
 ### Gate P4 — hosting and release-hold activation
 
-P4 is blocked on two independent prerequisites. It requires an explicit operator decision
-and authority to use an organization-owned repository with a required merge queue configured
-for max one entry per group and exact PR-head admission/group-hold behavior, or a separately
-reviewed exact-CAS writer design, **and** a dedicated least-privilege isolated release-check
-issuer that can read only matching release authorization and transition only the exact
-pending group-specific `avo-main-release` run. The activation record must pin repository
-identity, protections/rulesets, queue generation, workflow/event configuration, App 15368
-validation identity, release issuer/isolation contract, hold check, and rollback authority.
-No current-host mutation or App 15368 action may be used to work around either blocker.
+P4 now follows the separately reviewed personal exact-CAS route recorded in the [C8 personal
+exact-CAS result](avo-0047-c8-personal-exact-cas-result.md). Its offline boundary is approved
+at `9e59638`, but activation remains blocked until repository protections, a dedicated isolated
+writer principal, and a durable controller/journal are provisioned and independently checked.
+The activation record must pin repository identity, protection/ruleset configuration, workflow
+and validation identity, writer isolation contract, rollback authority, and exact-CAS protocol
+epoch. The organization-owned max-one-entry merge-queue protocol is an alternate, not-selected
+path. No current-host mutation or App 15368 action may work around the missing authority.
 
 ### Gate P5 — rollback drill, hosted threshold, and audit
 
@@ -235,7 +256,8 @@ evidence, final audit, and idempotent replay before declaring AVO-004.7 complete
   queue/PR/check/protection receipts, cleanup, and replay must be durable.
 * No ordinary path may include deployment or constitutional scope. Human intervention is
   recorded as an exception and prevents counting that attempt as a success.
-* AVO-004.7 documentation and offline work can proceed while C8 is blocked; the current
+* AVO-004.7 documentation and offline work can proceed while hosted exact-CAS activation is
+  blocked; the current
   repository must remain unchanged by this gate.
 
 The GitHub REST ref-delete endpoint has no expected-SHA CAS precondition. Before hosted use,
