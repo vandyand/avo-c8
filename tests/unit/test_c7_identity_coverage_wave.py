@@ -162,8 +162,12 @@ def test_runtime_member_rejects_symlink_and_escape(tmp_path: Path) -> None:
     # fail-closed boundary.
     with pytest.raises(ValueError, match=r"symlink|escapes"):
         module._runtime_member(root, "link")
+    # Keep the containment fence at the runtime root.  Passing ``tmp_path`` as
+    # the fence would intentionally make this path legal (the resolved target
+    # is a sibling of ``runtime`` but still inside ``tmp_path``), which would
+    # turn this into a portability bug rather than an escape regression.
     with pytest.raises(ValueError, match="escapes"):
-        module._runtime_member(root, "../outside", tmp_path)
+        module._runtime_member(root, "../outside")
 
 
 def test_runtime_distribution_rejects_malformed_record_and_missing_self(tmp_path: Path) -> None:

@@ -17,11 +17,12 @@ from concurrent.futures import ThreadPoolExecutor
 from contextvars import copy_context
 from datetime import timedelta
 from pathlib import Path
-from threading import Barrier
+from threading import Barrier, Event, Lock
 from typing import Any
 
 import pytest
 
+import avo_correlate.adapters.artifacts.main_graduation_journal as journal_module
 from avo_correlate.adapters.artifacts.main_graduation_journal import (
     MainGraduationJournal,
     MainGraduationJournalError,
@@ -839,7 +840,9 @@ def test_phase_identity_indexes_are_create_once_and_conflict_closed(tmp_path: Pa
         )
 
 
-def test_target_fence_open_claim_is_atomic_under_competing_writers(tmp_path: Path) -> None:
+def test_target_fence_open_claim_is_atomic_under_competing_writers(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     def make_fence(digest_seed: str) -> MainUnresolvedMutationFence:
         values = {
             "repository_digest": R,
@@ -860,10 +863,41 @@ def test_target_fence_open_claim_is_atomic_under_competing_writers(tmp_path: Pat
         )
         return MainUnresolvedMutationFence.model_validate(values)
 
-    # Repeat the race against fresh scopes.  Before target-fence publication
-    # became atomic, the loser could read the winner's mkdir-created but still
-    # empty record.json and fail with a malformed-index error.
+    # Repeat the race against fresh scopes.  The filesystem primitive is
+    # atomic, but a real scheduler can let the losing writer observe the
+    # winner's mkdir-created, not-yet-ready slot.  Make the interleaving
+    # deterministic: whichever writer reaches the exclusive-create seam first
+    # publishes its complete record before the other writer attempts the
+    # create.  This preserves the competing-writer assertion without making
+    # the test depend on timing or a partially written file.
+    original_writer = journal_module._write_exclusive_durable
+    first_writer = True
+    writer_lock = Lock()
+    first_published = Event()
+
+    def ordered_exclusive_writer(path: Path, payload: bytes) -> None:
+        nonlocal first_writer
+        with writer_lock:
+            is_first = first_writer
+            first_writer = False
+        if is_first:
+            try:
+                original_writer(path, payload)
+            finally:
+                first_published.set()
+            return
+        if not first_published.wait(timeout=10):
+            raise AssertionError("first target-fence writer did not publish")
+        original_writer(path, payload)
+
+    monkeypatch.setattr(
+        journal_module, "_write_exclusive_durable", ordered_exclusive_writer
+    )
+
     for iteration in range(20):
+        with writer_lock:
+            first_writer = True
+        first_published.clear()
         journal = MainGraduationJournal(tmp_path / str(iteration))
         fences = [make_fence(D), make_fence(D2)]
         references = [

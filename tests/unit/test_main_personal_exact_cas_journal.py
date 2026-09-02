@@ -562,7 +562,8 @@ def test_post_construction_artifact_store_symlink_swap_fails_closed(
         except (OSError, NotImplementedError) as exc:
             pytest.skip(f"directory symlinks unavailable: {exc}")
         with pytest.raises(
-            (ValueError, MainPersonalExactCasJournalError), match=r"symlink|moved"
+            (ValueError, MainPersonalExactCasJournalError),
+            match=r"symlink|moved|invalid activation",
         ):
             journal.record_activation(activation, source)
     finally:

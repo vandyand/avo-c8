@@ -48,7 +48,7 @@ def test_missing_evidence_link_fails_closed(tmp_path: Path) -> None:
     docs = tmp_path / "docs"
     docs.mkdir()
     for target in re.findall(r"\[[^\]]+\]\(([^)]+)\)", missing_link):
-        if target == "does-not-exist.md":
+        if target == "does-not-exist.md" or target.startswith(("http://", "https://")):
             continue
         evidence = docs / target
         evidence.parent.mkdir(parents=True, exist_ok=True)
