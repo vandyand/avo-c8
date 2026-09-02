@@ -4,18 +4,26 @@ from __future__ import annotations
 
 import subprocess
 from pathlib import Path
+from typing import cast
 
 import pytest
 
+from avo_correlate.adapters.artifacts.main_graduation_journal import MainGraduationJournal
 from avo_correlate.adapters.git.main_composition import MainBaseSnapshot
 from avo_correlate.adapters.git.main_rollback_composition import (
     MainRollbackCompositionAdapter,
     MainRollbackCompositionError,
 )
+from avo_correlate.contracts.main_graduation import MainCompletionPackage
 from avo_correlate.domain.canonical import canonical_digest
 from tests.unit.c4_coordinator_test_support import MAIN_OPERATION, REPOSITORY, git
-from tests.unit.test_main_graduation_c4_completion_gates import _prepared_completion_fixture
-from tests.unit.test_main_graduation_completion_filesystem import _completion_coordinator
+from tests.unit.test_main_graduation_c4_completion_gates import (
+    _prepared_completion_fixture,  # pyright: ignore[reportPrivateUsage]
+)
+from tests.unit.test_main_graduation_completion_filesystem import (
+    CompletionProvider,
+    _completion_coordinator,  # pyright: ignore[reportPrivateUsage]
+)
 
 
 class _Reader:
@@ -44,7 +52,9 @@ def _adapter(
     )
 
 
-def _ready(tmp_path: Path) -> tuple[object, Path, object, object]:
+def _ready(
+    tmp_path: Path,
+) -> tuple[MainGraduationJournal, Path, CompletionProvider, MainCompletionPackage]:
     journal, provider, clock = _prepared_completion_fixture(tmp_path)
     completion = _completion_coordinator(journal, provider, clock).complete(
         MAIN_OPERATION,
@@ -62,7 +72,7 @@ def _ready(tmp_path: Path) -> tuple[object, Path, object, object]:
         check=True,
         capture_output=True,
     )
-    return journal, checkout, provider, package
+    return journal, checkout, provider, cast(MainCompletionPackage, package)
 
 
 def test_inverse_composition_is_exact_and_does_not_move_main(tmp_path: Path) -> None:

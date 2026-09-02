@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 from datetime import UTC, datetime
+from typing import Any, cast
 
 import pytest
 from pydantic import ValidationError
@@ -85,9 +86,9 @@ def _junit_artifact() -> ArtifactRef:
 
 
 def _cases() -> tuple[MainGraduationOfflineDrillCaseSpec, ...]:
-    result = []
+    result: list[MainGraduationOfflineDrillCaseSpec] = []
     for case_id in FROZEN_OFFLINE_DRILL_CASE_IDS:
-        vectors = []
+        vectors: list[MainGraduationOfflineDrillVectorSpec] = []
         for vector_id in FROZEN_OFFLINE_DRILL_VECTOR_IDS[case_id]:
             outcome, state = _expected(case_id, vector_id)
             values = {
@@ -96,8 +97,8 @@ def _cases() -> tuple[MainGraduationOfflineDrillCaseSpec, ...]:
                 "oracle_expected_state": state,
                 "fault_digest": D,
             }
-            vector_stub = MainGraduationOfflineDrillVectorSpec.model_construct(
-                **values, vector_digest=D
+            vector_stub = MainGraduationOfflineDrillVectorSpec.model_construct(  # pyright: ignore[reportArgumentType]
+                **cast(Any, values), vector_digest=D
             )
             values["vector_digest"] = _digest(
                 "avo-004.7-c7/offline-drill-vector/v1",
@@ -117,7 +118,7 @@ def _cases() -> tuple[MainGraduationOfflineDrillCaseSpec, ...]:
 
 
 def _plan() -> MainGraduationOfflineDrillPlan:
-    cases = []
+    cases: list[MainGraduationOfflineDrillCaseSpec] = []
     for case in _cases():
         bound_digest = offline_drill_case_id(
             D,
@@ -125,7 +126,7 @@ def _plan() -> MainGraduationOfflineDrillPlan:
             [item.model_dump(mode="json") for item in case.vectors],
         )
         cases.append(
-            MainGraduationOfflineDrillCaseSpec.model_construct(
+            MainGraduationOfflineDrillCaseSpec.model_construct(  # pyright: ignore[reportArgumentType]
                 case_id=case.case_id,
                 vectors=case.vectors,
                 case_digest=bound_digest,
@@ -146,7 +147,7 @@ def _plan() -> MainGraduationOfflineDrillPlan:
         "execution_authority_digest": D,
         "execution_authority_ref": "refs/avo/test-execution-authority",
     }
-    stub = MainGraduationOfflineDrillPlan.model_construct(**values, plan_digest=D)
+    stub = MainGraduationOfflineDrillPlan.model_construct(**values, plan_digest=D)  # pyright: ignore[reportArgumentType]
     values["plan_digest"] = _digest(
         "avo-004.7-c7/offline-drill-plan/v1",
         stub.model_dump(exclude={"plan_digest"}, mode="json"),
@@ -155,7 +156,7 @@ def _plan() -> MainGraduationOfflineDrillPlan:
 
 
 def _native_refs() -> tuple[MainGraduationOfflineEvidenceRef, ...]:
-    refs = []
+    refs: list[MainGraduationOfflineEvidenceRef] = []
     for kind, digest in (
         (MainGraduationOfflineEvidenceKind.EXECUTION_AUTHORITY, D),
         (MainGraduationOfflineEvidenceKind.EXECUTION_REPORT, REPORT_D),
@@ -172,7 +173,9 @@ def _native_refs() -> tuple[MainGraduationOfflineEvidenceRef, ...]:
     return tuple(refs)
 
 
-def _case_result(plan: MainGraduationOfflineDrillPlan, case_id: str, vector_id: str):
+def _case_result(
+    plan: MainGraduationOfflineDrillPlan, case_id: str, vector_id: str
+) -> MainGraduationOfflineDrillCaseResult:
     outcome, state = _expected(case_id, vector_id)
     values = {
         "root_operation_id": plan.operation_id,
@@ -190,7 +193,7 @@ def _case_result(plan: MainGraduationOfflineDrillPlan, case_id: str, vector_id: 
         "junit_xml_digest": JUNIT_D,
         "native_evidence_refs": _native_refs(),
     }
-    stub = MainGraduationOfflineDrillCaseResult.model_construct(**values, result_digest=D)
+    stub = MainGraduationOfflineDrillCaseResult.model_construct(**values, result_digest=D)  # pyright: ignore[reportArgumentType]
     values["result_digest"] = _digest(
         "avo-004.7-c7/offline-drill-case-result/v1",
         stub.model_dump(exclude={"result_digest"}, mode="json"),
@@ -216,7 +219,7 @@ def _result(plan: MainGraduationOfflineDrillPlan) -> MainGraduationOfflineDrillR
         "execution_report_digest": REPORT_D,
         "junit_xml_digest": JUNIT_D,
     }
-    stub = MainGraduationOfflineDrillResult.model_construct(**values, result_digest=D)
+    stub = MainGraduationOfflineDrillResult.model_construct(**values, result_digest=D)  # pyright: ignore[reportArgumentType]
     values["result_digest"] = _digest(
         "avo-004.7-c7/offline-drill-aggregate-result/v1",
         stub.model_dump(exclude={"result_digest"}, mode="json"),
@@ -248,20 +251,20 @@ def test_digest_is_deterministic_across_input_mapping_order() -> None:
     assert MainGraduationOfflineDrillPlan.model_validate(reordered).plan_digest == first.plan_digest
 
 
-@pytest.mark.parametrize(
+@pytest.mark.parametrize(  # pyright: ignore[reportUnknownArgumentType]
     "mutation",
-    [
-        lambda p: {**p, "cases": p["cases"][:-1]},
-        lambda p: {**p, "cases": [*p["cases"][:-1], p["cases"][0]]},
-        lambda p: {
+    [  # pyright: ignore[reportUnknownArgumentType]
+        lambda p: {**p, "cases": p["cases"][:-1]},  # pyright: ignore[reportUnknownLambdaType]
+        lambda p: {**p, "cases": [*p["cases"][:-1], p["cases"][0]]},  # pyright: ignore[reportUnknownLambdaType]
+        lambda p: {  # pyright: ignore[reportUnknownLambdaType]
             **p,
             "cases": [{**p["cases"][0], "case_id": "unknown-case"}, *p["cases"][1:]],
         },
     ],
 )
-def test_missing_duplicate_unknown_case_rejected(mutation) -> None:
+def test_missing_duplicate_unknown_case_rejected(mutation: object) -> None:  # pyright: ignore[reportUnknownParameterType]
     plan = _plan().model_dump(mode="json")
-    changed = mutation(plan)
+    changed = cast(Any, mutation)(plan)
     changed["plan_digest"] = _digest(
         "avo-004.7-c7/offline-drill-plan/v1",
         {key: value for key, value in changed.items() if key != "plan_digest"},
@@ -329,7 +332,7 @@ def test_oracle_labels_are_not_domain_observations() -> None:
 
 @pytest.mark.parametrize(
     "field,value",
-    [
+    [  # pyright: ignore[reportUnknownArgumentType]
         ("main_before_commit", BASE),
         ("main_after_commit", BASE),
         ("main_before_tree", TREE),
@@ -379,8 +382,8 @@ def _authority() -> MainGraduationOfflineExecutionAuthority:
             parameter_id=vector_id,
             case_id=case_id,
             vector_id=vector_id,
-            oracle_expected_outcome=_expected(case_id, vector_id)[0],
-            oracle_expected_state=_expected(case_id, vector_id)[1],
+            oracle_expected_outcome=cast(Any, _expected(case_id, vector_id)[0]),
+            oracle_expected_state=cast(Any, _expected(case_id, vector_id)[1]),
         )
         for case_id in FROZEN_OFFLINE_DRILL_CASE_IDS
         for vector_id in FROZEN_OFFLINE_DRILL_VECTOR_IDS[case_id]
@@ -411,7 +414,7 @@ def _authority() -> MainGraduationOfflineExecutionAuthority:
         expires_at=datetime(2026, 1, 2, tzinfo=UTC),
         nodes=nodes,
     )
-    stub = MainGraduationOfflineExecutionAuthority.model_construct(**values, authority_digest=D)
+    stub = MainGraduationOfflineExecutionAuthority.model_construct(**values, authority_digest=D)  # pyright: ignore[reportArgumentType]
     values["authority_digest"] = _digest(
         "avo-004.7-c7/offline-execution-authority/v1",
         stub.model_dump(exclude={"authority_digest"}, mode="json"),
@@ -433,7 +436,7 @@ def _execution_report(
     role, media_type = OFFLINE_EVIDENCE_ROLE_MEDIA[
         MainGraduationOfflineEvidenceKind.CONTROLLER_VERIFIER
     ]
-    observations = []
+    observations: list[MainGraduationOfflineNodeObservation] = []
     for index, node in enumerate(authority.nodes, 1):
         artifact = ArtifactRef(
             digest="sha256:" + format(index + 100, "064x"),
@@ -497,7 +500,7 @@ def _execution_report(
         executed_at=datetime(2026, 1, 1, 12, tzinfo=UTC),
         authority_expires_at=authority.expires_at,
     )
-    stub = MainGraduationOfflineExecutionReport.model_construct(**values, report_digest=D)
+    stub = MainGraduationOfflineExecutionReport.model_construct(**values, report_digest=D)  # pyright: ignore[reportArgumentType]
     values["report_digest"] = _digest(
         "avo-004.7-c7/offline-execution-report/v1",
         stub.model_dump(exclude={"report_digest"}, mode="json"),
@@ -533,25 +536,25 @@ def test_execution_manifest_report_drift_rejected(field: str) -> None:
         MainGraduationOfflineExecutionReport.model_validate(changed)
 
 
-@pytest.mark.parametrize(
+@pytest.mark.parametrize(  # pyright: ignore[reportUnknownArgumentType]
     "mutation",
-    [
-        lambda r: {
+    [  # pyright: ignore[reportUnknownArgumentType]
+        lambda r: {  # pyright: ignore[reportUnknownLambdaType]
             **r,
             "workspace_after_identity": {
                 **r["workspace_after_identity"],
                 "source_tree": "e" * 40,
             },
         },
-        lambda r: {**r, "environment_identity_digest": "sha256:" + "f" * 64},
-        lambda r: {**r, "uv_digest": "sha256:" + "f" * 64},
-        lambda r: {**r, "junit_xml_artifact": {**r["junit_xml_artifact"], "role": "generic"}},
-        lambda r: {**r, "junit_xml_artifact": {**r["junit_xml_artifact"], "size_bytes": 0}},
+        lambda r: {**r, "environment_identity_digest": "sha256:" + "f" * 64},  # pyright: ignore[reportUnknownLambdaType]
+        lambda r: {**r, "uv_digest": "sha256:" + "f" * 64},  # pyright: ignore[reportUnknownLambdaType]
+        lambda r: {**r, "junit_xml_artifact": {**r["junit_xml_artifact"], "role": "generic"}},  # pyright: ignore[reportUnknownLambdaType]
+        lambda r: {**r, "junit_xml_artifact": {**r["junit_xml_artifact"], "size_bytes": 0}},  # pyright: ignore[reportUnknownLambdaType]
     ],
 )
-def test_workspace_identity_and_junit_artifact_drift_rejected(mutation) -> None:
+def test_workspace_identity_and_junit_artifact_drift_rejected(mutation: object) -> None:  # pyright: ignore[reportUnknownParameterType]
     report = _execution_report(_authority())
-    changed = mutation(report.model_dump(mode="json"))
+    changed = cast(Any, mutation)(report.model_dump(mode="json"))
     with pytest.raises(ValidationError):
         MainGraduationOfflineExecutionReport.model_validate(changed)
 

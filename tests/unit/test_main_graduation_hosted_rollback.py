@@ -31,7 +31,7 @@ def _draft() -> module.MainHostedRollbackEvidenceDraft:
         "observed_at": NOW,
     }
     probe = module.MainHostedRollbackEvidenceDraft.model_construct(
-        **values, draft_digest=D
+        **values, draft_digest=D  # pyright: ignore[reportArgumentType]
     )
     values["draft_digest"] = canonical_digest(
         probe.model_dump(exclude={"draft_digest"}, mode="json")
@@ -60,25 +60,25 @@ def test_inventory_requires_content_addressed_completion_and_is_create_once(
         created_at=NOW,
     )
     monkey = pytest.MonkeyPatch()
-    monkey.setattr(module, "_pair", lambda *_args: (package, package_ref))
-    monkey.setattr(module, "_strict_reload", lambda value, *_args: value)
-    monkey.setattr(module, "_validate_inputs", lambda *_args: None)
+    monkey.setattr(module, "_pair", lambda *_args: (package, package_ref))  # pyright: ignore[reportUnknownArgumentType, reportUnknownLambdaType]
+    monkey.setattr(module, "_strict_reload", lambda value, *_args: value)  # pyright: ignore[reportUnknownArgumentType, reportUnknownLambdaType]
+    monkey.setattr(module, "_validate_inputs", lambda *_args: None)  # pyright: ignore[reportUnknownArgumentType, reportUnknownLambdaType]
     monkey.setattr(
-        module.MainHostedRollbackEvidenceDraft,
+        module.MainHostedRollbackEvidenceDraft,  # pyright: ignore[reportUnknownArgumentType]
         "from_completion",
-        classmethod(lambda cls, *_args: _draft()),
+        classmethod(lambda cls, *_args: _draft()),  # pyright: ignore[reportUnknownArgumentType, reportUnknownLambdaType]
     )
     try:
-        first = module.prepare_hosted_rollback_evidence(
+        first = module.prepare_hosted_rollback_evidence(  # pyright: ignore[reportArgumentType]
             tmp_path / "draft.json",
             operation_id=D,
-            completion_reader=lambda _operation: (package, package_ref),
+            completion_reader=lambda _operation: (package, package_ref),  # pyright: ignore[reportArgumentType]
             clock=lambda: NOW,
         )
-        second = module.prepare_hosted_rollback_evidence(
+        second = module.prepare_hosted_rollback_evidence(  # pyright: ignore[reportArgumentType]
             tmp_path / "draft.json",
             operation_id=D,
-            completion_reader=lambda _operation: (package, package_ref),
+            completion_reader=lambda _operation: (package, package_ref),  # pyright: ignore[reportArgumentType]
             clock=lambda: NOW,
         )
     finally:

@@ -1,6 +1,7 @@
 """Real-filesystem durability tests for the C6 ledger journal."""
 
 import multiprocessing
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -23,6 +24,7 @@ from avo_correlate.contracts.main_graduation_ledger import (
     TERMINAL_ARTIFACT_ROLE,
     MainLedgerAccumulatorState,
     MainLedgerAccumulatorTransition,
+    MainLedgerActivation,
     MainLedgerBoundaryResetTransition,
     MainLedgerBoundaryViolationEvidence,
     MainLedgerClassificationEvidence,
@@ -33,41 +35,63 @@ from avo_correlate.contracts.main_graduation_ledger import (
     main_ledger_genesis_state,
 )
 from avo_correlate.domain.canonical import canonical_bytes, canonical_digest
-from tests.unit.test_main_graduation_ledger_contracts import _activation
+from tests.unit.test_main_graduation_ledger_contracts import (
+    _activation,  # pyright: ignore[reportPrivateUsage]
+)
 
 NOW = datetime(2026, 9, 1, tzinfo=UTC)
 ModelT = TypeVar("ModelT", bound=StrictModel)
 
 
 class _Verifier:
-    def verify_activation(self, _activation: Any) -> bool:
+    def verify_activation(self, activation: MainLedgerActivation) -> bool:
         return True
 
-    def verify_submission(self, _submission: Any, _activation: Any) -> bool:
+    def verify_submission(
+        self, submission: MainLedgerSubmissionEnvelope, activation: MainLedgerActivation
+    ) -> bool:
         return True
 
     def verify_classification(
-        self, _classification: Any, _activation: Any, _submission: Any
+        self,
+        classification: MainLedgerClassificationEvidence,
+        activation: MainLedgerActivation,
+        submission: MainLedgerSubmissionEnvelope,
     ) -> bool:
         return True
 
     def verify_outcome(
-        self, _outcome: Any, _activation: Any, _submission: Any, _classification: Any
+        self,
+        outcome: MainLedgerTerminalOutcome,
+        activation: MainLedgerActivation,
+        submission: MainLedgerSubmissionEnvelope,
+        classification: MainLedgerClassificationEvidence,
     ) -> bool:
         return True
 
     def verify_transition(
-        self, _transition: Any, _activation: Any, _classification: Any, _outcome: Any
+        self,
+        transition: MainLedgerAccumulatorTransition,
+        activation: MainLedgerActivation,
+        classification: MainLedgerClassificationEvidence,
+        outcome: MainLedgerTerminalOutcome | None,
     ) -> bool:
         return True
 
-    def verify_package(self, _package: Any) -> bool:
+    def verify_package(self, package: MainLedgerEvidencePackage) -> bool:
         return True
 
-    def verify_boundary_evidence(self, _evidence: Any, _activation: Any) -> bool:
+    def verify_boundary_evidence(
+        self, evidence: MainLedgerBoundaryViolationEvidence, activation: MainLedgerActivation
+    ) -> bool:
         return True
 
-    def verify_boundary_reset(self, _reset: Any, _activation: Any, _evidence: Any) -> bool:
+    def verify_boundary_reset(
+        self,
+        reset: MainLedgerBoundaryResetTransition,
+        activation: MainLedgerActivation,
+        evidence: MainLedgerBoundaryViolationEvidence,
+    ) -> bool:
         return True
 
 
@@ -77,35 +101,40 @@ class _MissingActivationVerifier:
 
 
 class _WrongSignatureVerifier(_Verifier):
-    def verify_activation(self, _activation: Any, _unexpected: Any) -> bool:
+    def verify_activation(self, _activation: Any, _unexpected: Any) -> bool:  # pyright: ignore[reportIncompatibleMethodOverride]
         return True
 
 
 class _NoneVerifier(_Verifier):
-    def verify_activation(self, _activation: Any) -> None:
+    def verify_activation(self, _activation: Any) -> None:  # pyright: ignore[reportIncompatibleMethodOverride]
         return None
 
 
 class _FalseVerifier(_Verifier):
-    def verify_activation(self, _activation: Any) -> bool:
+    def verify_activation(self, _activation: Any) -> bool:  # pyright: ignore[reportIncompatibleMethodOverride]
         return False
 
 
 class _ExceptionVerifier(_Verifier):
-    def verify_activation(self, _activation: Any) -> bool:
+    def verify_activation(self, _activation: Any) -> bool:  # pyright: ignore[reportIncompatibleMethodOverride]
         raise RuntimeError("verification failed")
 
 
 def _with_digest(  # noqa: UP047
     model_type: type[ModelT], values: dict[str, Any], field: str
 ) -> ModelT:
-    probe = model_type.model_construct(**values, **{field: "sha256:" + "1" * 64})
+    probe = model_type.model_construct(  # pyright: ignore[reportArgumentType]
+        **values,  # pyright: ignore[reportArgumentType]
+        **{field: "sha256:" + "1" * 64}
+    )
     return model_type.model_validate(
         {**values, field: canonical_digest(probe.model_dump(exclude={field}, mode="json"))}
     )
 
 
-def _journal(tmp_path: Path) -> tuple[MainGraduationLedgerJournal, Any, Any]:
+def _journal(
+    tmp_path: Path,
+) -> tuple[MainGraduationLedgerJournal, MainLedgerActivation, FilesystemArtifactStore]:
     store = FilesystemArtifactStore(
         tmp_path / "artifacts", clock=lambda: NOW - timedelta(minutes=1)
     )
@@ -255,7 +284,9 @@ def test_authority_is_mandatory_and_submission_is_gap_free(tmp_path: Path) -> No
         journal.record_submission(gap)
     first = _submission(activation, store, 11)
     journal.record_submission(first)
-    assert journal.record_submission(first) == journal.read_submission(first.operation_id)[1]
+    recorded = journal.read_submission(first.operation_id)
+    assert recorded is not None
+    assert journal.record_submission(first) == recorded[1]
     assert journal.list_sequences() == (11,)
 
 
@@ -301,14 +332,18 @@ def test_stage_sidecars_are_create_once_across_independent_journals(tmp_path: Pa
     divergent_classification = _classification(activation, submission, store, path="src/other.py")
     with pytest.raises(MainGraduationLedgerJournalError, match="conflicting"):
         second.record_classification(divergent_classification)
-    assert first.read_classification(11)[0] == classification
+    recorded_classification = first.read_classification(11)
+    assert recorded_classification is not None
+    assert recorded_classification[0] == classification
 
     outcome = _outcome(activation, submission, classification, store)
     assert first.record_outcome(outcome) == second.record_outcome(outcome)
     divergent_outcome = _outcome(activation, submission, classification, store, reason="other")
     with pytest.raises(MainGraduationLedgerJournalError, match="conflicting"):
         second.record_outcome(divergent_outcome)
-    assert first.read_outcome(11)[0] == outcome
+    recorded_outcome = first.read_outcome(11)
+    assert recorded_outcome is not None
+    assert recorded_outcome[0] == outcome
 
     prior = main_ledger_genesis_state(
         activation.activation_digest, activation.scheduler_sequence_watermark
@@ -342,7 +377,9 @@ def test_stage_sidecars_are_create_once_across_independent_journals(tmp_path: Pa
     with pytest.raises(MainGraduationLedgerJournalError, match="malformed"):
         second.record_transition(transition.model_copy(update={"outcome": None}))
     restarted = MainGraduationLedgerJournal(tmp_path, _Verifier())
-    assert restarted.read_transition(11)[0] == transition
+    recorded_transition = restarted.read_transition(11)
+    assert recorded_transition is not None
+    assert recorded_transition[0] == transition
 
 
 def test_stage_sidecar_conflicts_race_without_last_writer_wins(tmp_path: Path) -> None:
@@ -501,7 +538,7 @@ def test_stage_sidecar_noncanonical_and_missing_cas_fail_closed(tmp_path: Path) 
     )
     journal.record_transition(transition)
 
-    reads = {
+    reads: dict[str, Callable[[MainGraduationLedgerJournal], Any]] = {
         "classification": lambda fresh: fresh.read_classification(11),
         "outcome": lambda fresh: fresh.read_outcome(11),
         "transition": lambda fresh: fresh.read_transition(11),
@@ -640,7 +677,9 @@ def test_terminal_and_transition_are_ordered_and_exact(tmp_path: Path) -> None:
         "transition_digest",
     )
     assert journal.record_transition(transition).digest
-    assert journal.record_transition(transition) == journal.read_transition(11)[1]
+    recorded_transition = journal.read_transition(11)
+    assert recorded_transition is not None
+    assert journal.record_transition(transition) == recorded_transition[1]
     second = _submission(activation, store, 12)
     assert journal.record_submission(second).digest
 
@@ -802,7 +841,10 @@ def test_boundary_package_closes_submitted_unclassified_tail(tmp_path: Path) -> 
         "boundary_evidence": evidence,
         "terminal_boundary_reset": reset,
     }
-    probe = MainLedgerEvidencePackage.model_construct(**values, package_digest="sha256:" + "1" * 64)
+    probe = MainLedgerEvidencePackage.model_construct(  # pyright: ignore[reportArgumentType]
+        **values,  # pyright: ignore[reportArgumentType]
+        package_digest="sha256:" + "1" * 64
+    )
     package = MainLedgerEvidencePackage.model_validate(
         {
             **values,

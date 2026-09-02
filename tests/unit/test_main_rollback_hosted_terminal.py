@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -12,12 +13,14 @@ from avo_correlate.adapters.artifacts.main_graduation_journal import (
     MainGraduationJournal,
     MainRollbackAuthorityVerifier,
 )
-from avo_correlate.adapters.hosted_git.github import github_repository_digest
+from avo_correlate.adapters.hosted_git.github import JsonBody, JsonValue, github_repository_digest
 from avo_correlate.adapters.hosted_git.main_graduation_github import (
     GitHubMainGraduationAdapter,
     GitHubMainGraduationRejected,
     GitHubPrincipalBinding,
+    GraduationTransport,
 )
+from avo_correlate.application.c4_capabilities import AdmissionIssueRequest
 from avo_correlate.contracts.main_graduation import (
     MainRollbackCleanupIntent,
     rollback_cleanup_authority_digest,
@@ -30,6 +33,19 @@ COMMIT = "c" * 40
 REPOSITORY = github_repository_digest("owner", "repo")
 REF = "refs/heads/avo/main-rollback/" + "b" * 64
 NOW = datetime(2026, 9, 1, 12, tzinfo=UTC)
+
+
+def _noop_transport() -> GraduationTransport:
+    def transport(
+        method: str, url: str, body: JsonBody | None, headers: Mapping[str, str]
+    ) -> tuple[int, JsonValue]:
+        return 200, {}
+
+    return transport
+
+
+def _admission_request(_digest: str) -> AdmissionIssueRequest:
+    return cast(AdmissionIssueRequest, None)
 
 
 def _intent() -> MainRollbackCleanupIntent:
@@ -127,7 +143,7 @@ class _Cleanup:
             self.observer.pr_state = self.post_pr_state
         if self.post_merged is not None:
             self.observer.merged = self.post_merged
-        return self.status, self.payload
+        return cast(tuple[int, JsonValue], (self.status, self.payload))
 
 
 def _adapter(observer: _Observer, cleanup: _Cleanup) -> GitHubMainGraduationAdapter:
@@ -139,15 +155,15 @@ def _adapter(observer: _Observer, cleanup: _Cleanup) -> GitHubMainGraduationAdap
         "owner",
         "repo",
         REPOSITORY,
-        source_publisher_transport=lambda *args: (200, {}),
+        source_publisher_transport=_noop_transport(),
         source_publisher_principal=principal("source", 1),
-        preparation_transport=lambda *args: (200, {}),
+        preparation_transport=_noop_transport(),
         preparation_principal=principal("preparation", 2),
-        admission_issuer_transport=lambda *args: (200, {}),
+        admission_issuer_transport=_noop_transport(),
         admission_issuer_principal=issuer,
-        group_hold_issuer_transport=lambda *args: (200, {}),
+        group_hold_issuer_transport=_noop_transport(),
         group_hold_issuer_principal=principal("issuer", 9000),
-        release_issuer_transport=lambda *args: (200, {}),
+        release_issuer_transport=_noop_transport(),
         release_issuer_principal=principal("issuer", 9000),
         observer_transport=observer,
         observer_principal=principal("observer", 4),
@@ -156,7 +172,7 @@ def _adapter(observer: _Observer, cleanup: _Cleanup) -> GitHubMainGraduationAdap
         mutation_authorize=lambda _request: None,
         trusted_clock=lambda: NOW,
         release_freshness_cutoff=lambda _request: NOW,
-        admission_request=lambda _digest: None,
+        admission_request=_admission_request,
         admission_freshness_cutoff=lambda _request: NOW,
         trusted_check_contexts=("validation",),
     )
@@ -207,7 +223,7 @@ def test_concrete_cleanup_verifier_is_read_only_and_binds_authority() -> None:
         update={"cleanup_authority_digest": "sha256:" + "f" * 64}
     )
     with pytest.raises(GitHubMainGraduationRejected, match="authority"):
-        adapter.verify_rollback_cleanup_receipt(forged, intent, result)
+        adapter.verify_rollback_cleanup_receipt(forged, intent, result)  # pyright: ignore[reportArgumentType]
     assert cleanup.calls == []
 
 
@@ -295,15 +311,15 @@ def test_principal_binding_tuples_must_be_distinct() -> None:
             "owner",
             "repo",
             REPOSITORY,
-            source_publisher_transport=lambda *args: (200, {}),
+            source_publisher_transport=_noop_transport(),
             source_publisher_principal=GitHubPrincipalBinding("same", 1, D, "source"),
-            preparation_transport=lambda *args: (200, {}),
+            preparation_transport=_noop_transport(),
             preparation_principal=GitHubPrincipalBinding("prep", 2, D, "prep"),
-            admission_issuer_transport=lambda *args: (200, {}),
+            admission_issuer_transport=_noop_transport(),
             admission_issuer_principal=GitHubPrincipalBinding("issuer", 9, D, "issuer"),
-            group_hold_issuer_transport=lambda *args: (200, {}),
+            group_hold_issuer_transport=_noop_transport(),
             group_hold_issuer_principal=GitHubPrincipalBinding("issuer", 9, D, "hold"),
-            release_issuer_transport=lambda *args: (200, {}),
+            release_issuer_transport=_noop_transport(),
             release_issuer_principal=GitHubPrincipalBinding("issuer", 9, D, "release"),
             observer_transport=observer,
             observer_principal=GitHubPrincipalBinding("same", 1, D, "observer"),
@@ -312,7 +328,7 @@ def test_principal_binding_tuples_must_be_distinct() -> None:
             mutation_authorize=lambda _request: None,
             trusted_clock=lambda: NOW,
             release_freshness_cutoff=lambda _request: NOW,
-            admission_request=lambda _digest: None,
+            admission_request=_admission_request,
             admission_freshness_cutoff=lambda _request: NOW,
             trusted_check_contexts=("validation",),
         )

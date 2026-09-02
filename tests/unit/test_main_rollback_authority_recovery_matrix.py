@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -22,15 +23,32 @@ from avo_correlate.application.main_rollback_authority import (
     MainRollbackAuthority,
     MainRollbackAuthorityError,
     MainRollbackCurrentAuthority,
+    TrustedClock,
 )
 from avo_correlate.contracts.main_graduation import MainReleaseIssuerBinding
 from avo_correlate.domain.canonical import canonical_bytes, canonical_digest
-from tests.unit.test_main_graduation_coordinator_preparation import _fresh_journal
-from tests.unit.test_main_rollback_authority import _durable_lease
-from tests.unit.test_main_rollback_composition import _adapter, _Reader, _ready
+from tests.unit.test_main_graduation_coordinator_preparation import (
+    _fresh_journal,  # pyright: ignore[reportPrivateUsage]
+)
+from tests.unit.test_main_rollback_authority import (
+    _durable_lease,  # pyright: ignore[reportPrivateUsage]
+)
+from tests.unit.test_main_rollback_composition import (  # pyright: ignore[reportPrivateUsage]
+    _adapter,  # pyright: ignore[reportPrivateUsage]
+    _Reader,  # pyright: ignore[reportPrivateUsage]
+    _ready,  # pyright: ignore[reportPrivateUsage]
+)
 
 _NOW = datetime(2026, 1, 1, tzinfo=UTC)
 _ZERO = "sha256:" + "0" * 64
+
+
+class _Clock(TrustedClock):
+    def __init__(self, value: datetime) -> None:
+        self.value = value
+
+    def now(self) -> datetime:
+        return self.value
 
 
 @dataclass
@@ -80,7 +98,7 @@ def _fixture(tmp_path: Path) -> _RollbackFixture:
 
     authority = MainRollbackAuthority(
         journal=journal,
-        clock=type("Clock", (), {"now": lambda self: _NOW})(),
+        clock=_Clock(_NOW),
         policy_epoch=package.plan.policy_epoch,
         controller_config_digest=package.release_issuer_binding.controller_config_digest,
         release_issuer_binding=package.release_issuer_binding,
@@ -109,7 +127,7 @@ def _restart(fixture: _RollbackFixture, journal: Any) -> MainRollbackAuthority:
     provider = fixture.provider
     return MainRollbackAuthority(
         journal=journal,
-        clock=type("Clock", (), {"now": lambda self: fixture.now})(),
+        clock=_Clock(fixture.now),
         policy_epoch=package.plan.policy_epoch,
         controller_config_digest=package.release_issuer_binding.controller_config_digest,
         release_issuer_binding=package.release_issuer_binding,
@@ -196,9 +214,7 @@ def test_intent_survives_expiry_and_missing_authorization_restart(tmp_path: Path
     _record_index(fixture.journal, "rollback-authorization", prepared.operation_id).unlink()
     restarted_journal = _fresh_journal(fixture.journal)
     restarted = _restart(fixture, restarted_journal)
-    restarted.clock = type(  # type: ignore[misc]
-        "ExpiredClock", (), {"now": lambda self: prepared.lease.expires_at + timedelta(seconds=1)}
-    )()
+    restarted.clock = _Clock(prepared.lease.expires_at + timedelta(seconds=1))
 
     replay = restarted.prepare(
         source_operation_id=fixture.package.operation_id,
@@ -267,24 +283,23 @@ def test_authority_drift_is_rejected_before_intent_or_provider_mutation(
         lease_calls += 1
         raise AssertionError("drift must be rejected before lease acquisition")
 
+    kwargs: dict[str, Any] = {}
+    reader: Callable[[], MainRollbackCurrentAuthority] = cast(
+        Callable[[], MainRollbackCurrentAuthority], fixture.authority.current_authority_reader
+    )
     if drift == "source":
         drifted_composition = replace(
             fixture.composition,
             source_operation_id=_ZERO,
         )
-        kwargs = {}
-        reader = fixture.authority.current_authority_reader
     elif drift == "identity":
         drifted_composition = replace(
             fixture.composition,
             composition_id=_ZERO,
         )
-        kwargs = {}
-        reader = fixture.authority.current_authority_reader
     elif drift == "policy":
         drifted_composition = fixture.composition
-        kwargs: dict[str, Any] = {"policy_epoch": _ZERO}
-        reader = fixture.authority.current_authority_reader
+        kwargs = {"policy_epoch": _ZERO}
     elif drift == "issuer":
         drifted_composition = fixture.composition
         original = fixture.package.release_issuer_binding
@@ -294,7 +309,6 @@ def test_authority_drift_is_rejected_before_intent_or_provider_mutation(
             {key: value for key, value in values.items() if key != "binding_digest"}
         )
         kwargs = {"release_issuer_binding": MainReleaseIssuerBinding.model_validate(values)}
-        reader = fixture.authority.current_authority_reader
     else:
         drifted_composition = fixture.composition
         kwargs = {}
@@ -311,7 +325,7 @@ def test_authority_drift_is_rejected_before_intent_or_provider_mutation(
 
     authority = MainRollbackAuthority(
         journal=fixture.journal,
-        clock=type("Clock", (), {"now": lambda self: fixture.now})(),
+        clock=_Clock(fixture.now),
         policy_epoch=fixture.package.plan.policy_epoch,
         controller_config_digest=fixture.package.release_issuer_binding.controller_config_digest,
         release_issuer_binding=fixture.package.release_issuer_binding,

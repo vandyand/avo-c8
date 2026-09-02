@@ -14,6 +14,7 @@ from avo_correlate.adapters.artifacts.main_graduation_ledger_journal import (
 from avo_correlate.application.main_graduation_ledger_service import (
     MainGraduationLedgerService,
 )
+from avo_correlate.contracts.base import ArtifactRef
 from avo_correlate.contracts.main_graduation_ledger import (
     CONTENT_ARTIFACT_MEDIA_TYPE,
     CONTENT_ARTIFACT_ROLE,
@@ -21,9 +22,15 @@ from avo_correlate.contracts.main_graduation_ledger import (
     PACKAGE_ARTIFACT_ROLE,
     TERMINAL_ARTIFACT_MEDIA_TYPE,
     TERMINAL_ARTIFACT_ROLE,
+    MainLedgerAccumulatorTransition,
+    MainLedgerActivation,
+    MainLedgerSubmissionEnvelope,
 )
 from avo_correlate.domain.canonical import canonical_bytes
-from tests.unit.test_main_graduation_ledger_journal import _journal, _Verifier
+from tests.unit.test_main_graduation_ledger_journal import (  # pyright: ignore[reportPrivateUsage]
+    _journal,  # pyright: ignore[reportPrivateUsage]
+    _Verifier,  # pyright: ignore[reportPrivateUsage]
+)
 
 NOW = datetime(2026, 9, 1, tzinfo=UTC)
 
@@ -40,18 +47,23 @@ class CrashResolver:
     def __init__(self) -> None:
         self.calls = 0
 
-    def resolve(self, _artifact: Any) -> object:
+    def resolve(self, artifact: ArtifactRef) -> object:
         self.calls += 1
         raise RuntimeError("resolver crash")
 
 
 class Classifier:
-    def classify(self, _content: object, _activation: Any, _submission: Any) -> dict[str, Any]:
+    def classify(
+        self,
+        content: object,
+        activation: MainLedgerActivation,
+        submission: MainLedgerSubmissionEnvelope,
+    ) -> dict[str, Any]:
         return {"classification": "eligible", "paths": ["src/feature.py"], "risk_class": "ordinary"}
 
 
 class Resolver:
-    def resolve(self, _artifact: Any) -> object:
+    def resolve(self, artifact: ArtifactRef) -> object:
         return b"content"
 
 
@@ -59,7 +71,7 @@ class CountingResolver:
     def __init__(self) -> None:
         self.calls = 0
 
-    def resolve(self, _artifact: Any) -> object:
+    def resolve(self, artifact: ArtifactRef) -> object:
         self.calls += 1
         return b"content"
 
@@ -124,7 +136,12 @@ def test_exclusion_advances_without_counting(tmp_path: Path) -> None:
     journal, _activation, store = _journal(tmp_path)
 
     class ExcludingClassifier:
-        def classify(self, _content: object, _activation: Any, _submission: Any) -> dict[str, Any]:
+        def classify(
+            self,
+            content: object,
+            activation: MainLedgerActivation,
+            submission: MainLedgerSubmissionEnvelope,
+        ) -> dict[str, Any]:
             evidence = store.put_bytes(
                 canonical_bytes({"empty": True}),
                 media_type="application/vnd.avo.ledger-exclusion-evidence+json",
@@ -148,8 +165,11 @@ def test_exclusion_advances_without_counting(tmp_path: Path) -> None:
     service.classify(11)
     transition = service.advance()
     assert transition is not None
-    assert transition.resulting_state.last_scheduler_sequence == 11
-    assert transition.resulting_state.successes == 0
+    assert isinstance(transition, MainLedgerAccumulatorTransition)
+    state = transition.resulting_state
+    assert state is not None
+    assert state.last_scheduler_sequence == 11
+    assert state.successes == 0
 
 
 def test_boundary_reset_closes_activation_and_replays_package_read_only(tmp_path: Path) -> None:
@@ -323,7 +343,12 @@ def test_mixed_case_paths_use_shared_policy_manifest_digest(tmp_path: Path) -> N
     journal, _activation, store = _journal(tmp_path)
 
     class MixedCaseClassifier:
-        def classify(self, _content: object, _activation: Any, _submission: Any) -> dict[str, Any]:
+        def classify(
+            self,
+            content: object,
+            activation: MainLedgerActivation,
+            submission: MainLedgerSubmissionEnvelope,
+        ) -> dict[str, Any]:
             return {
                 "classification": "eligible",
                 "paths": ["src/a.py", "src/Z.py"],

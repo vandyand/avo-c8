@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import base64
 import hashlib
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urlsplit
 
 import pytest
@@ -13,6 +14,7 @@ from avo_correlate.adapters.hosted_git import (
     C8PreflightSnapshotUnverifiable,
     GitHubC8PreflightSnapshot,
 )
+from avo_correlate.adapters.hosted_git.github import JsonBody, JsonValue
 from avo_correlate.application.c8_hosted_preflight import C8HostedPreflightService
 
 A = "a" * 40
@@ -123,12 +125,13 @@ class FakeTransport:
         self.calls: list[tuple[str, str, Any]] = []
 
     def __call__(
-        self, method: str, url: str, body: Any, headers: dict[str, str]
-    ) -> tuple[int, Any]:
+        self, method: str, url: str, body: JsonBody | None, headers: Mapping[str, str]
+    ) -> tuple[int, JsonValue]:
         parsed = urlsplit(url)
         path = parsed.path + (("?" + parsed.query) if parsed.query else "")
         self.calls.append((method, path, body))
         if parsed.path == "/graphql":
+            queue: dict[str, JsonValue] | None
             if self.values["__queue__"]:
                 queue = None
             else:
@@ -159,8 +162,8 @@ class SecretFailingTransport:
         self.authorization: str | None = None
 
     def __call__(
-        self, method: str, url: str, body: Any, headers: dict[str, str]
-    ) -> tuple[int, Any]:
+        self, method: str, url: str, body: JsonBody | None, headers: Mapping[str, str]
+    ) -> tuple[int, JsonValue]:
         self.authorization = headers["Authorization"]
         raise RuntimeError(f"transport-secret-canary {self.authorization}")
 
@@ -225,7 +228,8 @@ def test_common_binding_and_facts() -> None:
         observer.observe_queue_configuration(),
         observer.observe_workflow(),
     ]
-    assert len({item.binding for item in values}) == 1
+    assert values
+    assert all(item.binding == values[0].binding for item in values)
     workflow = observer.observe_workflow()
     assert workflow.validation_check_identity_digest is not None
     assert workflow.pull_request_event is None
@@ -267,7 +271,10 @@ def test_concurrent_capture_is_single_flight() -> None:
     fake = FakeTransport()
     observer = subject(fake)
     with ThreadPoolExecutor(max_workers=8) as pool:
-        results = list(pool.map(lambda _: observer.capture(), range(8)))
+        def capture(_index: int) -> GitHubC8PreflightSnapshot:
+            return observer.capture()
+
+        results = list(pool.map(capture, range(8)))
     assert all(item is observer for item in results)
     assert len(fake.calls) == 15
 
@@ -303,7 +310,9 @@ def test_final_ref_drift_and_malformed_rules_are_redacted() -> None:
     original = fake.__call__
     calls = 0
 
-    def drift(method: str, url: str, body: Any, headers: dict[str, str]) -> tuple[int, Any]:
+    def drift(
+        method: str, url: str, body: JsonBody | None, headers: Mapping[str, str]
+    ) -> tuple[int, JsonValue]:
         nonlocal calls
         calls += 1
         if calls == 15:
@@ -446,7 +455,9 @@ def test_duplicate_validation_context_page_drift_is_rejected() -> None:
     original = fake.__call__
     calls = 0
 
-    def drift(method: str, url: str, body: Any, headers: dict[str, str]) -> tuple[int, Any]:
+    def drift(
+        method: str, url: str, body: JsonBody | None, headers: Mapping[str, str]
+    ) -> tuple[int, JsonValue]:
         nonlocal calls
         calls += 1
         if calls == 14:
@@ -488,7 +499,9 @@ def test_unrelated_check_run_page_drift_is_bound_between_configuration_passes() 
     original = fake.__call__
     calls = 0
 
-    def drift(method: str, url: str, body: Any, headers: dict[str, str]) -> tuple[int, Any]:
+    def drift(
+        method: str, url: str, body: JsonBody | None, headers: Mapping[str, str]
+    ) -> tuple[int, JsonValue]:
         nonlocal calls
         calls += 1
         if calls == 14:
@@ -542,7 +555,9 @@ def test_configuration_drift_between_passes_is_rejected(field: str) -> None:
     original = fake.__call__
     calls = 0
 
-    def drift(method: str, url: str, body: Any, headers: dict[str, str]) -> tuple[int, Any]:
+    def drift(
+        method: str, url: str, body: JsonBody | None, headers: Mapping[str, str]
+    ) -> tuple[int, JsonValue]:
         nonlocal calls
         calls += 1
         if calls == 10 and field == "effective":
@@ -560,7 +575,7 @@ def test_configuration_drift_between_passes_is_rejected(field: str) -> None:
         if calls == 13 and field == "queue":
             result = (
                 result[0],
-                {"data": {"repository": {"mergeQueue": {"configuration": {
+                cast(JsonValue, {"data": {"repository": {"mergeQueue": {"configuration": {
                     "maximumEntriesToBuild": 2,
                     "maximumEntriesToMerge": 1,
                     "mergeMethod": "SQUASH",
@@ -569,7 +584,7 @@ def test_configuration_drift_between_passes_is_rejected(field: str) -> None:
                     "totalCount": 0,
                     "nodes": [],
                     "pageInfo": {"hasNextPage": False},
-                }}}}},
+                }}}}}),
             )
         return result
 

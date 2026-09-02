@@ -267,9 +267,9 @@ def test_cleanup_owner_crash_public_recovery_reconciles_once_without_second_dele
 
     durable = _rollback_journal(restarted)
     with durable.rollback_authority_recovery(authority.intent.source_operation_id):
-        assert durable.read_rollback_cleanup_receipt(authority.operation_id)[0] == receipt
-        assert durable.read_rollback_cleanup_observation(authority.operation_id)[0] == observation
-        assert durable.read_rollback_cleanup_terminal(authority.operation_id)[0] == terminal
+        assert durable.read_rollback_cleanup_receipt(authority.operation_id)[0] == receipt  # pyright: ignore[reportOptionalSubscript]
+        assert durable.read_rollback_cleanup_observation(authority.operation_id)[0] == observation  # pyright: ignore[reportOptionalSubscript]
+        assert durable.read_rollback_cleanup_terminal(authority.operation_id)[0] == terminal  # pyright: ignore[reportOptionalSubscript]
 
 
 def test_cleanup_replay_and_mismatched_result_are_non_mutating(tmp_path: Path) -> None:

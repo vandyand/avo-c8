@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -12,8 +13,8 @@ from avo_correlate.contracts.main_graduation import MainRollbackCleanupObservati
 from tests.unit.test_main_rollback_lifecycle_contracts import (
     RB,
     D,
-    _journal_with_records,
-    _lifecycle_records,
+    _journal_with_records,  # pyright: ignore[reportPrivateUsage]
+    _lifecycle_records,  # pyright: ignore[reportPrivateUsage]
 )
 
 
@@ -52,7 +53,7 @@ class _Cleanup:
         return self.observation
 
 
-def test_restart_after_cleanup_owner_reconciles_without_second_delete(tmp_path) -> None:
+def test_restart_after_cleanup_owner_reconciles_without_second_delete(tmp_path: Path) -> None:
     source, intent, auth, _inverse, result, cleanup, _receipt, observation = _lifecycle_records()
     dependencies = {
         "completion": source,
@@ -83,15 +84,15 @@ def test_restart_after_cleanup_owner_reconciles_without_second_delete(tmp_path) 
     coordinator.clock = _Clock()
     coordinator.cleanup_capability = capability
     coordinator.observation_capability = capability
-    coordinator.authority_verifier = _AuthorityVerifier()
+    coordinator.authority_verifier = _AuthorityVerifier()  # pyright: ignore[reportAttributeAccessIssue]
 
     authority = SimpleNamespace(operation_id=RB)
     with pytest.raises(RuntimeError, match="durable cleanup owner"):
-        coordinator._cleanup(authority, result, cleanup)
+        coordinator._cleanup(authority, result, cleanup)  # pyright: ignore[reportPrivateUsage]
     assert capability.calls == 1
     assert journal.read_rollback_cleanup_dispatch_owner(cleanup.intent_digest) is not None
 
-    cleanup_receipt, cleanup_observation, terminal = coordinator._cleanup(
+    cleanup_receipt, cleanup_observation, terminal = coordinator._cleanup(  # pyright: ignore[reportPrivateUsage]
         authority, result, cleanup
     )
     assert capability.calls == 1

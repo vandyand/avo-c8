@@ -279,7 +279,10 @@ def test_concurrent_capture_is_single_flight() -> None:
     fake = FakeTransport()
     subject = adapter(fake)
     with ThreadPoolExecutor(max_workers=20) as pool:
-        results = list(pool.map(lambda _: subject.capture(), range(20)))
+        def capture(_index: int) -> tuple[Any, Any]:
+            return subject.capture()
+
+        results = list(pool.map(capture, range(20)))
     assert len(fake.calls) == 5
     assert all(result == results[0] for result in results)
 

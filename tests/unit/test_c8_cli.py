@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
 from typer.testing import CliRunner
 
 from avo_correlate.cli.app import app
@@ -16,7 +17,9 @@ def _report(result: Any) -> dict[str, object]:
     return json.loads(result.stdout)
 
 
-def test_c8_preflight_requires_nonblank_environment_token(tmp_path: Path, monkeypatch) -> None:
+def test_c8_preflight_requires_nonblank_environment_token(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     result = runner.invoke(
         app,
@@ -30,11 +33,13 @@ def test_c8_preflight_requires_nonblank_environment_token(tmp_path: Path, monkey
     assert not list(tmp_path.iterdir())
 
 
-def test_c8_preflight_rejects_blank_token_without_constructing_adapter(monkeypatch) -> None:
+def test_c8_preflight_rejects_blank_token_without_constructing_adapter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("GITHUB_TOKEN", "   ")
 
     class UnexpectedAdapter:
-        def __init__(self, **kwargs):
+        def __init__(self, **kwargs: Any) -> None:
             raise AssertionError(f"adapter constructed: {kwargs}")
 
     monkeypatch.setattr(
@@ -51,13 +56,15 @@ def test_c8_preflight_rejects_blank_token_without_constructing_adapter(monkeypat
     assert "adapter constructed" not in result.stdout
 
 
-def test_c8_preflight_uses_only_environment_token_and_redacts_adapter_errors(monkeypatch) -> None:
+def test_c8_preflight_uses_only_environment_token_and_redacts_adapter_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     token = "env-secret-canary"
     observed: list[str] = []
     monkeypatch.setenv("GITHUB_TOKEN", token)
 
     class FailingAdapter:
-        def __init__(self, **kwargs):
+        def __init__(self, **kwargs: Any) -> None:
             observed.append(kwargs["token"])
             raise RuntimeError(f"adapter secret {token}")
 
@@ -76,7 +83,9 @@ def test_c8_preflight_uses_only_environment_token_and_redacts_adapter_errors(mon
     assert _report(result)["result"] == "unverifiable"
 
 
-def test_c8_preflight_unknown_token_option_is_rejected_without_echoing_secret(monkeypatch) -> None:
+def test_c8_preflight_unknown_token_option_is_rejected_without_echoing_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     result = runner.invoke(
         app,
@@ -107,17 +116,19 @@ def test_c8_preflight_has_no_persistence_or_transport_options() -> None:
     assert "--data-dir" not in result.stdout
 
 
-def test_c8_preflight_emits_success_from_diagnostic_service(monkeypatch) -> None:
+def test_c8_preflight_emits_success_from_diagnostic_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     token = "env-only-canary"
     observed: list[str] = []
     monkeypatch.setenv("GITHUB_TOKEN", token)
 
     class FakeAdapter:
-        def __init__(self, **kwargs):
+        def __init__(self, **kwargs: Any) -> None:
             observed.append(kwargs["token"])
 
     class FakeService:
-        def __init__(self, observer):
+        def __init__(self, observer: Any) -> None:
             assert isinstance(observer, FakeAdapter)
 
         def run(self) -> HostedC8PreflightReport:

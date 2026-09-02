@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -13,6 +14,7 @@ from avo_correlate.application.main_rollback_authority import (
     MainRollbackAuthority,
     MainRollbackAuthorityError,
     MainRollbackCurrentAuthority,
+    TrustedClock,
 )
 from avo_correlate.contracts.base import ArtifactRef
 from avo_correlate.contracts.main_graduation import (
@@ -22,12 +24,26 @@ from avo_correlate.contracts.main_graduation import (
 )
 from avo_correlate.domain.canonical import canonical_bytes, canonical_digest
 from tests.unit.c4_coordinator_test_support import MAIN_OPERATION, REPOSITORY
-from tests.unit.test_main_graduation_completion_filesystem import _fresh_journal
-from tests.unit.test_main_rollback_composition import _adapter, _Reader, _ready
+from tests.unit.test_main_graduation_completion_filesystem import (
+    _fresh_journal,  # pyright: ignore[reportPrivateUsage]
+)
+from tests.unit.test_main_rollback_composition import (  # pyright: ignore[reportPrivateUsage]
+    _adapter,  # pyright: ignore[reportPrivateUsage]
+    _Reader,  # pyright: ignore[reportPrivateUsage]
+    _ready,  # pyright: ignore[reportPrivateUsage]
+)
+
+
+class _Clock(TrustedClock):
+    def __init__(self, value: datetime) -> None:
+        self.value = value
+
+    def now(self) -> datetime:
+        return self.value
 
 
 def test_clock_rejects_naive_time() -> None:
-    class NaiveClock:
+    class NaiveClock(TrustedClock):
         def now(self) -> datetime:
             return datetime(2026, 1, 1)
 
@@ -35,7 +51,7 @@ def test_clock_rejects_naive_time() -> None:
         MainRollbackAuthority(
             journal=object(),  # type: ignore[arg-type]
             clock=NaiveClock(),
-        )._trusted_now()
+        )._trusted_now()  # pyright: ignore[reportPrivateUsage]
 
 
 def test_public_result_exposes_durable_refs() -> None:
@@ -62,14 +78,14 @@ def _durable_lease(
         "acquired_at": now - timedelta(minutes=1),
         "expires_at": now + timedelta(hours=1),
     }
-    probe = MainLeaseEvidenceRecord.model_construct(
-        **values, lease_digest="sha256:" + "0" * 64, evidence_digest="sha256:" + "0" * 64
+    probe = MainLeaseEvidenceRecord.model_construct(  # pyright: ignore[reportArgumentType]
+        **cast(Any, values), lease_digest="sha256:" + "0" * 64, evidence_digest="sha256:" + "0" * 64
     )
     values["lease_digest"] = canonical_digest(
         probe.model_dump(exclude={"lease_digest", "evidence_digest"}, mode="json")
     )
-    probe = MainLeaseEvidenceRecord.model_construct(
-        **values, evidence_digest="sha256:" + "0" * 64
+    probe = MainLeaseEvidenceRecord.model_construct(  # pyright: ignore[reportArgumentType]
+        **cast(Any, values), evidence_digest="sha256:" + "0" * 64
     )
     values["evidence_digest"] = canonical_digest(
         probe.model_dump(exclude={"evidence_digest"}, mode="json")
@@ -79,7 +95,7 @@ def _durable_lease(
     return lease
 
 
-def test_composition_authority_prepare_replays_exactly(tmp_path) -> None:
+def test_composition_authority_prepare_replays_exactly(tmp_path: Path) -> None:
     journal, checkout, provider, package = _ready(tmp_path)
     composition = _adapter(
         tmp_path,
@@ -107,7 +123,7 @@ def test_composition_authority_prepare_replays_exactly(tmp_path) -> None:
 
     authority = MainRollbackAuthority(
         journal=journal,
-        clock=type("Clock", (), {"now": lambda self: now})(),
+        clock=_Clock(now),
         policy_epoch=source.plan.policy_epoch,
         controller_config_digest=source.release_issuer_binding.controller_config_digest,
         release_issuer_binding=source.release_issuer_binding,
@@ -135,9 +151,7 @@ def test_composition_authority_prepare_replays_exactly(tmp_path) -> None:
     restarted = _fresh_journal(journal)
     replay = MainRollbackAuthority(
         journal=restarted,
-        clock=type(
-            "Clock", (), {"now": lambda self: first.lease.expires_at + timedelta(seconds=1)}
-        )(),
+        clock=_Clock(first.lease.expires_at + timedelta(seconds=1)),
         policy_epoch=source.plan.policy_epoch,
         controller_config_digest=source.release_issuer_binding.controller_config_digest,
         release_issuer_binding=source.release_issuer_binding,
@@ -175,7 +189,7 @@ def test_composition_authority_prepare_replays_exactly(tmp_path) -> None:
             type(record).model_validate(wire)
 
 
-def test_authority_rejects_unjournaled_forged_composition_before_lease(tmp_path) -> None:
+def test_authority_rejects_unjournaled_forged_composition_before_lease(tmp_path: Path) -> None:
     journal, checkout, provider, package = _ready(tmp_path)
     composed = _adapter(
         tmp_path,
@@ -191,7 +205,7 @@ def test_authority_rejects_unjournaled_forged_composition_before_lease(tmp_path)
     values.pop("retention_ref")
     values["candidate_commit"] = "a" * 40
     values["inverse_delta_digest"] = "sha256:" + "0" * 64
-    probe = MainRollbackCompositionArtifact.model_construct(
+    probe = MainRollbackCompositionArtifact.model_construct(  # pyright: ignore[reportArgumentType]
         **values,
         composition_id="sha256:" + "0" * 64,
         retention_ref="refs/avo/main-rollback/" + "0" * 64,
@@ -202,7 +216,7 @@ def test_authority_rejects_unjournaled_forged_composition_before_lease(tmp_path)
             mode="json",
         )
     )
-    probe = MainRollbackCompositionArtifact.model_construct(
+    probe = MainRollbackCompositionArtifact.model_construct(  # pyright: ignore[reportArgumentType]
         **values,
         composition_id="sha256:" + "0" * 64,
         retention_ref="refs/avo/main-rollback/" + "0" * 64,
@@ -241,7 +255,7 @@ def test_authority_rejects_unjournaled_forged_composition_before_lease(tmp_path)
 
     authority = MainRollbackAuthority(
         journal=journal,
-        clock=type("Clock", (), {"now": lambda self: now})(),
+        clock=_Clock(now),
         policy_epoch=source.plan.policy_epoch,
         controller_config_digest=source.release_issuer_binding.controller_config_digest,
         release_issuer_binding=source.release_issuer_binding,
@@ -297,7 +311,7 @@ def test_new_rollback_wires_reject_raw_legacy_shape() -> None:
         assert model.model_fields["composition_artifact_digest"].is_required()
 
 
-def test_first_prepare_requires_fresh_current_authority_reader(tmp_path) -> None:
+def test_first_prepare_requires_fresh_current_authority_reader(tmp_path: Path) -> None:
     journal, checkout, provider, package = _ready(tmp_path)
     composition = _adapter(
         tmp_path,
@@ -319,7 +333,7 @@ def test_first_prepare_requires_fresh_current_authority_reader(tmp_path) -> None
     )
     authority = MainRollbackAuthority(
         journal=journal,
-        clock=type("Clock", (), {"now": lambda self: now})(),
+        clock=_Clock(now),
         policy_epoch=source.plan.policy_epoch,
         controller_config_digest=source.release_issuer_binding.controller_config_digest,
         release_issuer_binding=source.release_issuer_binding,
@@ -339,7 +353,7 @@ def test_first_prepare_requires_fresh_current_authority_reader(tmp_path) -> None
     assert journal.read_rollback_intent(preview.operation_id) is None
 
 
-def test_post_lease_authority_drift_writes_no_intent(tmp_path) -> None:
+def test_post_lease_authority_drift_writes_no_intent(tmp_path: Path) -> None:
     journal, checkout, provider, package = _ready(tmp_path)
     composition = _adapter(
         tmp_path,
@@ -369,7 +383,7 @@ def test_post_lease_authority_drift_writes_no_intent(tmp_path) -> None:
     )
     authority = MainRollbackAuthority(
         journal=journal,
-        clock=type("Clock", (), {"now": lambda self: now})(),
+        clock=_Clock(now),
         policy_epoch=source.plan.policy_epoch,
         controller_config_digest=source.release_issuer_binding.controller_config_digest,
         release_issuer_binding=source.release_issuer_binding,
@@ -399,7 +413,9 @@ def test_post_lease_authority_drift_writes_no_intent(tmp_path) -> None:
         "preparation_authorization",
     ),
 )
-def test_restart_adopts_records_after_each_durable_boundary(tmp_path, monkeypatch, boundary):
+def test_restart_adopts_records_after_each_durable_boundary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, boundary: str
+) -> None:
     journal, checkout, provider, package = _ready(tmp_path / boundary)
     composition = _adapter(
         tmp_path / boundary,
@@ -432,7 +448,7 @@ def test_restart_adopts_records_after_each_durable_boundary(tmp_path, monkeypatc
 
     authority = MainRollbackAuthority(
         journal=journal,
-        clock=type("Clock", (), {"now": lambda self: now})(),
+        clock=_Clock(now),
         policy_epoch=source.plan.policy_epoch,
         controller_config_digest=source.release_issuer_binding.controller_config_digest,
         release_issuer_binding=source.release_issuer_binding,
@@ -475,7 +491,7 @@ def test_restart_adopts_records_after_each_durable_boundary(tmp_path, monkeypatc
     replay_reader = current
     replay = MainRollbackAuthority(
         journal=restarted,
-        clock=type("Clock", (), {"now": lambda self: replay_now})(),
+        clock=_Clock(replay_now),
         policy_epoch=source.plan.policy_epoch,
         controller_config_digest=source.release_issuer_binding.controller_config_digest,
         release_issuer_binding=source.release_issuer_binding,

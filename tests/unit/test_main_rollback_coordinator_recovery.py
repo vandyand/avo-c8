@@ -22,6 +22,7 @@ from avo_correlate.application.c4_capabilities import (
 from avo_correlate.application.main_rollback_authority import (
     MainRollbackAuthority,
     MainRollbackCurrentAuthority,
+    TrustedClock,
 )
 from avo_correlate.application.main_rollback_coordinator import MainRollbackCoordinator
 from avo_correlate.contracts.main_graduation import (
@@ -33,15 +34,21 @@ from avo_correlate.contracts.main_graduation import (
 )
 from avo_correlate.contracts.main_graduation_phase_a import MainMutationIntent
 from avo_correlate.domain.canonical import canonical_digest
-from tests.unit.test_main_rollback_authority import _durable_lease
-from tests.unit.test_main_rollback_composition import _adapter, _Reader, _ready
+from tests.unit.test_main_rollback_authority import (
+    _durable_lease,  # pyright: ignore[reportPrivateUsage]
+)
+from tests.unit.test_main_rollback_composition import (  # pyright: ignore[reportPrivateUsage]
+    _adapter,
+    _Reader,
+    _ready,
+)
 
 # pyright: reportPrivateUsage=false, reportUnknownArgumentType=false, reportUnknownMemberType=false
 
 NOW = datetime(2026, 1, 1, 0, 20, tzinfo=UTC)
 
 
-class _Clock:
+class _Clock(TrustedClock):
     def __init__(self, value: datetime = NOW) -> None:
         self.value = value
 
@@ -183,7 +190,7 @@ def _rollback_journal(base: MainGraduationJournal) -> MainGraduationJournal:
         repository_digest=base._composition_repository_digest,
         base_reader=base._composition_base_reader,
         phase_a_authority_verifier=base._phase_a_authority_verifier,
-        rollback_authority_verifier=_RollbackVerifier(),
+        rollback_authority_verifier=_RollbackVerifier(),  # pyright: ignore[reportArgumentType]
     )
 
 
@@ -279,7 +286,7 @@ def _coordinator(
         journal=journal,
         clock=clock,
         lease_fence=_Fence(),
-        rollback_authority=object(),
+        rollback_authority=object(),  # pyright: ignore[reportArgumentType]
         provider=_Provider(),
         publication_capability=publication or _StageCapability(),
         pull_request_capability=_PrCapability(),
@@ -289,7 +296,7 @@ def _coordinator(
         release_capability=_ReleaseCapability(),
         observation_capability=observation,
         cleanup_capability=cleanup,
-        authority_verifier=verifier or _CoordinatorVerifier(),
+        authority_verifier=verifier or _CoordinatorVerifier(),  # pyright: ignore[reportArgumentType]
         release_authorizer=_ReleaseAuthorizer(),
         attester=_Attester(),
     )
@@ -301,7 +308,7 @@ def _cleanup_intent(
     return coordinator._cleanup_intent(
         authority,
         result,
-        SimpleNamespace(number=17, url="https://github.example/pull/17"),
+        SimpleNamespace(number=17, url="https://github.example/pull/17"),  # pyright: ignore[reportArgumentType]
     )
 
 
@@ -396,9 +403,9 @@ def test_cleanup_intent_restart_adopts_exact_timestamp_and_dispatches_once(tmp_p
     assert terminal is not None
     persisted = _rollback_journal(restarted)
     with persisted.rollback_authority_recovery(authority.intent.source_operation_id):
-        assert persisted.read_rollback_cleanup_intent(adopted.operation_id)[0] == adopted
-        assert persisted.read_rollback_cleanup_receipt(adopted.operation_id)[0] == receipt
-        assert persisted.read_rollback_cleanup_terminal(adopted.operation_id)[0] == terminal
+        assert persisted.read_rollback_cleanup_intent(adopted.operation_id)[0] == adopted  # pyright: ignore[reportOptionalSubscript]
+        assert persisted.read_rollback_cleanup_receipt(adopted.operation_id)[0] == receipt  # pyright: ignore[reportOptionalSubscript]
+        assert persisted.read_rollback_cleanup_terminal(adopted.operation_id)[0] == terminal  # pyright: ignore[reportOptionalSubscript]
 
 
 def test_source_recovery_context_does_not_bypass_foreign_lease_slot(tmp_path: Path) -> None:
@@ -453,9 +460,9 @@ def test_cleanup_owner_without_receipt_reconciles_absence_without_second_delete(
     persisted = _rollback_journal(restarted)
     with persisted.rollback_authority_recovery(authority.intent.source_operation_id):
         assert persisted.read_rollback_cleanup_dispatch_owner(intent.intent_digest) is not None
-        assert persisted.read_rollback_cleanup_receipt(intent.operation_id)[0] == receipt
-        assert persisted.read_rollback_cleanup_observation(intent.operation_id)[0] == observation
-        assert persisted.read_rollback_cleanup_terminal(intent.operation_id)[0] == terminal
+        assert persisted.read_rollback_cleanup_receipt(intent.operation_id)[0] == receipt  # pyright: ignore[reportOptionalSubscript]
+        assert persisted.read_rollback_cleanup_observation(intent.operation_id)[0] == observation  # pyright: ignore[reportOptionalSubscript]
+        assert persisted.read_rollback_cleanup_terminal(intent.operation_id)[0] == terminal  # pyright: ignore[reportOptionalSubscript]
 
 
 def test_c4_owner_without_receipt_coordinator_recovers_read_only_with_resolution(

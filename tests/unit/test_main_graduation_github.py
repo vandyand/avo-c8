@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
-from avo_correlate.adapters.hosted_git.github import github_repository_digest
+from avo_correlate.adapters.hosted_git.github import JsonBody, JsonValue, github_repository_digest
 from avo_correlate.adapters.hosted_git.main_graduation_github import (
     GitHubMainGraduationAdapter,
     GitHubMainGraduationRejected,
@@ -39,8 +39,8 @@ class FakeTransport:
         self.calls: list[tuple[str, str, Mapping[str, Any] | None]] = []
 
     def __call__(
-        self, method: str, url: str, body: Any, _headers: Mapping[str, str]
-    ) -> tuple[int, Any]:
+        self, method: str, url: str, body: JsonBody | None, headers: Mapping[str, str]
+    ) -> tuple[int, JsonValue]:
         self.calls.append((method, url, body))
         return (
             self.get_response
@@ -55,8 +55,8 @@ class RoutingTransport(FakeTransport):
         self.responses = responses
 
     def __call__(
-        self, method: str, url: str, body: Any, _headers: Mapping[str, str]
-    ) -> tuple[int, Any]:
+        self, method: str, url: str, body: JsonBody | None, headers: Mapping[str, str]
+    ) -> tuple[int, JsonValue]:
         self.calls.append((method, url, body))
         for suffix, response in self.responses.items():
             if url.endswith(suffix):
@@ -68,12 +68,16 @@ def _permit_release(_request: Any) -> None:
     pass
 
 
+def _no_admission(_digest: str) -> AdmissionIssueRequest:
+    raise AssertionError("admission request should not be called")
+
+
 def adapter(
     *,
     source: FakeTransport | None = None,
     preparation: FakeTransport | None = None,
     observer: FakeTransport | None = None,
-    admission_request: Any = lambda _digest: None,
+    admission_request: Callable[[str], AdmissionIssueRequest] = _no_admission,
     mutation_authorize: Any = _permit_release,
 ) -> tuple[GitHubMainGraduationAdapter, list[FakeTransport]]:
     transports = [FakeTransport((200, {})) for _ in range(6)]
@@ -395,7 +399,7 @@ def test_rollback_pr_creation_and_admission_bind_rollback_head_ref() -> None:
             return 200, {"sha": base, "tree": {"sha": tree}, "parents": []}
         raise AssertionError((method, url))
 
-    value, _ = adapter(preparation=create_transport)
+    value, _ = adapter(preparation=cast(FakeTransport, create_transport))
     created = value.create_pull_request(request)
     assert created.outcome == "applied"
     post = next(call for call in create_calls if call[0] == "POST")
@@ -420,9 +424,15 @@ def test_rollback_pr_creation_and_admission_bind_rollback_head_ref() -> None:
         issuer_isolation_digest=DIGEST,
     )
     seen: list[str] = []
-    value._authoritative_pr = lambda *args, **kwargs: (seen.append(kwargs["candidate_ref"]) or {})
-    value._authoritative_queue = lambda *args, **kwargs: {}
-    value._issue_check = lambda *args, **kwargs: admission
+    value._authoritative_pr = (  # pyright: ignore[reportPrivateUsage, reportUnknownLambdaType, reportUnknownArgumentType]
+        lambda *args, **kwargs: (seen.append(kwargs["candidate_ref"]) or {})  # pyright: ignore[reportUnknownLambdaType, reportUnknownArgumentType]
+    )
+    value._authoritative_queue = (  # pyright: ignore[reportPrivateUsage, reportUnknownLambdaType]
+        lambda *args, **kwargs: {}  # pyright: ignore[reportUnknownLambdaType]
+    )
+    value._issue_check = (  # pyright: ignore[reportPrivateUsage, reportUnknownLambdaType]
+        lambda *args, **kwargs: admission  # pyright: ignore[reportUnknownLambdaType]
+    )
     value.issue_admission(admission)
     assert seen == [ref]
 
@@ -460,7 +470,7 @@ def test_reused_transport_binding_is_rejected_before_requests() -> None:
             mutation_authorize=lambda _request: None,
             trusted_clock=lambda: datetime.now(UTC),
             release_freshness_cutoff=lambda _request: datetime(2026, 1, 1, tzinfo=UTC),
-            admission_request=lambda _digest: None,
+            admission_request=_no_admission,
             admission_freshness_cutoff=lambda _request: datetime(2026, 1, 1, tzinfo=UTC),
             trusted_check_contexts=("validation",),
         )
@@ -490,7 +500,7 @@ def test_observer_transport_uses_request_bound_issuer_not_observer_app() -> None
             ],
         },
     )
-    assert value._check(
+    assert value._check(  # pyright: ignore[reportPrivateUsage]
         "observer",
         OBJECT,
         "run",
@@ -656,7 +666,7 @@ def test_queue_generation_projection_matches_protected_main_provider() -> None:
         }
     )
     value, _ = adapter(observer=transport)
-    adapter_state = value._queue_state(
+    adapter_state = value._queue_state(  # pyright: ignore[reportPrivateUsage]
         "observer",
         request.pull_request_number,
         request.pull_request_head,
@@ -694,7 +704,7 @@ def test_authoritative_queue_rejects_group_topology_digest_drift() -> None:
         "queue_configuration_digest": DIGEST,
         "group_topology_digest": "sha256:" + "b" * 64,
     }
-    value._queue_state = lambda *_args, **_kwargs: state
+    value._queue_state = lambda *_args, **_kwargs: state  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue, reportUnknownLambdaType]
     request = SimpleNamespace(
         pull_request_number=1,
         pull_request_head=OBJECT,
@@ -705,7 +715,7 @@ def test_authoritative_queue_rejects_group_topology_digest_drift() -> None:
         group_topology_digest="sha256:" + "f" * 64,
     )
     with pytest.raises(GitHubMainGraduationRejected, match="group topology"):
-        value._authoritative_queue("observer", request)
+        value._authoritative_queue("observer", request)  # pyright: ignore[reportPrivateUsage]
 
 
 @pytest.mark.parametrize("field, value", [("merged", True), ("head_sha", "b" * 40)])
@@ -717,12 +727,12 @@ def test_authoritative_pr_rejects_merged_or_equal_head_base(field: str, value: A
     if field == "merged":
         pr["merged"] = value
     else:
-        head = pr["head"]
+        head = cast(Any, pr["head"])
         assert isinstance(head, dict)
         head["sha"] = value
     value_adapter, _ = adapter(preparation=transport)
     with pytest.raises(GitHubMainGraduationRejected):
-        value_adapter._authoritative_pr(
+        value_adapter._authoritative_pr(  # pyright: ignore[reportPrivateUsage]
             "preparation",
             1,
             candidate_ref=f"refs/heads/avo/candidate/{request.operation_id.removeprefix('sha256:')}",
@@ -787,7 +797,7 @@ def test_production_binding_is_canonical_and_pr_lookup_reconcile_is_same_reposit
         value.repository_url = "https://github.com/other/repo"  # pyright: ignore[reportAttributeAccessIssue]
 
     value, _ = adapter(observer=RoutingTransport({}))
-    value._read_only_transports["observer"] = transport
+    value._read_only_transports["observer"] = transport  # pyright: ignore[reportPrivateUsage]
     lookup = PullRequestLookupRequest.build(
         operation_id=request.operation_id,
         repository_digest=request.repository_digest,
@@ -822,8 +832,8 @@ def test_production_binding_is_canonical_and_pr_lookup_reconcile_is_same_reposit
         "base": {**pr["base"], "repo": {"full_name": "other/repo"}},
     }
     for foreign in (foreign_url, foreign_name):
-        value._read_only_transports["observer"] = (
-            lambda *_args, foreign=foreign, **_kwargs: (200, [foreign])
+        value._read_only_transports["observer"] = (  # pyright: ignore[reportPrivateUsage, reportArgumentType]
+            lambda *_args, foreign=foreign, **_kwargs: (200, [foreign])  # pyright: ignore[reportUnknownLambdaType]
         )
         with pytest.raises(GitHubMainGraduationRejected):
             value.lookup_pull_request(lookup)

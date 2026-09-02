@@ -230,7 +230,7 @@ def test_pull_request_optional_bindings_and_identity_rejections() -> None:
         {"expected_url": "https://github.com/avo/repo/pull/8"},
     ]:
         with pytest.raises(ProtectedMainProviderError):
-            main.observe_pull_request(7, **kwargs)
+            main.observe_pull_request(7, **kwargs)  # pyright: ignore[reportArgumentType]
     for number in [0, -1, True]:
         with pytest.raises(ProtectedMainProviderError):
             main.observe_pull_request(number)

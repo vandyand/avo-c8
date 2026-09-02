@@ -36,9 +36,9 @@ from tests.unit.test_main_rollback_lifecycle_contracts import (
     TREE,
     D,
     R,
-    _journal_with_records,
-    _rollback_fixture,
-    _rollback_preparation,
+    _journal_with_records,  # pyright: ignore[reportPrivateUsage]
+    _rollback_fixture,  # pyright: ignore[reportPrivateUsage]
+    _rollback_preparation,  # pyright: ignore[reportPrivateUsage]
 )
 
 
@@ -249,9 +249,9 @@ def test_rollback_queue_hold_release_chain_uses_rollback_preparation(tmp_path: P
     # The fixture intentionally isolates this test to C3/C4 routing; the
     # rollback authority's inverse/source checks have dedicated coverage.
     journal._require_rollback_preparation_chain = lambda _record: None  # type: ignore[method-assign]
-    journal._require_queue_admission(records["queue-admission"])
-    journal._require_admission(records["release-hold"])
-    journal._require_hold(records["release-authorization"])
+    journal._require_queue_admission(records["queue-admission"])  # pyright: ignore[reportPrivateUsage]
+    journal._require_admission(records["release-hold"])  # pyright: ignore[reportPrivateUsage]
+    journal._require_hold(records["release-authorization"])  # pyright: ignore[reportPrivateUsage]
 
 
 def test_rollback_queue_chain_rejects_mixed_or_downgraded_authority(tmp_path: Path) -> None:
@@ -263,7 +263,7 @@ def test_rollback_queue_chain_rejects_mixed_or_downgraded_authority(tmp_path: Pa
     plan_index.parent.mkdir(parents=True, exist_ok=True)
     plan_index.write_text("{}", encoding="utf-8")
     with pytest.raises(MainGraduationJournalError, match="mixed"):
-        journal._require_queue_admission(records["queue-admission"])
+        journal._require_queue_admission(records["queue-admission"])  # pyright: ignore[reportPrivateUsage]
     records.pop("plan")
     plan_index.unlink()
     records["preparation-authorization"] = MainGraduationPlan.model_construct(
@@ -276,8 +276,8 @@ def test_rollback_queue_chain_rejects_mixed_or_downgraded_authority(tmp_path: Pa
     )
     prep_index.parent.mkdir(parents=True, exist_ok=True)
     prep_index.write_text("{}", encoding="utf-8")
-    journal._require_rollback_preparation_chain = (
-        MainGraduationJournal._require_rollback_preparation_chain.__get__(journal)
+    journal._require_rollback_preparation_chain = (  # pyright: ignore[reportPrivateUsage]
+        MainGraduationJournal._require_rollback_preparation_chain.__get__(journal)  # pyright: ignore[reportPrivateUsage]
     )
     with pytest.raises(MainGraduationJournalError, match="mixed graduation and rollback"):
-        journal._require_queue_admission(records["queue-admission"])
+        journal._require_queue_admission(records["queue-admission"])  # pyright: ignore[reportPrivateUsage]

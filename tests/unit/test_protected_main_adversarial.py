@@ -120,7 +120,7 @@ class FakeTransport:
             assert body is not None and "query" in body and "variables" in body
             query = body["query"]
             assert isinstance(query, str) and "mergeQueue(branch: $branch)" in query
-            return 200, {
+            return 200, {  # pyright: ignore[reportReturnType]
                 "data": {
                     "repository": {
                         "mergeQueue": {
