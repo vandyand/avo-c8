@@ -47,6 +47,13 @@ from avo_correlate.adapters.artifacts.rollback_bundle_authority import (
 from avo_correlate.adapters.artifacts.rollback_quarantine import (
     RollbackOperationQuarantineJournal,
 )
+from avo_correlate.adapters.artifacts.trusted_main_graduation_source import (
+    TrustedMainGraduationEvidenceReader,
+    TrustedMainGraduationJournalConfiguration,
+    TrustedMainGraduationOfflineResult,
+    TrustedMainGraduationSourceError,
+    build_trusted_main_graduation_evidence_reader,
+)
 
 __all__ = [
     "CampaignCompletionJournal",
@@ -80,4 +87,9 @@ __all__ = [
     "RollbackBundleAuthorityJournal",
     "RollbackOperationQuarantineJournal",
     "RollbackPublicationAuthorizationJournal",
+    "TrustedMainGraduationEvidenceReader",
+    "TrustedMainGraduationJournalConfiguration",
+    "TrustedMainGraduationOfflineResult",
+    "TrustedMainGraduationSourceError",
+    "build_trusted_main_graduation_evidence_reader",
 ]
