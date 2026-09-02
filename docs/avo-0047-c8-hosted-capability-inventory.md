@@ -64,12 +64,23 @@ The following capability distinctions are based on the official GitHub documenta
   using `kikker-stickers`; the recommended direction is a newly selected and explicitly authorized
   public organization repository rather than silently transferring `vandyand/avo`.
 
+### Endpoint-specific least-privilege matrix
+
+- Repository Administration: required for repository rulesets and branch-protection inspection or
+  provisioning.
+- Merge queues read/write: required separately for merge-queue inspection or provisioning; it is
+  not implied by Repository Administration.
+- Checks write: required for the isolated App's check publication, with AVO nonce, one-use, and
+  replay semantics layered above the provider permission.
+- Any other permission is required only when its specific endpoint or action is selected; an
+  organization-level `admin:org` grant is not required for repository-local controls.
+
 ## Permission-limited unknowns
 
 - The authenticated credential lacks `admin:org` (or an equivalent least-privilege capability),
-  so effective organization rules and action policies could not be inspected. This does not mean
-  `admin:org` is required for repository-local queue/rules provisioning: a least-privilege,
-  fine-grained repository Administration channel is preferable for the selected target.
+  so effective organization rules and action policies could not be inspected. Repository-local
+  provisioning still requires separate endpoint permissions: Repository Administration for
+  rulesets/protection and Merge queues read/write for queue inspection/provisioning.
 - Some unauthenticated `/user`, `/user/orgs`, branch-protection, installation, Actions permission,
   or variable probes returned HTTP 401; those responses do not override the authenticated facts
   above.
@@ -97,9 +108,10 @@ Before hosted C8 work can proceed, an operator must explicitly provide and autho
 2. An isolated non-App-15368 issuer authority for one-use PR-head admission and group release hold.
 3. Exclusive rollback namespace ACL/ruleset authority for controller create/delete operations under
    `avo/main-rollback/*`, with authoritative post-state cleanup checks.
-4. An authenticated least-privilege channel for the selected repository's Administration controls
-   and required read/write observations; `admin:org` is needed only if organization-level policy
-   inspection or provisioning is selected.
+4. Endpoint-specific least-privilege channels for the selected repository: Repository
+   Administration for rulesets/protection, Merge queues read/write for queue inspection/
+   provisioning, and any other exact permission required by a selected endpoint/action.
+   `admin:org` is needed only if organization-level policy inspection or provisioning is selected.
 
 Only after those dependencies are satisfied may the operator run a fresh hosted rollback and
 activation sequence; then ledger activation and the preregistered 12 consecutive eligible
