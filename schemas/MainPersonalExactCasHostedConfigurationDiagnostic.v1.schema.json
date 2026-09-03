@@ -1,0 +1,284 @@
+{
+  "additionalProperties": false,
+  "description": "Exact matched configuration facts that grant no authority by themselves.",
+  "properties": {
+    "app_configuration_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "App Configuration Digest",
+      "type": "string"
+    },
+    "branch_protection_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Branch Protection Digest",
+      "type": "string"
+    },
+    "configuration_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Configuration Digest",
+      "type": "string"
+    },
+    "contents_permission": {
+      "const": "write",
+      "default": "write",
+      "title": "Contents Permission",
+      "type": "string"
+    },
+    "deploy_performed": {
+      "const": false,
+      "default": false,
+      "title": "Deploy Performed",
+      "type": "boolean"
+    },
+    "final_ref_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Final Ref Digest",
+      "type": "string"
+    },
+    "finished_at": {
+      "format": "date-time",
+      "title": "Finished At",
+      "type": "string"
+    },
+    "first_pass_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "First Pass Digest",
+      "type": "string"
+    },
+    "initial_ref_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Initial Ref Digest",
+      "type": "string"
+    },
+    "installation_configuration_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Installation Configuration Digest",
+      "type": "string"
+    },
+    "is_authoritative": {
+      "const": false,
+      "default": false,
+      "title": "Is Authoritative",
+      "type": "boolean"
+    },
+    "is_terminal": {
+      "const": false,
+      "default": false,
+      "title": "Is Terminal",
+      "type": "boolean"
+    },
+    "main_commit": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Main Commit",
+      "type": "string"
+    },
+    "metadata_permission": {
+      "const": "read",
+      "default": "read",
+      "title": "Metadata Permission",
+      "type": "string"
+    },
+    "observation_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Observation Digest",
+      "type": "string"
+    },
+    "owner": {
+      "const": "vandyand",
+      "default": "vandyand",
+      "title": "Owner",
+      "type": "string"
+    },
+    "owner_id": {
+      "exclusiveMinimum": 0,
+      "title": "Owner Id",
+      "type": "integer"
+    },
+    "owner_type": {
+      "const": "User",
+      "default": "User",
+      "title": "Owner Type",
+      "type": "string"
+    },
+    "protection_ruleset_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Protection Ruleset Digest",
+      "type": "string"
+    },
+    "readiness_authorized": {
+      "const": false,
+      "default": false,
+      "title": "Readiness Authorized",
+      "type": "boolean"
+    },
+    "repository": {
+      "const": "avo-c8",
+      "default": "avo-c8",
+      "title": "Repository",
+      "type": "string"
+    },
+    "repository_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Repository Digest",
+      "type": "string"
+    },
+    "repository_id": {
+      "const": 1354880741,
+      "default": 1354880741,
+      "title": "Repository Id",
+      "type": "integer"
+    },
+    "repository_selection": {
+      "const": "selected",
+      "default": "selected",
+      "title": "Repository Selection",
+      "type": "string"
+    },
+    "safety_ruleset_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Safety Ruleset Digest",
+      "type": "string"
+    },
+    "safety_ruleset_id": {
+      "exclusiveMinimum": 0,
+      "title": "Safety Ruleset Id",
+      "type": "integer"
+    },
+    "safety_ruleset_name": {
+      "minLength": 1,
+      "title": "Safety Ruleset Name",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "second_pass_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Second Pass Digest",
+      "type": "string"
+    },
+    "selected_repositories_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Selected Repositories Digest",
+      "type": "string"
+    },
+    "selected_repository_ids": {
+      "items": {
+        "type": "integer"
+      },
+      "title": "Selected Repository Ids",
+      "type": "array"
+    },
+    "source_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Source Digest",
+      "type": "string"
+    },
+    "started_at": {
+      "format": "date-time",
+      "title": "Started At",
+      "type": "string"
+    },
+    "subscribed_events": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Subscribed Events",
+      "type": "array"
+    },
+    "target_ref": {
+      "const": "refs/heads/main",
+      "default": "refs/heads/main",
+      "title": "Target Ref",
+      "type": "string"
+    },
+    "verification_status": {
+      "const": "matched",
+      "default": "matched",
+      "title": "Verification Status",
+      "type": "string"
+    },
+    "visibility": {
+      "const": "public",
+      "default": "public",
+      "title": "Visibility",
+      "type": "string"
+    },
+    "writer_app_homepage": {
+      "const": "https://github.com/vandyand/avo-c8",
+      "default": "https://github.com/vandyand/avo-c8",
+      "title": "Writer App Homepage",
+      "type": "string"
+    },
+    "writer_app_id": {
+      "exclusiveMinimum": 0,
+      "title": "Writer App Id",
+      "type": "integer"
+    },
+    "writer_app_name": {
+      "const": "avo-c8-main-writer-vandyand",
+      "default": "avo-c8-main-writer-vandyand",
+      "title": "Writer App Name",
+      "type": "string"
+    },
+    "writer_app_slug": {
+      "const": "avo-c8-main-writer-vandyand",
+      "default": "avo-c8-main-writer-vandyand",
+      "title": "Writer App Slug",
+      "type": "string"
+    },
+    "writer_installation_id": {
+      "exclusiveMinimum": 0,
+      "title": "Writer Installation Id",
+      "type": "integer"
+    },
+    "writer_ruleset_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Writer Ruleset Digest",
+      "type": "string"
+    },
+    "writer_ruleset_id": {
+      "exclusiveMinimum": 0,
+      "title": "Writer Ruleset Id",
+      "type": "integer"
+    },
+    "writer_ruleset_name": {
+      "minLength": 1,
+      "title": "Writer Ruleset Name",
+      "type": "string"
+    }
+  },
+  "required": [
+    "repository_digest",
+    "owner_id",
+    "main_commit",
+    "writer_ruleset_id",
+    "writer_ruleset_name",
+    "safety_ruleset_id",
+    "safety_ruleset_name",
+    "writer_app_id",
+    "writer_installation_id",
+    "selected_repository_ids",
+    "writer_ruleset_digest",
+    "safety_ruleset_digest",
+    "branch_protection_digest",
+    "app_configuration_digest",
+    "installation_configuration_digest",
+    "selected_repositories_digest",
+    "protection_ruleset_digest",
+    "configuration_digest",
+    "initial_ref_digest",
+    "first_pass_digest",
+    "second_pass_digest",
+    "final_ref_digest",
+    "source_digest",
+    "started_at",
+    "finished_at",
+    "observation_digest"
+  ],
+  "title": "MainPersonalExactCasHostedConfigurationDiagnostic",
+  "type": "object"
+}

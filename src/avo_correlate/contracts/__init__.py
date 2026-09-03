@@ -228,6 +228,9 @@ from avo_correlate.contracts.main_personal_exact_cas import (
     personal_cas_claim_digest,
     personal_cas_operation_id,
 )
+from avo_correlate.contracts.main_personal_exact_cas_hosted_configuration import (
+    MainPersonalExactCasHostedConfigurationDiagnostic,
+)
 from avo_correlate.contracts.main_personal_exact_cas_post_state import (
     GitHubOwner,
     GitHubRepository,
@@ -443,6 +446,7 @@ __all__ = [
     "MainPersonalExactCasAuthorization",
     "MainPersonalExactCasCompletion",
     "MainPersonalExactCasDispatchStarted",
+    "MainPersonalExactCasHostedConfigurationDiagnostic",
     "MainPersonalExactCasIntent",
     "MainPersonalExactCasPostStateObservation",
     "MainPersonalExactCasReadOnlyPostState",

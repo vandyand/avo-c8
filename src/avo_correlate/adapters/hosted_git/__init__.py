@@ -46,6 +46,12 @@ from .github import (
     GitHubRollbackTopology,
     github_repository_digest,
 )
+from .github_main_base_reader import (
+    GitHubMainBaseReader,
+    GitHubMainBaseReaderConfiguration,
+    GitHubMainBaseReaderCredentials,
+    GitHubMainBaseReaderError,
+)
 from .github_transport import GitHubJsonTransport
 from .main_exact_cas_github import (
     ExactCasTransport,
@@ -53,6 +59,10 @@ from .main_exact_cas_github import (
     MainExactCasDispatchVerifier,
     MainExactCasError,
     MainExactCasReconciliationVerifier,
+)
+from .main_personal_exact_cas_hosted_configuration import (
+    MainPersonalExactCasGitHubHostedConfigurationVerifier,
+    MainPersonalExactCasHostedConfigurationUnverified,
 )
 from .main_personal_exact_cas_post_state import (
     MainPersonalExactCasGitHubPostStateReader,
@@ -95,6 +105,10 @@ __all__ = [
     "GitHubEvidenceSnapshot",
     "GitHubIntegrationProvider",
     "GitHubJsonTransport",
+    "GitHubMainBaseReader",
+    "GitHubMainBaseReaderConfiguration",
+    "GitHubMainBaseReaderCredentials",
+    "GitHubMainBaseReaderError",
     "GitHubPersonalExactCasWriter",
     "GitHubProtectionPolicy",
     "GitHubProvider",
@@ -108,7 +122,9 @@ __all__ = [
     "MainExactCasReconciliationVerifier",
     "MainGraduationAttester",
     "MainMergeGroupObservation",
+    "MainPersonalExactCasGitHubHostedConfigurationVerifier",
     "MainPersonalExactCasGitHubPostStateReader",
+    "MainPersonalExactCasHostedConfigurationUnverified",
     "MainPersonalExactCasPostStateTransportError",
     "MainProtectedProvider",
     "MainPullRequestObservation",
