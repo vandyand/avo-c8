@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -14,6 +14,10 @@ from avo_correlate.adapters.hosted_git import github_main_base_reader as base_mo
 from avo_correlate.adapters.hosted_git.github_main_base_reader import (
     GitHubMainBaseReaderConfiguration,
     GitHubMainBaseReaderCredentials,
+)
+from avo_correlate.adapters.hosted_git.main_personal_exact_cas_hosted_identity_bundle import (
+    MainPersonalExactCasHostedIdentityEvidenceBundle,
+    validate_main_base_provenance,
 )
 from avo_correlate.adapters.hosted_git.main_personal_exact_cas_post_state import (
     GitHubMainBasePostStateReader,
@@ -33,6 +37,10 @@ from tests.unit.test_github_main_base_reader import (
     TREE,
     FakeTransport,
     _responses,
+)
+from tests.unit.test_main_personal_exact_cas_hosted_identity_bundle import (
+    _observer,
+    _writer,
 )
 from tests.unit.test_main_personal_exact_cas_post_state import REPO_DIGEST, _chain
 
@@ -142,3 +150,55 @@ def test_transport_error_has_no_exception_context_or_secret(
     assert str(raised.value) == "post_state_unresolved"
     assert raised.value.__cause__ is None and raised.value.__context__ is None
     assert "writer-jwt-secret" not in repr(raised.value)
+
+
+@pytest.mark.parametrize("parents", [(), ("d" * 40,)])
+def test_commit_provenance_rejects_omitted_or_altered_parents(
+    monkeypatch: pytest.MonkeyPatch, parents: tuple[str, ...]
+) -> None:
+    reader = _reader(monkeypatch, _responses())
+    original = reader._reader.fresh_main_base_with_provenance()
+    tampered = replace(original.result, parents=parents)
+    with pytest.raises(ValueError, match="commit evidence"):
+        validate_main_base_provenance(reader._configuration, tampered, original.provenance)
+
+
+def test_commit_provenance_rejects_reordered_valid_parents(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    responses = _responses()
+    commit = responses[5][1]
+    assert isinstance(commit, dict)
+    commit["parents"] = [{"sha": "c" * 40}, {"sha": "d" * 40}]
+    reader = _reader(monkeypatch, responses)
+    original = reader._reader.fresh_main_base_with_provenance()
+    tampered = replace(
+        original.result,
+        parents=("d" * 40, "c" * 40),
+    )
+    with pytest.raises(ValueError, match="commit evidence"):
+        validate_main_base_provenance(reader._configuration, tampered, original.provenance)
+
+
+def test_snapshot_parent_round_trip_is_required_at_durable_boundary() -> None:
+    from avo_correlate.adapters.git.main_composition import MainBaseSnapshot
+
+    snapshot = MainBaseSnapshot(
+        repository_digest=REPO_DIGEST,
+        commit=COMMIT,
+        tree=TREE,
+        parents=("c" * 40,),
+    )
+    assert snapshot.parents == ("c" * 40,)
+
+
+def test_hosted_identity_bundle_rejects_parent_tampering_with_unchanged_provenance() -> None:
+    observer, configuration = _observer()
+    tampered = replace(observer.result, parents=("c" * 40,))
+    from avo_correlate.adapters.hosted_git.github_read_provenance import GitHubReadWithProvenance
+
+    forged_observer = GitHubReadWithProvenance(tampered, observer.provenance)
+    with pytest.raises(ValueError, match="commit evidence"):
+        MainPersonalExactCasHostedIdentityEvidenceBundle.build(
+            _writer(), forged_observer, configuration
+        )

@@ -25,7 +25,6 @@ from avo_correlate.adapters.artifacts.main_personal_exact_cas_journal import (
 )
 from avo_correlate.adapters.hosted_git.main_personal_exact_cas_post_state import (
     GitHubMainBasePostStateReader,
-    MainPersonalExactCasGitHubPostStateReader,
 )
 from avo_correlate.contracts.base import ArtifactRef, StrictModel
 from avo_correlate.contracts.main_personal_exact_cas import (
@@ -77,16 +76,13 @@ class MainPersonalExactCasReadOnlyPostStateJournal:
         root: Path,
         *,
         authority_journal: MainPersonalExactCasJournal,
-        reader: MainPersonalExactCasGitHubPostStateReader,
+        reader: GitHubMainBasePostStateReader,
         artifact_store: FilesystemArtifactStore | None = None,
         max_record_bytes: int = 8 * 1024 * 1024,
     ) -> None:
         if type(authority_journal) is not MainPersonalExactCasJournal:
             raise ValueError("controller authority journal is required")
-        if type(reader) not in {
-            MainPersonalExactCasGitHubPostStateReader,
-            GitHubMainBasePostStateReader,
-        }:
+        if type(reader) is not GitHubMainBasePostStateReader:
             raise ValueError("fixed post-state reader is required")
         if type(max_record_bytes) is not int or max_record_bytes <= 0:
             raise ValueError("max_record_bytes must be positive")

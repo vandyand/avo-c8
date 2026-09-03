@@ -366,7 +366,9 @@ class GitHubMainBaseReader:
             ),
             configuration_digest=self._configuration.configuration_digest,
             initial_ref_digest=canonical_digest(_safe_ref_projection(result.commit)),
-            commit_digest=canonical_digest(_safe_commit_facts(result.commit, result.tree)),
+            commit_digest=canonical_digest(
+                _safe_commit_facts(result.commit, result.tree, result.parents)
+            ),
             final_ref_digest=canonical_digest(_safe_ref_projection(result.commit)),
         )
         return GitHubReadWithProvenance(result=result, provenance=provenance)
@@ -614,8 +616,10 @@ def _safe_repository_facts(value: JsonValue) -> dict[str, JsonValue]:
     }
 
 
-def _safe_commit_facts(commit: str, tree: str) -> dict[str, str]:
-    return {"commit": commit, "tree": tree}
+def _safe_commit_facts(
+    commit: str, tree: str, parents: tuple[str, ...]
+) -> dict[str, object]:
+    return {"commit": commit, "tree": tree, "parents": parents}
 
 
 def _safe_ref_projection(sha: str) -> dict[str, object]:

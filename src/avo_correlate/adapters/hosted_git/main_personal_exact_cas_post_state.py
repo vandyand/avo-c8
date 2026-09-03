@@ -362,7 +362,11 @@ class GitHubMainBasePostStateReader:
             snapshot = observed.result
             validate_main_base_provenance(self._configuration, snapshot, observed.provenance)
             if observed.provenance.commit_digest != canonical_digest(
-                {"commit": snapshot.commit, "tree": snapshot.tree}
+                {
+                    "commit": snapshot.commit,
+                    "tree": snapshot.tree,
+                    "parents": snapshot.parents,
+                }
             ):
                 raise ValueError("main base commit evidence does not bind snapshot")
             expected_ref_digest = canonical_digest(
