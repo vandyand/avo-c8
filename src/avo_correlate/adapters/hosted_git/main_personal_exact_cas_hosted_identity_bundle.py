@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, replace
 from typing import TYPE_CHECKING, Any, cast
 
 from avo_correlate.contracts.main_personal_exact_cas_hosted_configuration import (
@@ -27,9 +27,13 @@ from .github_read_provenance import (
 if TYPE_CHECKING:
     from avo_correlate.adapters.git.main_composition import MainBaseSnapshot
 
+    from .github_main_base_reader import GitHubMainBaseReaderConfiguration
+
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _OBJECT = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
 _TARGET_REF = "refs/heads/main"
+HOSTED_CONFIGURATION_READER_IDENTITY = "main_personal_exact_cas_hosted_configuration_verifier"
+MAIN_BASE_READER_IDENTITY = "github_main_base_reader"
 
 
 def _digest(value: object, label: str) -> str:
@@ -52,18 +56,25 @@ def _canonical_json(value: object) -> dict[str, Any]:
 
 
 def _revalidate_writer(
-    value: MainPersonalExactCasHostedConfigurationDiagnostic,
-) -> MainPersonalExactCasHostedConfigurationDiagnostic:
+    value: GitHubReadWithProvenance[MainPersonalExactCasHostedConfigurationDiagnostic],
+) -> tuple[
+    MainPersonalExactCasHostedConfigurationDiagnostic,
+    GitHubReadProvenance,
+]:
     """Round-trip the concrete Pydantic model to close construction escapes."""
 
-    if type(value) is not MainPersonalExactCasHostedConfigurationDiagnostic:
+    if type(value) is not GitHubReadWithProvenance:
+        raise TypeError("exact hosted writer read result is required")
+    typed_wrapper = cast(Any, value)
+    if type(typed_wrapper.result) is not MainPersonalExactCasHostedConfigurationDiagnostic:
         raise TypeError("exact hosted writer diagnostic is required")
+    provenance = _revalidate_provenance(value.provenance)
     # Pydantic's public dump intentionally excludes reflective attributes.  An
     # unexpected __dict__ key is therefore rejected before the round-trip.
-    model_type = cast(Any, type(value))
-    if set(vars(value)) != set(model_type.model_fields):
+    model_type = cast(Any, type(typed_wrapper.result))
+    if set(vars(typed_wrapper.result)) != set(model_type.model_fields):
         raise ValueError("hosted writer diagnostic has reflective state")
-    typed_value = cast(Any, value)
+    typed_value = cast(Any, typed_wrapper.result)
     if typed_value.__pydantic_extra__ is not None or typed_value.__pydantic_private__ is not None:
         raise ValueError("hosted writer diagnostic has reflective state")
     try:
@@ -73,9 +84,9 @@ def _revalidate_writer(
         )
     except Exception:
         raise ValueError("hosted writer diagnostic is not valid") from None
-    if rebuilt != value:
+    if rebuilt != typed_wrapper.result:
         raise ValueError("hosted writer diagnostic changed during validation")
-    return rebuilt
+    return rebuilt, provenance
 
 
 def _snapshot_payload(snapshot: MainBaseSnapshot) -> dict[str, object]:
@@ -209,11 +220,26 @@ def _revalidate_provenance(value: GitHubReadProvenance) -> GitHubReadProvenance:
 
 def _revalidate_observer(
     value: GitHubReadWithProvenance[MainBaseSnapshot],
+    configuration: GitHubMainBaseReaderConfiguration,
 ) -> tuple[MainBaseSnapshot, GitHubReadProvenance, str, str]:
+    from .github_main_base_reader import GitHubMainBaseReaderConfiguration
+
     if type(value) is not GitHubReadWithProvenance:
         raise TypeError("exact observer read result is required")
     snapshot, snapshot_digest = _revalidate_snapshot(value.result)
     provenance = _revalidate_provenance(value.provenance)
+    if type(configuration) is not GitHubMainBaseReaderConfiguration:
+        raise TypeError("exact observer reader configuration is required")
+    try:
+        configuration.assert_valid()
+        rebuilt_configuration = replace(configuration)
+        rebuilt_configuration.assert_valid()
+    except Exception:
+        raise ValueError("observer reader configuration is not valid") from None
+    if rebuilt_configuration != configuration:
+        raise ValueError("observer reader configuration changed during validation")
+    if provenance.configuration_digest != configuration.configuration_digest:
+        raise ValueError("observer provenance configuration differs")
     if provenance.repository_digest != snapshot.repository_digest:
         raise ValueError("observer snapshot and provenance repository differs")
     if provenance.target_ref != _TARGET_REF:
@@ -227,6 +253,7 @@ def _revalidate_observer(
         {"commit": snapshot.commit, "tree": snapshot.tree}
     ):
         raise ValueError("observer commit evidence does not bind snapshot")
+    validate_main_base_provenance(configuration, snapshot, provenance)
     config_digest = provenance.configuration_digest
     _digest(config_digest, "observer configuration digest")
     # Rebuild the configuration digest as a strict concrete model as a second
@@ -235,6 +262,118 @@ def _revalidate_observer(
     if type(config_digest) is not str:
         raise ValueError("observer configuration digest is missing")
     return snapshot, provenance, snapshot_digest, config_digest
+
+
+def validate_hosted_configuration_provenance(
+    diagnostic: MainPersonalExactCasHostedConfigurationDiagnostic,
+    provenance: GitHubReadProvenance,
+) -> None:
+    """Validate the verifier's complete, parameterized 22-request read trace."""
+
+    if provenance.reader_identity != HOSTED_CONFIGURATION_READER_IDENTITY:
+        raise ValueError("hosted writer provenance reader identity differs")
+    typed_diagnostic = cast(Any, diagnostic)
+    base = "/repos/vandyand/avo-c8"
+    writer = typed_diagnostic.writer_ruleset_id
+    safety = typed_diagnostic.safety_ruleset_id
+    requests = provenance.requests
+    if type(requests) is not tuple or len(requests) != 22:
+        raise ValueError("hosted writer provenance trace is not the exact 22-request trace")
+
+    def expected_pass() -> tuple[GitHubReadRequest, ...]:
+        return (
+            GitHubReadRequest("GET", base, "owner_admin_token"),
+            GitHubReadRequest("GET", "/app", "app_jwt"),
+            GitHubReadRequest(
+                "GET", "/app/installations?per_page=100&page=1", "app_jwt"
+            ),
+            GitHubReadRequest(
+                "POST",
+                f"/app/installations/{typed_diagnostic.writer_installation_id}/access_tokens",
+                "app_jwt",
+            ),
+            GitHubReadRequest(
+                "GET", "/installation/repositories?per_page=100&page=1", "installation_token"
+            ),
+            GitHubReadRequest("GET", base + "/rulesets?per_page=100&page=1", "owner_admin_token"),
+            GitHubReadRequest("GET", base + f"/rulesets/{writer}", "owner_admin_token"),
+            GitHubReadRequest("GET", base + f"/rulesets/{safety}", "owner_admin_token"),
+            GitHubReadRequest("GET", base + "/rulesets/rollback", "owner_admin_token"),
+            GitHubReadRequest("GET", base + "/branches/main/protection", "owner_admin_token"),
+        )
+
+    # The rollback ruleset identity is not part of the public diagnostic, so
+    # validate that its observed request is an additional positive ruleset ID.
+    for offset in (1, 11):
+        observed = requests[offset : offset + 10]
+        if observed[:7] != expected_pass()[:7] or observed[9:] != expected_pass()[9:]:
+            raise ValueError("hosted writer provenance trace shape differs")
+        rollback_path = observed[8].path
+        match = re.fullmatch(r"/repos/vandyand/avo-c8/rulesets/([1-9][0-9]*)", rollback_path)
+        if observed[8].method != "GET" or observed[8].credential_role != "owner_admin_token":
+            raise ValueError("hosted writer provenance rollback request differs")
+        if match is None or int(match.group(1)) in {writer, safety}:
+            raise ValueError("hosted writer provenance ruleset identity is not exact")
+    ref = GitHubReadRequest("GET", base + "/git/ref/heads/main", "owner_admin_token")
+    if requests[0] != ref or requests[-1] != ref:
+        raise ValueError("hosted writer provenance main fence differs")
+    if (
+        provenance.repository_digest != typed_diagnostic.repository_digest
+        or provenance.owner != typed_diagnostic.owner
+        or provenance.repository != typed_diagnostic.repository
+        or provenance.repository_id != typed_diagnostic.repository_id
+        or provenance.target_ref != typed_diagnostic.target_ref
+        or provenance.app_id != typed_diagnostic.writer_app_id
+        or provenance.installation_id != typed_diagnostic.writer_installation_id
+        or provenance.configuration_digest != typed_diagnostic.configuration_digest
+        or provenance.initial_ref_digest != typed_diagnostic.initial_ref_digest
+        or provenance.final_ref_digest != typed_diagnostic.final_ref_digest
+        or provenance.commit_digest != canonical_digest({"commit": typed_diagnostic.main_commit})
+        or provenance.configuration_pass_digests
+        != (typed_diagnostic.first_pass_digest, typed_diagnostic.second_pass_digest)
+    ):
+        raise ValueError("hosted writer provenance diagnostic binding differs")
+    expected_endpoints = {
+        "app": typed_diagnostic.app_configuration_digest,
+        "installation": typed_diagnostic.installation_configuration_digest,
+        "repository": typed_diagnostic.repository_digest,
+        "selected_repositories": typed_diagnostic.selected_repositories_digest,
+    }
+    if dict(provenance.endpoint_observation_digests) != expected_endpoints:
+        raise ValueError("hosted writer provenance endpoint binding differs")
+
+
+def validate_main_base_provenance(
+    configuration: GitHubMainBaseReaderConfiguration,
+    snapshot: MainBaseSnapshot,
+    provenance: GitHubReadProvenance,
+) -> None:
+    """Validate the observer's exact seven-request authenticated read trace."""
+
+    if provenance.reader_identity != MAIN_BASE_READER_IDENTITY:
+        raise ValueError("main base provenance reader identity differs")
+    base = f"/repos/{configuration.owner}/{configuration.repo}"
+    expected = (
+        GitHubReadRequest("GET", "/app", "app_jwt"),
+        GitHubReadRequest(
+            "GET", f"/app/installations/{configuration.observer_installation_id}", "app_jwt"
+        ),
+        GitHubReadRequest(
+            "POST",
+            f"/app/installations/{configuration.observer_installation_id}/access_tokens",
+            "app_jwt",
+        ),
+        GitHubReadRequest(
+            "GET", f"/repositories/{configuration.repository_id}", "installation_token"
+        ),
+        GitHubReadRequest("GET", base + "/git/ref/heads/main", "installation_token"),
+        GitHubReadRequest(
+            "GET", base + f"/git/commits/{snapshot.commit}", "installation_token"
+        ),
+        GitHubReadRequest("GET", base + "/git/ref/heads/main", "installation_token"),
+    )
+    if provenance.requests != expected:
+        raise ValueError("main base provenance trace is not the exact seven-request trace")
 
 
 @dataclass(frozen=True, slots=True)
@@ -341,13 +480,15 @@ class MainPersonalExactCasHostedIdentityEvidenceBundle:
     @classmethod
     def build(
         cls,
-        writer: MainPersonalExactCasHostedConfigurationDiagnostic,
+        writer: GitHubReadWithProvenance[MainPersonalExactCasHostedConfigurationDiagnostic],
         observer: GitHubReadWithProvenance[MainBaseSnapshot],
+        observer_configuration: GitHubMainBaseReaderConfiguration,
     ) -> MainPersonalExactCasHostedIdentityEvidenceBundle:
-        writer = _revalidate_writer(writer)
-        typed_writer = cast(Any, writer)
+        writer_diagnostic, writer_provenance = _revalidate_writer(writer)
+        typed_writer = cast(Any, writer_diagnostic)
+        validate_hosted_configuration_provenance(writer_diagnostic, writer_provenance)
         snapshot, provenance, snapshot_digest, observer_configuration_digest = _revalidate_observer(
-            observer
+            observer, observer_configuration
         )
         if (
             typed_writer.repository_digest != snapshot.repository_digest
@@ -411,6 +552,10 @@ build_main_personal_exact_cas_hosted_identity_evidence_bundle = (
 
 
 __all__ = [
+    "HOSTED_CONFIGURATION_READER_IDENTITY",
+    "MAIN_BASE_READER_IDENTITY",
     "MainPersonalExactCasHostedIdentityEvidenceBundle",
     "build_main_personal_exact_cas_hosted_identity_evidence_bundle",
+    "validate_hosted_configuration_provenance",
+    "validate_main_base_provenance",
 ]

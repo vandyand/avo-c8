@@ -70,8 +70,12 @@ from .main_personal_exact_cas_hosted_configuration import (
     MainPersonalExactCasHostedConfigurationUnverified,
 )
 from .main_personal_exact_cas_hosted_identity_bundle import (
+    HOSTED_CONFIGURATION_READER_IDENTITY,
+    MAIN_BASE_READER_IDENTITY,
     MainPersonalExactCasHostedIdentityEvidenceBundle,
     build_main_personal_exact_cas_hosted_identity_evidence_bundle,
+    validate_hosted_configuration_provenance,
+    validate_main_base_provenance,
 )
 from .main_personal_exact_cas_post_state import (
     MainPersonalExactCasGitHubPostStateReader,
@@ -94,6 +98,8 @@ from .protected_main import (
 )
 
 __all__ = [
+    "HOSTED_CONFIGURATION_READER_IDENTITY",
+    "MAIN_BASE_READER_IDENTITY",
     "C8GitHubPreflightSnapshot",
     "C8GitHubSnapshotAdapter",
     "C8HostedPreflightSnapshot",
@@ -166,4 +172,6 @@ __all__ = [
     "parse_rules",
     "parse_validation_principal_check_runs",
     "revalidate_validation_principal_freshness",
+    "validate_hosted_configuration_provenance",
+    "validate_main_base_provenance",
 ]

@@ -44,7 +44,9 @@ NOW = datetime(2026, 9, 2, 12, 0, tzinfo=UTC)
 D = "sha256:" + "1" * 64
 
 
-def _writer(**changes: object) -> MainPersonalExactCasHostedConfigurationDiagnostic:
+def _writer(
+    **changes: object,
+) -> GitHubReadWithProvenance[MainPersonalExactCasHostedConfigurationDiagnostic]:
     values: dict[str, object] = {
         "repository_digest": github_repository_digest(OWNER, REPOSITORY),
         "owner": OWNER,
@@ -74,10 +76,62 @@ def _writer(**changes: object) -> MainPersonalExactCasHostedConfigurationDiagnos
         "finished_at": NOW,
     }
     values.update(changes)
-    return MainPersonalExactCasHostedConfigurationDiagnostic.build(**values)
+    diagnostic = MainPersonalExactCasHostedConfigurationDiagnostic.build(**values)
+    base = "/repos/vandyand/avo-c8"
+    pass_trace = (
+        GitHubReadRequest("GET", base, "owner_admin_token"),
+        GitHubReadRequest("GET", "/app", "app_jwt"),
+        GitHubReadRequest("GET", "/app/installations?per_page=100&page=1", "app_jwt"),
+        GitHubReadRequest(
+            "POST", f"/app/installations/{WRITER_INSTALLATION_ID}/access_tokens", "app_jwt"
+        ),
+        GitHubReadRequest(
+            "GET", "/installation/repositories?per_page=100&page=1", "installation_token"
+        ),
+        GitHubReadRequest("GET", base + "/rulesets?per_page=100&page=1", "owner_admin_token"),
+        GitHubReadRequest("GET", base + "/rulesets/101", "owner_admin_token"),
+        GitHubReadRequest("GET", base + "/rulesets/202", "owner_admin_token"),
+        GitHubReadRequest("GET", base + "/rulesets/303", "owner_admin_token"),
+        GitHubReadRequest("GET", base + "/branches/main/protection", "owner_admin_token"),
+    )
+    ref = GitHubReadRequest("GET", base + "/git/ref/heads/main", "owner_admin_token")
+    provenance = GitHubReadProvenance(
+        reader_identity="main_personal_exact_cas_hosted_configuration_verifier",
+        api_origin="https://api.github.com",
+        api_version="2022-11-28",
+        owner=OWNER,
+        owner_id=OWNER_ID,
+        repository=REPOSITORY,
+        repository_id=REPOSITORY_ID,
+        repository_digest=diagnostic.repository_digest,
+        target_ref="refs/heads/main",
+        app_slug="avo-c8-main-writer-vandyand",
+        app_id=WRITER_APP_ID,
+        installation_id=WRITER_INSTALLATION_ID,
+        requested_repository_id=REPOSITORY_ID,
+        requested_permissions=("contents:read",),
+        observed_permissions=("contents:read", "metadata:read"),
+        repository_selection="selected",
+        token_expiry_policy="now<expires_at<=now+65m",
+        requests=(ref, *pass_trace, *pass_trace, ref),
+        endpoint_observation_digests=(
+            ("app", diagnostic.app_configuration_digest),
+            ("installation", diagnostic.installation_configuration_digest),
+            ("repository", diagnostic.repository_digest),
+            ("selected_repositories", diagnostic.selected_repositories_digest),
+        ),
+        initial_ref_digest=diagnostic.initial_ref_digest,
+        commit_digest=canonical_digest({"commit": diagnostic.main_commit}),
+        final_ref_digest=diagnostic.final_ref_digest,
+        configuration_pass_digests=(diagnostic.first_pass_digest, diagnostic.second_pass_digest),
+        configuration_digest=diagnostic.configuration_digest,
+    )
+    return GitHubReadWithProvenance(diagnostic, provenance)
 
 
-def _observer() -> GitHubReadWithProvenance[MainBaseSnapshot]:
+def _observer() -> tuple[
+    GitHubReadWithProvenance[MainBaseSnapshot], GitHubMainBaseReaderConfiguration
+]:
     from avo_correlate.adapters.git.main_composition import MainBaseSnapshot
 
     repository_digest = github_repository_digest(OWNER, REPOSITORY)
@@ -116,7 +170,27 @@ def _observer() -> GitHubReadWithProvenance[MainBaseSnapshot]:
         observed_permissions=("contents:read", "metadata:read"),
         repository_selection="selected",
         token_expiry_policy="now<expires_at<=now+65m",
-        requests=(GitHubReadRequest("GET", "/app", "app_jwt"),),
+        requests=(
+            GitHubReadRequest("GET", "/app", "app_jwt"),
+            GitHubReadRequest(
+                "GET", f"/app/installations/{OBSERVER_INSTALLATION_ID}", "app_jwt"
+            ),
+            GitHubReadRequest(
+                "POST",
+                f"/app/installations/{OBSERVER_INSTALLATION_ID}/access_tokens",
+                "app_jwt",
+            ),
+            GitHubReadRequest("GET", f"/repositories/{REPOSITORY_ID}", "installation_token"),
+            GitHubReadRequest(
+                "GET", "/repos/vandyand/avo-c8/git/ref/heads/main", "installation_token"
+            ),
+            GitHubReadRequest(
+                "GET", f"/repos/vandyand/avo-c8/git/commits/{COMMIT}", "installation_token"
+            ),
+            GitHubReadRequest(
+                "GET", "/repos/vandyand/avo-c8/git/ref/heads/main", "installation_token"
+            ),
+        ),
         endpoint_observation_digests=(
             ("app", "sha256:" + "a" * 64),
             ("installation", "sha256:" + "b" * 64),
@@ -129,11 +203,30 @@ def _observer() -> GitHubReadWithProvenance[MainBaseSnapshot]:
         writer_app_id=WRITER_APP_ID,
         writer_installation_id=WRITER_INSTALLATION_ID,
     )
-    return GitHubReadWithProvenance(snapshot, provenance)
+    return GitHubReadWithProvenance(snapshot, provenance), configuration
 
 
 def _bundle() -> MainPersonalExactCasHostedIdentityEvidenceBundle:
-    return MainPersonalExactCasHostedIdentityEvidenceBundle.build(_writer(), _observer())
+    observer, configuration = _observer()
+    return MainPersonalExactCasHostedIdentityEvidenceBundle.build(
+        _writer(), observer, configuration
+    )
+
+
+def test_builder_requires_authenticated_writer_wrapper_and_exact_observer_trace() -> None:
+    observer, configuration = _observer()
+    bare_diagnostic = _writer().result
+    with pytest.raises(TypeError):
+        MainPersonalExactCasHostedIdentityEvidenceBundle.build(
+            bare_diagnostic,  # type: ignore[arg-type]
+            observer,
+            configuration,
+        )
+    one_request = replace(observer.provenance, requests=(observer.provenance.requests[0],))
+    with pytest.raises(ValueError, match="seven-request"):
+        MainPersonalExactCasHostedIdentityEvidenceBundle.build(
+            _writer(), GitHubReadWithProvenance(observer.result, one_request), configuration
+        )
 
 
 def test_bundle_is_deterministic_scalar_and_non_authoritative() -> None:
@@ -164,42 +257,48 @@ def test_bundle_is_deterministic_scalar_and_non_authoritative() -> None:
     ],
 )
 def test_writer_observer_identity_mismatches_fail_closed(changes: dict[str, object]) -> None:
+    observer, configuration = _observer()
     with pytest.raises(ValueError):
-        MainPersonalExactCasHostedIdentityEvidenceBundle.build(_writer(**changes), _observer())
+        MainPersonalExactCasHostedIdentityEvidenceBundle.build(
+            _writer(**changes), observer, configuration
+        )
 
 
 @pytest.mark.parametrize("field", ["writer_app_id", "writer_installation_id"])
 def test_observer_writer_identity_mismatch_fails_closed(field: str) -> None:
-    observer = _observer()
+    observer, configuration = _observer()
     provenance = replace(observer.provenance, **{field: 123456})
     with pytest.raises(ValueError):
         MainPersonalExactCasHostedIdentityEvidenceBundle.build(
-            _writer(), GitHubReadWithProvenance(observer.result, provenance)
+            _writer(), GitHubReadWithProvenance(observer.result, provenance), configuration
         )
 
 
 @pytest.mark.parametrize("field", ["requested_permissions", "observed_permissions"])
 def test_observer_scope_mismatch_fails_closed(field: str) -> None:
-    observer = _observer()
+    observer, configuration = _observer()
     object.__setattr__(observer.provenance, field, ("contents:write",))
     with pytest.raises(ValueError):
-        MainPersonalExactCasHostedIdentityEvidenceBundle.build(_writer(), observer)
+        MainPersonalExactCasHostedIdentityEvidenceBundle.build(
+            _writer(), observer, configuration
+        )
 
 
 def test_reflective_nested_tampering_is_revalidated() -> None:
     writer = _writer()
-    object.__setattr__(writer, "writer_app_id", WRITER_APP_ID + 1)
+    object.__setattr__(writer.result, "writer_app_id", WRITER_APP_ID + 1)
+    observer, configuration = _observer()
     with pytest.raises(ValueError):
-        MainPersonalExactCasHostedIdentityEvidenceBundle.build(writer, _observer())
+        MainPersonalExactCasHostedIdentityEvidenceBundle.build(writer, observer, configuration)
 
-    observer = _observer()
+    observer, configuration = _observer()
     object.__setattr__(observer.result, "commit", "c" * 40)
     with pytest.raises(ValueError):
-        MainPersonalExactCasHostedIdentityEvidenceBundle.build(_writer(), observer)
+        MainPersonalExactCasHostedIdentityEvidenceBundle.build(_writer(), observer, configuration)
 
     object.__setattr__(observer.provenance, "app_id", OBSERVER_APP_ID + 1)
     with pytest.raises(ValueError):
-        MainPersonalExactCasHostedIdentityEvidenceBundle.build(_writer(), observer)
+        MainPersonalExactCasHostedIdentityEvidenceBundle.build(_writer(), observer, configuration)
 
 
 def test_bundle_reflective_tamper_and_frozen_surface_fail_closed() -> None:
@@ -213,9 +312,10 @@ def test_bundle_reflective_tamper_and_frozen_surface_fail_closed() -> None:
 
 def test_secret_canary_is_not_accepted_or_retained() -> None:
     writer = _writer()
-    object.__setattr__(writer, "secret_canary", "admin-token-secret-canary")
+    object.__setattr__(writer.result, "secret_canary", "admin-token-secret-canary")
+    observer, configuration = _observer()
     with pytest.raises(ValueError):
-        MainPersonalExactCasHostedIdentityEvidenceBundle.build(writer, _observer())
+        MainPersonalExactCasHostedIdentityEvidenceBundle.build(writer, observer, configuration)
     assert "admin-token-secret-canary" not in repr(_bundle())
 
 
