@@ -303,23 +303,27 @@ def validate_hosted_configuration_provenance(
             GitHubReadRequest("GET", base + "/branches/main/protection", "owner_admin_token"),
         )
 
-    # The rollback request must bind to the exact positive identity exposed by
-    # the diagnostic.
-    rollback_ids: list[int] = []
+    expected_ruleset_paths = {
+        base + f"/rulesets/{ident}" for ident in (writer, safety, rollback)
+    }
+    observed_rule_slots: list[tuple[GitHubReadRequest, ...]] = []
     for offset in (1, 11):
         observed = requests[offset : offset + 10]
         expected = expected_pass()
-        if observed[:8] != expected[:8] or observed[9:] != expected[9:]:
+        if observed[:6] != expected[:6] or observed[9:] != expected[9:]:
             raise ValueError("hosted writer provenance trace shape differs")
-        rollback_path = observed[8].path
-        match = re.fullmatch(r"/repos/vandyand/avo-c8/rulesets/([1-9][0-9]*)", rollback_path)
-        if observed[8].method != "GET" or observed[8].credential_role != "owner_admin_token":
-            raise ValueError("hosted writer provenance rollback request differs")
-        if match is None or int(match.group(1)) in {writer, safety}:
-            raise ValueError("hosted writer provenance ruleset identity is not exact")
-        rollback_ids.append(int(match.group(1)))
-    if tuple(rollback_ids) != (rollback, rollback):
-        raise ValueError("hosted writer provenance rollback identity differs from diagnostic")
+        ruleset_slots = observed[6:9]
+        if any(
+            item.method != "GET" or item.credential_role != "owner_admin_token"
+            for item in ruleset_slots
+        ):
+            raise ValueError("hosted writer provenance ruleset request differs")
+        paths = tuple(item.path for item in ruleset_slots)
+        if len(set(paths)) != 3 or set(paths) != expected_ruleset_paths:
+            raise ValueError("hosted writer provenance ruleset identities are not exact")
+        observed_rule_slots.append(ruleset_slots)
+    if observed_rule_slots[0] != observed_rule_slots[1]:
+        raise ValueError("hosted writer provenance ruleset request order drifted")
     ref = GitHubReadRequest("GET", base + "/git/ref/heads/main", "owner_admin_token")
     if requests[0] != ref or requests[-1] != ref:
         raise ValueError("hosted writer provenance main fence differs")

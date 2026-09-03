@@ -4,13 +4,14 @@
 
 from __future__ import annotations
 
+import copy
 from dataclasses import FrozenInstanceError, replace
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
-from avo_correlate.adapters.hosted_git.github import github_repository_digest
+from avo_correlate.adapters.hosted_git.github import JsonValue, github_repository_digest
 from avo_correlate.adapters.hosted_git.github_main_base_reader import (
     GitHubMainBaseReaderConfiguration,
 )
@@ -26,6 +27,9 @@ from avo_correlate.contracts.main_personal_exact_cas_hosted_configuration import
     MainPersonalExactCasHostedConfigurationDiagnostic,
 )
 from avo_correlate.domain.canonical import canonical_digest
+from tests.unit import (
+    test_main_personal_exact_cas_hosted_configuration as hosted_configuration_fixtures,
+)
 
 if TYPE_CHECKING:
     from avo_correlate.adapters.git.main_composition import MainBaseSnapshot
@@ -132,7 +136,12 @@ def _writer(
     return GitHubReadWithProvenance(diagnostic, provenance)
 
 
-def _observer() -> tuple[
+def _observer(
+    *,
+    owner_id: int = OWNER_ID,
+    writer_app_id: int = WRITER_APP_ID,
+    writer_installation_id: int = WRITER_INSTALLATION_ID,
+) -> tuple[
     GitHubReadWithProvenance[MainBaseSnapshot], GitHubMainBaseReaderConfiguration
 ]:
     from avo_correlate.adapters.git.main_composition import MainBaseSnapshot
@@ -140,7 +149,7 @@ def _observer() -> tuple[
     repository_digest = github_repository_digest(OWNER, REPOSITORY)
     configuration = GitHubMainBaseReaderConfiguration(
         owner=OWNER,
-        owner_id=OWNER_ID,
+        owner_id=owner_id,
         repo=REPOSITORY,
         repository_id=REPOSITORY_ID,
         repository_digest=repository_digest,
@@ -148,8 +157,8 @@ def _observer() -> tuple[
         observer_app_name="AVO C8 Main Observer",
         observer_app_id=OBSERVER_APP_ID,
         observer_installation_id=OBSERVER_INSTALLATION_ID,
-        writer_app_id=WRITER_APP_ID,
-        writer_installation_id=WRITER_INSTALLATION_ID,
+        writer_app_id=writer_app_id,
+        writer_installation_id=writer_installation_id,
     )
     snapshot = MainBaseSnapshot(repository_digest, COMMIT, TREE)
     ref_digest = canonical_digest(
@@ -160,7 +169,7 @@ def _observer() -> tuple[
         api_origin="https://api.github.com",
         api_version="2022-11-28",
         owner=OWNER,
-        owner_id=OWNER_ID,
+        owner_id=owner_id,
         repository=REPOSITORY,
         repository_id=REPOSITORY_ID,
         repository_digest=repository_digest,
@@ -203,8 +212,8 @@ def _observer() -> tuple[
         commit_digest=canonical_digest({"commit": COMMIT, "tree": TREE}),
         final_ref_digest=ref_digest,
         configuration_digest=configuration.configuration_digest,
-        writer_app_id=WRITER_APP_ID,
-        writer_installation_id=WRITER_INSTALLATION_ID,
+        writer_app_id=writer_app_id,
+        writer_installation_id=writer_installation_id,
     )
     return GitHubReadWithProvenance(snapshot, provenance), configuration
 
@@ -214,6 +223,40 @@ def _bundle() -> MainPersonalExactCasHostedIdentityEvidenceBundle:
     return MainPersonalExactCasHostedIdentityEvidenceBundle.build(
         _writer(), observer, configuration
     )
+
+
+def _verified_writer_with_summary_order(
+    order: tuple[int, int, int],
+) -> GitHubReadWithProvenance[MainPersonalExactCasHostedConfigurationDiagnostic]:
+    responses: Any = hosted_configuration_fixtures._responses()
+    for summary_index in (6, 16):
+        status, raw_summaries_value = responses[summary_index]
+        raw_summaries: Any = raw_summaries_value
+        if type(status) is not int or type(raw_summaries) is not list:
+            raise AssertionError("summary fixture is malformed")
+        summaries: dict[int, dict[str, JsonValue]] = {}
+        for raw_item in cast(list[JsonValue], raw_summaries):
+            if type(raw_item) is not dict:
+                continue
+            item = raw_item
+            ident = item.get("id")
+            if type(ident) is int:
+                summaries[ident] = item
+        responses[summary_index] = (status, [copy.deepcopy(summaries[ident]) for ident in order])
+        detail_index = summary_index + 1
+        details: dict[int, dict[str, JsonValue]] = {}
+        for offset in range(3):
+            response: Any = responses[detail_index + offset]
+            detail: dict[str, JsonValue] = response[1]
+            ident = detail.get("id")
+            if type(ident) is not int:
+                raise AssertionError("detail fixture is malformed")
+            details[ident] = detail
+        responses[detail_index : detail_index + 3] = [
+            (200, copy.deepcopy(details[ident])) for ident in order
+        ]
+    subject, _ = hosted_configuration_fixtures._subject(responses)
+    return subject.verify_with_provenance()
 
 
 def test_builder_requires_authenticated_writer_wrapper_and_exact_observer_trace() -> None:
@@ -239,7 +282,7 @@ def test_writer_safety_ruleset_request_cannot_be_skipped() -> None:
     tampered = replace(writer.provenance, requests=tuple(requests))
     observer, configuration = _observer()
     # The changed provenance has a fresh digest but fails the exact safety slot.
-    with pytest.raises(ValueError, match="trace shape"):
+    with pytest.raises(ValueError, match="ruleset identities"):
         MainPersonalExactCasHostedIdentityEvidenceBundle.build(
             GitHubReadWithProvenance(writer.result, tampered), observer, configuration
         )
@@ -278,6 +321,38 @@ def test_writer_rollback_request_must_bind_to_diagnostic_id() -> None:
     observer, configuration = _observer()
     with pytest.raises(ValueError):
         MainPersonalExactCasHostedIdentityEvidenceBundle.build(tampered, observer, configuration)
+
+
+def test_verifier_to_bundle_accepts_summary_order_permutation() -> None:
+    writer = _verified_writer_with_summary_order((202, 101, 303))
+    observer, configuration = _observer(
+        owner_id=77,
+        writer_app_id=88,
+        writer_installation_id=99,
+    )
+    bundle = MainPersonalExactCasHostedIdentityEvidenceBundle.build(
+        writer, observer, configuration
+    )
+    assert bundle.writer_rollback_ruleset_id == 303
+
+
+def test_verifier_to_bundle_rejects_pass_ruleset_order_drift() -> None:
+    writer = _verified_writer_with_summary_order((202, 101, 303))
+    requests = list(writer.provenance.requests)
+    requests[17:20] = [requests[18], requests[17], requests[19]]
+    tampered = GitHubReadWithProvenance(
+        writer.result,
+        replace(writer.provenance, requests=tuple(requests)),
+    )
+    observer, configuration = _observer(
+        owner_id=77,
+        writer_app_id=88,
+        writer_installation_id=99,
+    )
+    with pytest.raises(ValueError, match="order drifted"):
+        MainPersonalExactCasHostedIdentityEvidenceBundle.build(
+            tampered, observer, configuration
+        )
 
 
 def test_writer_provenance_digest_is_retained_and_tamper_fails_closed() -> None:
