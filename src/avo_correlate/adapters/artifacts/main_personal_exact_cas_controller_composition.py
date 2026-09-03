@@ -319,9 +319,7 @@ class MainPersonalExactCasControllerCompositionJournal:
             )
             for reference, record in (
                 (
-                    self._identity_ref(
-                        identity_root, identity_root.writer_diagnostic_artifact.created_at
-                    ),
+                    self._identity_ref(identity_root),
                     identity_root,
                 ),
                 (activation_ref, activation),
@@ -362,9 +360,7 @@ class MainPersonalExactCasControllerCompositionJournal:
                 operation_id=operation_id,
                 activation_digest=activation.activation_digest,
                 repository_digest=activation.repository_digest,
-                hosted_identity_root_artifact=self._identity_ref(
-                    identity_root, activation.activated_at
-                ),
+                hosted_identity_root_artifact=self._identity_ref(identity_root),
                 hosted_identity_bundle_digest=identity_bundle.bundle_digest,
                 activation_artifact=activation_ref,
                 source_operation_id=activation.source_operation_id,
@@ -500,7 +496,7 @@ class MainPersonalExactCasControllerCompositionJournal:
                         finally:
                             os.close(descriptor)
                     except FileExistsError:
-                        existing = _read_bounded_fd_at(
+                        existing = self._read_bounded_fd_at(
                             op_fd, "root.json", min(self._max, _MAX_INDEX), sync=True
                         )
                         if existing != data:
@@ -532,7 +528,7 @@ class MainPersonalExactCasControllerCompositionJournal:
         return root
 
     def _identity_ref(
-        self, root: MainPersonalExactCasHostedIdentityEvidenceRoot, created_at: datetime
+        self, root: MainPersonalExactCasHostedIdentityEvidenceRoot
     ) -> ArtifactRef:
         data = canonical_bytes(root)
         return ArtifactRef(
@@ -543,7 +539,7 @@ class MainPersonalExactCasControllerCompositionJournal:
             size_bytes=len(data),
             media_type=_ROOT_MEDIA,
             role=_ROOT_ROLE,
-            created_at=created_at,
+            created_at=root.writer_diagnostic_artifact.created_at,
         )
 
     @staticmethod
@@ -584,7 +580,9 @@ class MainPersonalExactCasControllerCompositionJournal:
                     finally:
                         os.close(descriptor)
                 except FileExistsError:
-                    existing = _read_bounded_fd_at(fanout, hex_digest[2:], self._max, sync=True)
+                    existing = self._read_bounded_fd_at(
+                        fanout, hex_digest[2:], self._max, sync=True
+                    )
                     if existing != data:
                         raise ValueError("child object conflicts") from None
                 os.fsync(fanout)
@@ -623,7 +621,7 @@ class MainPersonalExactCasControllerCompositionJournal:
             fanout = _open_dir_at(self._objects_fd, hex_digest[:2], create=False)
             try:
                 self._check_descriptor(fanout)
-                return _read_bounded_fd_at(fanout, hex_digest[2:], self._max)
+                return self._read_bounded_fd_at(fanout, hex_digest[2:], self._max)
             finally:
                 os.close(fanout)
         return _read_path(self._objects / hex_digest[:2] / hex_digest[2:], self._max)
@@ -661,6 +659,7 @@ class MainPersonalExactCasControllerCompositionJournal:
             or package.package_digest != root.source_package_digest
             or composition.composition_digest != root.source_composition_digest
             or plan.package != package
+            or root.source_package_artifact != package.package_artifact
             or proof.operation_id != composition.operation_id
             or proof.source_operation_id != package.source_operation_id
             or proof.package_digest != composition.package_digest
@@ -682,6 +681,21 @@ class MainPersonalExactCasControllerCompositionJournal:
             or lease.expires_at != root.lease_expires_at
         ):
             raise ValueError("child closure differs from composition root")
+
+    def _read_bounded_fd_at(
+        self, parent: int, name: str, maximum: int, *, sync: bool = False
+    ) -> bytes:
+        """Read a child only after validating the opened leaf descriptor."""
+
+        descriptor = os.open(name, os.O_RDONLY | _NOFOLLOW, dir_fd=parent)
+        try:
+            self._check_descriptor(descriptor, directory=False)
+            result = _read_bounded(descriptor, maximum)
+            if sync:
+                os.fsync(descriptor)
+            return result
+        finally:
+            os.close(descriptor)
 
     @staticmethod
     def _check_ref(ref: ArtifactRef, digest: str, role: str, media: str, size: int) -> None:
@@ -832,17 +846,6 @@ def _read_bounded(descriptor: int, maximum: int) -> bytes:
     if len(data) > maximum:
         raise ValueError("bounded regular read failed")
     return data
-
-
-def _read_bounded_fd_at(parent: int, name: str, maximum: int, *, sync: bool = False) -> bytes:
-    descriptor = os.open(name, os.O_RDONLY | _NOFOLLOW, dir_fd=parent)
-    try:
-        result = _read_bounded(descriptor, maximum)
-        if sync:
-            os.fsync(descriptor)
-        return result
-    finally:
-        os.close(descriptor)
 
 
 def _read_path(path: Path, maximum: int, *, sync: bool = False) -> bytes:

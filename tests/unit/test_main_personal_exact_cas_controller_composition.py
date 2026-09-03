@@ -23,6 +23,9 @@ from avo_correlate.contracts.main_personal_exact_cas import (
     personal_cas_claim_digest,
     personal_cas_operation_id,
 )
+from avo_correlate.contracts.main_personal_exact_cas_hosted_identity import (
+    MainPersonalExactCasHostedIdentityEvidenceRoot,
+)
 from avo_correlate.domain.canonical import canonical_bytes
 from tests.unit.test_main_personal_exact_cas_hosted_identity_bundle import _bundle
 
@@ -133,6 +136,29 @@ def _root() -> MainPersonalExactCasControllerComposition:
     return MainPersonalExactCasControllerComposition.build(**values)
 
 
+def _identity_root() -> MainPersonalExactCasHostedIdentityEvidenceRoot:
+    return MainPersonalExactCasHostedIdentityEvidenceRoot.build(
+        writer_diagnostic_artifact=_ref(
+            "main-personal-exact-cas-hosted-configuration-diagnostic",
+            "application/vnd.avo.main-personal-exact-cas-hosted-configuration-diagnostic+json",
+        ),
+        writer_provenance_artifact=_ref(
+            "github-read-provenance", "application/vnd.avo.github-read-provenance+json"
+        ),
+        observer_snapshot_artifact=_ref(
+            "main-base-snapshot", "application/vnd.avo.main-base-snapshot+json"
+        ),
+        observer_provenance_artifact=_ref(
+            "github-read-provenance", "application/vnd.avo.github-read-provenance+json"
+        ),
+        observer_configuration_artifact=_ref(
+            "github-main-base-reader-configuration",
+            "application/vnd.avo.github-main-base-reader-configuration+json",
+        ),
+        bundle_digest=_DIGEST,
+    )
+
+
 def test_contract_is_frozen_canonical_and_non_authoritative() -> None:
     root = _root()
     assert canonical_bytes(root) == canonical_bytes(
@@ -184,6 +210,42 @@ def test_hosted_identity_bundle_is_semantically_revalidated() -> None:
         module._revalidate_identity_bundle(tampered)
     with pytest.raises(ValueError):
         module._revalidate_identity_bundle(object())
+
+
+def test_identity_artifact_ref_uses_identity_evidence_creation_time() -> None:
+    journal = object.__new__(module.MainPersonalExactCasControllerCompositionJournal)
+    identity = _identity_root()
+    reference = journal._identity_ref(identity)
+    assert reference.created_at == identity.writer_diagnostic_artifact.created_at
+
+
+def test_descriptor_child_reads_validate_the_opened_leaf(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def qualified(root: Path) -> DurableBackendQualification:
+        return DurableBackendQualification(
+            root=root.resolve(), qualified=True, reason="test-qualified", mount_id=1, device="8:0"
+        )
+
+    monkeypatch.setattr(module, "require_durable_backend", qualified)
+    monkeypatch.setattr(module, "_fsync_directory", lambda _path: None)
+    journal = module.MainPersonalExactCasControllerCompositionJournal(tmp_path / "journal")
+    if not journal._descriptor_mode:
+        pytest.skip("descriptor leaf validation is Linux-only")
+    parent = os.open(journal.root / "objects" / "sha256", os.O_RDONLY)
+    try:
+        digest = "e" * 64
+        (journal.root / "objects" / "sha256" / digest).write_bytes(b"child")
+        seen: list[bool] = []
+
+        def check(_descriptor: int, *, directory: bool = True) -> None:
+            seen.append(directory)
+
+        monkeypatch.setattr(journal, "_check_descriptor", check)
+        assert journal._read_bounded_fd_at(parent, digest, 16) == b"child"
+        assert seen == [False]
+    finally:
+        os.close(parent)
 
 
 def test_close_is_idempotent_and_blocks_operations(
