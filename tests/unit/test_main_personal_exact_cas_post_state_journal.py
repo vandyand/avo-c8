@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
@@ -23,12 +22,7 @@ from avo_correlate.adapters.artifacts.main_personal_exact_cas_post_state import 
     MainPersonalExactCasPostStateJournalError,
     MainPersonalExactCasReadOnlyPostStateJournal,
 )
-from avo_correlate.adapters.git.main_composition import MainBaseSnapshot
 from avo_correlate.adapters.hosted_git.github import github_repository_digest
-from avo_correlate.adapters.hosted_git.github_read_provenance import (
-    GitHubReadProvenance,
-    GitHubReadWithProvenance,
-)
 from avo_correlate.adapters.hosted_git.main_personal_exact_cas_post_state import (
     MainPersonalExactCasGitHubPostStateReader,
 )
@@ -70,19 +64,6 @@ def _authority(intent: Any, marker: Any) -> MainPersonalExactCasJournal:
     untyped.read_intent = read_intent
     untyped.read_dispatch_started = read_dispatch_started
     return authority
-
-
-class _FixedBase:
-    def __init__(self, snapshot: MainBaseSnapshot, provenance: GitHubReadProvenance) -> None:
-        self._result = GitHubReadWithProvenance(snapshot, provenance)
-
-    def fresh_main_base_with_provenance(self) -> GitHubReadWithProvenance[MainBaseSnapshot]:
-        return self._result
-
-
-class _FailingBase:
-    def fresh_main_base_with_provenance(self) -> Any:
-        raise RuntimeError("Bearer TOKEN-secret")
 
 
 def _configured(
@@ -130,30 +111,10 @@ def test_divergent_timestamp_or_topology_conflicts_without_replacing_winner(
     journal.capture(intent.operation_id)
     stored = journal.read(intent.operation_id)
     assert stored is not None
-    # Use a separate concrete reader for the alternate provenance.  The
-    # production reader's transport is deliberately single-use per observation.
-    probe_reader = _app_reader(
-        monkeypatch, _base_responses(commit="3" * 40, fence="3" * 40, tree="4" * 40)
-    )
-    original_observation = probe_reader._reader.fresh_main_base_with_provenance()
-    alternate_provenance = replace(
-        original_observation.provenance,
-        commit_digest=canonical_digest(
-            {"commit": "3" * 40, "tree": "5" * 40, "parents": ("c" * 40,)}
-        ),
-    )
-    object.__setattr__(
-        reader,
-        "_reader",
-        _FixedBase(
-            MainBaseSnapshot(
-                repository_digest=reader.repository_digest,
-                commit="3" * 40,
-                tree="5" * 40,
-                parents=("c" * 40,),
-            ),
-            alternate_provenance,
-        ),
+    # Re-arm the concrete base reader's owned transport seam for a divergent
+    # second observation while preserving its exact type and configuration.
+    reader._reader._transport._responses = _base_responses(
+        commit="3" * 40, fence="3" * 40, tree="5" * 40
     )
     original_read = journal.read
 
@@ -250,7 +211,7 @@ def test_secret_reader_failure_is_code_only_and_does_not_write(
 ) -> None:
     journal, reader, intent, _marker = _configured(monkeypatch, tmp_path)
 
-    object.__setattr__(reader, "_reader", _FailingBase())
+    reader._reader._transport._responses = [(200, RuntimeError("Bearer TOKEN-secret"))]
     with pytest.raises(MainPersonalExactCasPostStateJournalError) as raised:
         journal.capture(intent.operation_id)
     assert "TOKEN" not in repr(raised.value)
@@ -276,31 +237,13 @@ def test_missing_or_tampered_object_and_index_fail_closed(
         journal.read(intent.operation_id)
 
 
-def test_pre_intent_and_model_construct_outputs_are_rejected_before_write(
+def test_malformed_base_reader_output_is_rejected_before_write(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     journal, reader, intent, _marker = _configured(monkeypatch, tmp_path)
-    valid_reader = _app_reader(
-        monkeypatch, _base_responses(commit="3" * 40, fence="3" * 40)
-    )
-    valid = valid_reader._reader.fresh_main_base_with_provenance()
-    object.__setattr__(
-        reader,
-        "_reader",
-        _FixedBase(
-            MainBaseSnapshot(
-                repository_digest=reader.repository_digest,
-                commit="3" * 40,
-                tree="5" * 40,
-                parents=("c" * 40,),
-            ),
-            valid.provenance,
-        ),
-    )
+    reader._reader._transport._responses = [(200, {})]
     with pytest.raises(MainPersonalExactCasPostStateJournalError):
         journal.capture(intent.operation_id)
-    assert not list(journal.root.glob("artifacts/objects/sha256/*/*"))
-
     assert not list(journal.root.glob("artifacts/objects/sha256/*/*"))
 
 

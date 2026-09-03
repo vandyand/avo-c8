@@ -12,6 +12,7 @@ import pytest
 
 from avo_correlate.adapters.hosted_git import github_main_base_reader as base_module
 from avo_correlate.adapters.hosted_git.github_main_base_reader import (
+    GitHubMainBaseReader,
     GitHubMainBaseReaderConfiguration,
     GitHubMainBaseReaderCredentials,
 )
@@ -70,6 +71,14 @@ def _reader(monkeypatch: pytest.MonkeyPatch, responses: list[tuple[int, object]]
     return GitHubMainBasePostStateReader(
         config, GitHubMainBaseReaderCredentials("observer-app-jwt"), lambda: NOW
     )
+
+
+class _ForgedBaseReader:
+    def __init__(self, result: object) -> None:
+        self._result = result
+
+    def fresh_main_base_with_provenance(self) -> object:
+        return self._result
 
 
 def test_exact_observer_routes_app_jwt_then_one_scoped_installation_token(
@@ -138,6 +147,37 @@ def test_observer_is_frozen_and_has_no_mutation_surface(monkeypatch: pytest.Monk
         assert not hasattr(reader, name)
     with pytest.raises(FrozenInstanceError):
         reader._clock = lambda: datetime.now(UTC)  # type: ignore[misc]
+
+
+def test_private_reader_swap_is_rejected_before_forged_output_or_network(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    intent, _ = _chain()
+    target = _reader(monkeypatch, [])
+    source = _reader(monkeypatch, _responses())
+    forged = source._reader.fresh_main_base_with_provenance()
+    object.__setattr__(target, "_reader", _ForgedBaseReader(forged))
+    with pytest.raises(MainPersonalExactCasPostStateTransportError):
+        target.observe_with_provenance(intent)
+    assert target._reader._result is forged
+    assert target._reader is not source._reader
+    assert not target._credentials.app_jwt.endswith("writer-jwt")
+
+
+def test_private_real_reader_with_mismatched_configuration_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    intent, _ = _chain()
+    target = _reader(monkeypatch, [])
+    mismatched = replace(target._configuration, repo="other-repository")
+    object.__setattr__(
+        target,
+        "_reader",
+        GitHubMainBaseReader(mismatched, target._credentials),
+    )
+    with pytest.raises(MainPersonalExactCasPostStateTransportError):
+        target.observe_with_provenance(intent)
+    assert target._reader._transport.calls == []
 
 
 def test_transport_error_has_no_exception_context_or_secret(

@@ -352,8 +352,28 @@ class GitHubMainBasePostStateReader:
         try:
             checked = _revalidate_exact_intent(intent, self._configuration)
             self._configuration.assert_valid()
+            base_reader = self._reader
+            if type(base_reader) is not GitHubMainBaseReader:
+                raise TypeError("exact main base reader is required")
+            base_configuration = getattr(base_reader, "_configuration", None)
+            if type(base_configuration) is not GitHubMainBaseReaderConfiguration:
+                raise TypeError("main base reader configuration is malformed")
+            base_configuration.assert_valid()
+            if (
+                base_configuration.configuration_digest
+                != self._configuration.configuration_digest
+                or base_configuration.repository_digest
+                != self._configuration.repository_digest
+            ):
+                raise ValueError("main base reader configuration is not bound")
+            if (
+                type(getattr(base_reader, "_credentials", None))
+                is not GitHubMainBaseReaderCredentials
+                or getattr(base_reader, "_credentials", None) is not self._credentials
+            ):
+                raise ValueError("main base reader credentials are not bound")
             started = self._now()
-            observed = self._reader.fresh_main_base_with_provenance()
+            observed = base_reader.fresh_main_base_with_provenance()
             if type(observed) is not GitHubReadWithProvenance:
                 raise TypeError("main base provenance result is malformed")
             observed.provenance.assert_valid()
