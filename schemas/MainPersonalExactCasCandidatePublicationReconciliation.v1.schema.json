@@ -1,0 +1,127 @@
+{
+  "additionalProperties": false,
+  "description": "Read-only exact-ref reconciliation after a response or ambiguity.",
+  "properties": {
+    "candidate_commit": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Candidate Commit",
+      "type": "string"
+    },
+    "candidate_parents": {
+      "items": {
+        "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+        "type": "string"
+      },
+      "title": "Candidate Parents",
+      "type": "array"
+    },
+    "candidate_ref": {
+      "minLength": 1,
+      "title": "Candidate Ref",
+      "type": "string"
+    },
+    "candidate_tree": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Candidate Tree",
+      "type": "string"
+    },
+    "completion_authorized": {
+      "const": false,
+      "default": false,
+      "title": "Completion Authorized",
+      "type": "boolean"
+    },
+    "deploy_performed": {
+      "const": false,
+      "default": false,
+      "title": "Deploy Performed",
+      "type": "boolean"
+    },
+    "final_ref_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Final Ref Digest",
+      "type": "string"
+    },
+    "initial_ref_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Initial Ref Digest",
+      "type": "string"
+    },
+    "is_authoritative": {
+      "const": false,
+      "default": false,
+      "title": "Is Authoritative",
+      "type": "boolean"
+    },
+    "is_terminal": {
+      "const": false,
+      "default": false,
+      "title": "Is Terminal",
+      "type": "boolean"
+    },
+    "mutation_performed": {
+      "const": false,
+      "default": false,
+      "title": "Mutation Performed",
+      "type": "boolean"
+    },
+    "observed_at": {
+      "format": "date-time",
+      "title": "Observed At",
+      "type": "string"
+    },
+    "observer_provenance_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Observer Provenance Digest",
+      "type": "string"
+    },
+    "operation_id": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Operation Id",
+      "type": "string"
+    },
+    "readiness_authorized": {
+      "const": false,
+      "default": false,
+      "title": "Readiness Authorized",
+      "type": "boolean"
+    },
+    "reconciliation_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Reconciliation Digest",
+      "type": "string"
+    },
+    "repository_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Repository Digest",
+      "type": "string"
+    },
+    "response_evidence_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Response Evidence Digest",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "operation_id",
+    "repository_digest",
+    "candidate_ref",
+    "candidate_commit",
+    "candidate_tree",
+    "candidate_parents",
+    "initial_ref_digest",
+    "final_ref_digest",
+    "response_evidence_digest",
+    "observer_provenance_digest",
+    "observed_at",
+    "reconciliation_digest"
+  ],
+  "title": "MainPersonalExactCasCandidatePublicationReconciliation",
+  "type": "object"
+}

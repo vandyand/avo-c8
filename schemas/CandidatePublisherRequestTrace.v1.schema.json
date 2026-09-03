@@ -1,0 +1,33 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "credential_role": {
+      "enum": [
+        "app_jwt",
+        "installation_token"
+      ],
+      "title": "Credential Role",
+      "type": "string"
+    },
+    "method": {
+      "enum": [
+        "GET",
+        "POST"
+      ],
+      "title": "Method",
+      "type": "string"
+    },
+    "path": {
+      "minLength": 1,
+      "title": "Path",
+      "type": "string"
+    }
+  },
+  "required": [
+    "method",
+    "path",
+    "credential_role"
+  ],
+  "title": "CandidatePublisherRequestTrace",
+  "type": "object"
+}

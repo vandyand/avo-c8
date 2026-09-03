@@ -1,0 +1,234 @@
+{
+  "$defs": {
+    "CandidatePublisherRequestTrace": {
+      "additionalProperties": false,
+      "properties": {
+        "credential_role": {
+          "enum": [
+            "app_jwt",
+            "installation_token"
+          ],
+          "title": "Credential Role",
+          "type": "string"
+        },
+        "method": {
+          "enum": [
+            "GET",
+            "POST"
+          ],
+          "title": "Method",
+          "type": "string"
+        },
+        "path": {
+          "minLength": 1,
+          "title": "Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "method",
+        "path",
+        "credential_role"
+      ],
+      "title": "CandidatePublisherRequestTrace",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Sanitized provider evidence; never a receipt or terminal outcome.",
+  "properties": {
+    "candidate_commit": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Candidate Commit",
+      "type": "string"
+    },
+    "candidate_ref": {
+      "minLength": 1,
+      "title": "Candidate Ref",
+      "type": "string"
+    },
+    "completion_authorized": {
+      "const": false,
+      "default": false,
+      "title": "Completion Authorized",
+      "type": "boolean"
+    },
+    "configuration_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Configuration Digest",
+      "type": "string"
+    },
+    "deploy_performed": {
+      "const": false,
+      "default": false,
+      "title": "Deploy Performed",
+      "type": "boolean"
+    },
+    "dispatch_marker_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Dispatch Marker Digest",
+      "type": "string"
+    },
+    "evidence_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Evidence Digest",
+      "type": "string"
+    },
+    "intent_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Intent Digest",
+      "type": "string"
+    },
+    "is_authoritative": {
+      "const": false,
+      "default": false,
+      "title": "Is Authoritative",
+      "type": "boolean"
+    },
+    "is_terminal": {
+      "const": false,
+      "default": false,
+      "title": "Is Terminal",
+      "type": "boolean"
+    },
+    "mutation_performed": {
+      "const": false,
+      "default": false,
+      "title": "Mutation Performed",
+      "type": "boolean"
+    },
+    "observed_at": {
+      "format": "date-time",
+      "title": "Observed At",
+      "type": "string"
+    },
+    "operation_id": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Operation Id",
+      "type": "string"
+    },
+    "readiness_authorized": {
+      "const": false,
+      "default": false,
+      "title": "Readiness Authorized",
+      "type": "boolean"
+    },
+    "repository_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Repository Digest",
+      "type": "string"
+    },
+    "repository_id": {
+      "exclusiveMinimum": 0,
+      "title": "Repository Id",
+      "type": "integer"
+    },
+    "request_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Request Digest",
+      "type": "string"
+    },
+    "requests": {
+      "items": {
+        "$ref": "#/$defs/CandidatePublisherRequestTrace"
+      },
+      "title": "Requests",
+      "type": "array"
+    },
+    "response_classification": {
+      "enum": [
+        "created",
+        "conflict_or_rejected",
+        "configuration_or_validation_rejected",
+        "authentication_or_authorization_rejected",
+        "rate_limited",
+        "ambiguous",
+        "unverifiable"
+      ],
+      "title": "Response Classification",
+      "type": "string"
+    },
+    "response_metadata": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Response Metadata",
+      "type": "object"
+    },
+    "response_payload_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Response Payload Digest",
+      "type": "string"
+    },
+    "response_ref": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Response Ref"
+    },
+    "response_request_id": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Response Request Id"
+    },
+    "response_sha": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Response Sha"
+    },
+    "response_status": {
+      "maximum": 599,
+      "minimum": 100,
+      "title": "Response Status",
+      "type": "integer"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "operation_id",
+    "repository_digest",
+    "repository_id",
+    "candidate_ref",
+    "candidate_commit",
+    "intent_digest",
+    "dispatch_marker_digest",
+    "configuration_digest",
+    "request_digest",
+    "response_status",
+    "response_classification",
+    "response_payload_digest",
+    "requests",
+    "observed_at",
+    "evidence_digest"
+  ],
+  "title": "MainPersonalExactCasCandidatePublicationResponseEvidence",
+  "type": "object"
+}

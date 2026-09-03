@@ -73,6 +73,14 @@ from .main_personal_exact_cas_candidate_observer import (
     GitHubCandidateRefObserver,
     MainPersonalExactCasCandidateObservationError,
 )
+from .main_personal_exact_cas_candidate_publisher import (
+    GitHubCandidatePublisher,
+    GitHubCandidatePublisherConfig,
+    GitHubCandidatePublisherConfiguration,
+    GitHubCandidatePublisherCredentials,
+    GitHubCandidatePublisherError,
+    GitHubCandidateRefPublisher,
+)
 from .main_personal_exact_cas_hosted_configuration import (
     MainPersonalExactCasGitHubHostedConfigurationVerifier,
     MainPersonalExactCasHostedConfigurationUnverified,
@@ -128,9 +136,15 @@ __all__ = [
     "GitHubCampaignProvider",
     "GitHubCandidateObserver",
     "GitHubCandidateObserverError",
+    "GitHubCandidatePublisher",
+    "GitHubCandidatePublisherConfig",
+    "GitHubCandidatePublisherConfiguration",
+    "GitHubCandidatePublisherCredentials",
+    "GitHubCandidatePublisherError",
     "GitHubCandidateReadProvenance",
     "GitHubCandidateReadWithProvenance",
     "GitHubCandidateRefObserver",
+    "GitHubCandidateRefPublisher",
     "GitHubEvidenceSnapshot",
     "GitHubIntegrationProvider",
     "GitHubJsonTransport",

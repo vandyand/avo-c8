@@ -236,6 +236,15 @@ from avo_correlate.contracts.main_personal_exact_cas_candidate_observation impor
 from avo_correlate.contracts.main_personal_exact_cas_candidate_observation import (
     candidate_ref_for_operation as candidate_observation_ref_for_operation,
 )
+from avo_correlate.contracts.main_personal_exact_cas_candidate_publication import (
+    CandidatePublicationResponseClass,
+    CandidatePublisherRequestTrace,
+    MainPersonalExactCasCandidatePublicationDispatchStarted,
+    MainPersonalExactCasCandidatePublicationIntent,
+    MainPersonalExactCasCandidatePublicationReconciliation,
+    MainPersonalExactCasCandidatePublicationResponseEvidence,
+    candidate_publication_request_digest,
+)
 from avo_correlate.contracts.main_personal_exact_cas_controller_composition import (
     MainPersonalExactCasControllerComposition,
 )
@@ -336,6 +345,8 @@ __all__ = [
     "CampaignPreparationEvidence",
     "CandidateManifest",
     "CandidatePublicationBinding",
+    "CandidatePublicationResponseClass",
+    "CandidatePublisherRequestTrace",
     "ControllerClassificationEvidenceV2",
     "EconomicUsageRecord",
     "EligibilityLedgerStarted",
@@ -465,6 +476,10 @@ __all__ = [
     "MainPersonalExactCasCandidateObservation",
     "MainPersonalExactCasCandidateObservationRequest",
     "MainPersonalExactCasCandidatePolicyEvidence",
+    "MainPersonalExactCasCandidatePublicationDispatchStarted",
+    "MainPersonalExactCasCandidatePublicationIntent",
+    "MainPersonalExactCasCandidatePublicationReconciliation",
+    "MainPersonalExactCasCandidatePublicationResponseEvidence",
     "MainPersonalExactCasCompletion",
     "MainPersonalExactCasControllerComposition",
     "MainPersonalExactCasDispatchStarted",
@@ -550,6 +565,7 @@ __all__ = [
     "WorkspaceComparison",
     "campaign_package_bytes",
     "candidate_observation_ref_for_operation",
+    "candidate_publication_request_digest",
     "exact_cas_claim_digest",
     "exact_cas_operation_id",
     "exact_cas_raw_request_digest",
