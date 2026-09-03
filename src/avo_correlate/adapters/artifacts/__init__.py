@@ -46,6 +46,11 @@ from avo_correlate.adapters.artifacts.main_personal_exact_cas_journal import (
     MainPersonalExactCasJournalError,
     MainPersonalExactCasRecordConflictError,
 )
+from avo_correlate.adapters.artifacts.main_personal_exact_cas_post_state import (
+    MainPersonalExactCasPostStateJournalConflictError,
+    MainPersonalExactCasPostStateJournalError,
+    MainPersonalExactCasReadOnlyPostStateJournal,
+)
 from avo_correlate.adapters.artifacts.main_personal_exact_cas_response_evidence import (
     MainPersonalExactCasResponseEvidenceConflictError,
     MainPersonalExactCasResponseEvidenceJournal,
@@ -98,6 +103,9 @@ __all__ = [
     "MainPersonalExactCasAuthorityVerifier",
     "MainPersonalExactCasJournal",
     "MainPersonalExactCasJournalError",
+    "MainPersonalExactCasPostStateJournalConflictError",
+    "MainPersonalExactCasPostStateJournalError",
+    "MainPersonalExactCasReadOnlyPostStateJournal",
     "MainPersonalExactCasRecordConflictError",
     "MainPersonalExactCasResponseEvidenceConflictError",
     "MainPersonalExactCasResponseEvidenceJournal",
