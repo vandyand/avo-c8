@@ -79,8 +79,9 @@ generic-ref capability. No live CAS attempt or rollback occurred. Bootstrap `mai
 protection on `vandyand/avo-c8` is live with `enforce_admins=true`,
 `required_linear_history=true`, `allow_force_pushes=false`, `allow_deletions=false`, and no
 PR/status requirements; Terra reviewed it as a topology guard only, not writer isolation or
-readiness. The final writer-restricting ruleset, isolated writer
-principal, hosted denial tests, and live controller/transport integration are not provisioned. The
+readiness. The final writer-restricting ruleset, isolated writer principal, rollback-namespace
+rule, and initial hosted denial probes are now provisioned. Candidate `5e02ea1`, the complete
+hosted denial/recovery matrix, and live controller/transport integration remain unaccepted. The
 read-only trusted-source adapter is Terra-approved at `ae65b73`, the fail-closed durable-
 backend gate at `d9f6d3d`, and the offline exact-CAS contracts/journal at `a26fd7a` (15 passed,
 two Windows symlink-privilege skips). None enables provider/HTTP mutation. The live controller/
