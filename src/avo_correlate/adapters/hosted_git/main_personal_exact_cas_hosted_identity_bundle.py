@@ -276,6 +276,7 @@ def validate_hosted_configuration_provenance(
     base = "/repos/vandyand/avo-c8"
     writer = typed_diagnostic.writer_ruleset_id
     safety = typed_diagnostic.safety_ruleset_id
+    rollback = typed_diagnostic.rollback_ruleset_id
     requests = provenance.requests
     if type(requests) is not tuple or len(requests) != 22:
         raise ValueError("hosted writer provenance trace is not the exact 22-request trace")
@@ -298,12 +299,12 @@ def validate_hosted_configuration_provenance(
             GitHubReadRequest("GET", base + "/rulesets?per_page=100&page=1", "owner_admin_token"),
             GitHubReadRequest("GET", base + f"/rulesets/{writer}", "owner_admin_token"),
             GitHubReadRequest("GET", base + f"/rulesets/{safety}", "owner_admin_token"),
-            GitHubReadRequest("GET", base + "/rulesets/rollback", "owner_admin_token"),
+            GitHubReadRequest("GET", base + f"/rulesets/{rollback}", "owner_admin_token"),
             GitHubReadRequest("GET", base + "/branches/main/protection", "owner_admin_token"),
         )
 
-    # The rollback ruleset identity is not part of the public diagnostic, so
-    # validate that its observed request is an additional positive ruleset ID.
+    # The rollback request must bind to the exact positive identity exposed by
+    # the diagnostic.
     rollback_ids: list[int] = []
     for offset in (1, 11):
         observed = requests[offset : offset + 10]
@@ -317,8 +318,8 @@ def validate_hosted_configuration_provenance(
         if match is None or int(match.group(1)) in {writer, safety}:
             raise ValueError("hosted writer provenance ruleset identity is not exact")
         rollback_ids.append(int(match.group(1)))
-    if rollback_ids[0] != rollback_ids[1]:
-        raise ValueError("hosted writer provenance rollback identity drifted")
+    if tuple(rollback_ids) != (rollback, rollback):
+        raise ValueError("hosted writer provenance rollback identity differs from diagnostic")
     ref = GitHubReadRequest("GET", base + "/git/ref/heads/main", "owner_admin_token")
     if requests[0] != ref or requests[-1] != ref:
         raise ValueError("hosted writer provenance main fence differs")
@@ -415,10 +416,14 @@ class MainPersonalExactCasHostedIdentityEvidenceBundle:
     writer_configuration_digest: str
     writer_ruleset_digest: str
     writer_safety_ruleset_digest: str
+    writer_rollback_ruleset_id: int
+    writer_rollback_ruleset_name: str
+    writer_rollback_ruleset_digest: str
     writer_protection_ruleset_digest: str
     writer_source_digest: str
     writer_observation_digest: str
     writer_diagnostic_digest: str
+    writer_provenance_digest: str
     observer_app_id: int
     observer_installation_id: int
     observer_identity: str
@@ -455,6 +460,7 @@ class MainPersonalExactCasHostedIdentityEvidenceBundle:
             "writer_configuration_digest",
             "writer_ruleset_digest",
             "writer_safety_ruleset_digest",
+            "writer_rollback_ruleset_digest",
             "writer_protection_ruleset_digest",
             "writer_source_digest",
             "writer_observation_digest",
@@ -462,11 +468,13 @@ class MainPersonalExactCasHostedIdentityEvidenceBundle:
             "observer_base_snapshot_digest",
             "observer_configuration_digest",
             "observer_provenance_digest",
+            "writer_provenance_digest",
         ):
             _digest(getattr(self, name), f"identity bundle {name}")
         for name in (
             "writer_app_id",
             "writer_installation_id",
+            "writer_rollback_ruleset_id",
             "observer_app_id",
             "observer_installation_id",
             "owner_id",
@@ -485,6 +493,11 @@ class MainPersonalExactCasHostedIdentityEvidenceBundle:
             raise ValueError("identity bundle repository is invalid")
         if type(self.observer_identity) is not str or not self.observer_identity:
             raise ValueError("identity bundle observer identity is invalid")
+        if (
+            type(self.writer_rollback_ruleset_name) is not str
+            or not self.writer_rollback_ruleset_name
+        ):
+            raise ValueError("identity bundle rollback ruleset name is invalid")
         for name in (
             "is_authoritative",
             "is_terminal",
@@ -546,10 +559,14 @@ class MainPersonalExactCasHostedIdentityEvidenceBundle:
             "writer_configuration_digest": typed_writer.configuration_digest,
             "writer_ruleset_digest": typed_writer.writer_ruleset_digest,
             "writer_safety_ruleset_digest": typed_writer.safety_ruleset_digest,
+            "writer_rollback_ruleset_id": typed_writer.rollback_ruleset_id,
+            "writer_rollback_ruleset_name": typed_writer.rollback_ruleset_name,
+            "writer_rollback_ruleset_digest": typed_writer.rollback_ruleset_digest,
             "writer_protection_ruleset_digest": typed_writer.protection_ruleset_digest,
             "writer_source_digest": typed_writer.source_digest,
             "writer_observation_digest": typed_writer.observation_digest,
             "writer_diagnostic_digest": writer_digest,
+            "writer_provenance_digest": writer_provenance.provenance_digest,
             "observer_app_id": provenance.app_id,
             "observer_installation_id": provenance.installation_id,
             "observer_identity": provenance.app_slug,

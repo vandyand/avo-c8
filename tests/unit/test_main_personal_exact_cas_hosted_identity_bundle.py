@@ -59,11 +59,14 @@ def _writer(
         "writer_ruleset_name": "C8 main writer",
         "safety_ruleset_id": 202,
         "safety_ruleset_name": "C8 main safety",
+        "rollback_ruleset_id": 303,
+        "rollback_ruleset_name": "C8 rollback namespace",
         "writer_app_id": WRITER_APP_ID,
         "writer_installation_id": WRITER_INSTALLATION_ID,
         "selected_repository_ids": (REPOSITORY_ID,),
         "writer_ruleset_digest": D,
         "safety_ruleset_digest": "sha256:" + "2" * 64,
+        "rollback_ruleset_digest": "sha256:" + "a" * 64,
         "branch_protection_digest": "sha256:" + "3" * 64,
         "app_configuration_digest": "sha256:" + "4" * 64,
         "installation_configuration_digest": "sha256:" + "5" * 64,
@@ -242,11 +245,76 @@ def test_writer_safety_ruleset_request_cannot_be_skipped() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("rollback_ruleset_id", 304),
+        ("rollback_ruleset_name", "other rollback namespace"),
+        ("rollback_ruleset_digest", "sha256:" + "f" * 64),
+    ],
+)
+def test_writer_rollback_identity_tamper_is_revalidated(
+    field: str, value: object
+) -> None:
+    writer = _writer()
+    tampered = writer.result.model_copy(update={field: value})
+    observer, configuration = _observer()
+    with pytest.raises(ValueError):
+        MainPersonalExactCasHostedIdentityEvidenceBundle.build(
+            GitHubReadWithProvenance(tampered, writer.provenance), observer, configuration
+        )
+
+
+def test_writer_rollback_request_must_bind_to_diagnostic_id() -> None:
+    writer = _writer()
+    requests = list(writer.provenance.requests)
+    requests[8] = GitHubReadRequest(
+        "GET", "/repos/vandyand/avo-c8/rulesets/304", "owner_admin_token"
+    )
+    tampered = GitHubReadWithProvenance(
+        writer.result,
+        replace(writer.provenance, requests=tuple(requests)),
+    )
+    observer, configuration = _observer()
+    with pytest.raises(ValueError):
+        MainPersonalExactCasHostedIdentityEvidenceBundle.build(tampered, observer, configuration)
+
+
+def test_writer_provenance_digest_is_retained_and_tamper_fails_closed() -> None:
+    bundle = _bundle()
+    assert bundle.writer_provenance_digest == _writer().provenance.provenance_digest
+    object.__setattr__(bundle, "writer_provenance_digest", "sha256:" + "f" * 64)
+    with pytest.raises(ValueError, match="digest"):
+        bundle.assert_valid()
+
+
+def test_writer_model_copy_and_construct_are_revalidated() -> None:
+    writer = _writer()
+    observer, configuration = _observer()
+    copied = writer.result.model_copy(update={"rollback_ruleset_id": True})
+    with pytest.raises(ValueError):
+        MainPersonalExactCasHostedIdentityEvidenceBundle.build(
+            GitHubReadWithProvenance(copied, writer.provenance), observer, configuration
+        )
+    constructed_values = writer.result.model_dump()
+    constructed_values["rollback_ruleset_digest"] = "not-a-digest"
+    constructed = MainPersonalExactCasHostedConfigurationDiagnostic.model_construct(
+        **constructed_values
+    )
+    with pytest.raises(ValueError):
+        MainPersonalExactCasHostedIdentityEvidenceBundle.build(
+            GitHubReadWithProvenance(constructed, writer.provenance), observer, configuration
+        )
+
+
 def test_bundle_is_deterministic_scalar_and_non_authoritative() -> None:
     first = _bundle()
     second = _bundle()
     assert first == second
     assert first.bundle_digest == second.bundle_digest
+    assert first.writer_provenance_digest == _writer().provenance.provenance_digest
+    assert first.writer_rollback_ruleset_id == 303
+    assert first.writer_rollback_ruleset_name == "C8 rollback namespace"
     assert first.is_authoritative is False
     assert first.is_terminal is False
     assert first.readiness_authorized is False
