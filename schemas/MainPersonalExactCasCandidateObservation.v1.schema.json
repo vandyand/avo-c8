@@ -1,0 +1,244 @@
+{
+  "$defs": {
+    "MainPersonalExactCasCandidatePolicyEvidence": {
+      "additionalProperties": false,
+      "description": "Static namespace policy facts, or a precise statement of why absent.",
+      "properties": {
+        "deletion_coverage": {
+          "enum": [
+            "covered",
+            "unverifiable"
+          ],
+          "title": "Deletion Coverage",
+          "type": "string"
+        },
+        "evidence_digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Evidence Digest",
+          "type": "string"
+        },
+        "force_update_coverage": {
+          "enum": [
+            "covered",
+            "unverifiable"
+          ],
+          "title": "Force Update Coverage",
+          "type": "string"
+        },
+        "missing_prerequisite": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Missing Prerequisite"
+        },
+        "namespace": {
+          "const": "refs/heads/avo/candidate/*",
+          "title": "Namespace",
+          "type": "string"
+        },
+        "ruleset_digest": {
+          "anyOf": [
+            {
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Ruleset Digest"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "status": {
+          "enum": [
+            "verified",
+            "unverifiable"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "namespace",
+        "deletion_coverage",
+        "force_update_coverage",
+        "status",
+        "evidence_digest"
+      ],
+      "title": "MainPersonalExactCasCandidatePolicyEvidence",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "A fenced, read-only candidate topology observation.",
+  "properties": {
+    "candidate_commit": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Candidate Commit",
+      "type": "string"
+    },
+    "candidate_parents": {
+      "items": {
+        "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+        "type": "string"
+      },
+      "title": "Candidate Parents",
+      "type": "array"
+    },
+    "candidate_ref": {
+      "minLength": 1,
+      "title": "Candidate Ref",
+      "type": "string"
+    },
+    "candidate_tree": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Candidate Tree",
+      "type": "string"
+    },
+    "commit_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Commit Digest",
+      "type": "string"
+    },
+    "completion_authorized": {
+      "const": false,
+      "default": false,
+      "title": "Completion Authorized",
+      "type": "boolean"
+    },
+    "deploy_performed": {
+      "const": false,
+      "default": false,
+      "title": "Deploy Performed",
+      "type": "boolean"
+    },
+    "final_ref_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Final Ref Digest",
+      "type": "string"
+    },
+    "finished_at": {
+      "format": "date-time",
+      "title": "Finished At",
+      "type": "string"
+    },
+    "initial_ref_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Initial Ref Digest",
+      "type": "string"
+    },
+    "is_authoritative": {
+      "const": false,
+      "default": false,
+      "title": "Is Authoritative",
+      "type": "boolean"
+    },
+    "is_terminal": {
+      "const": false,
+      "default": false,
+      "title": "Is Terminal",
+      "type": "boolean"
+    },
+    "mutation_performed": {
+      "const": false,
+      "default": false,
+      "title": "Mutation Performed",
+      "type": "boolean"
+    },
+    "observation_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Observation Digest",
+      "type": "string"
+    },
+    "operation_id": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Operation Id",
+      "type": "string"
+    },
+    "owner": {
+      "minLength": 1,
+      "title": "Owner",
+      "type": "string"
+    },
+    "owner_id": {
+      "exclusiveMinimum": 0,
+      "title": "Owner Id",
+      "type": "integer"
+    },
+    "policy": {
+      "$ref": "#/$defs/MainPersonalExactCasCandidatePolicyEvidence"
+    },
+    "readiness_authorized": {
+      "const": false,
+      "default": false,
+      "title": "Readiness Authorized",
+      "type": "boolean"
+    },
+    "repository": {
+      "minLength": 1,
+      "title": "Repository",
+      "type": "string"
+    },
+    "repository_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Repository Digest",
+      "type": "string"
+    },
+    "repository_id": {
+      "exclusiveMinimum": 0,
+      "title": "Repository Id",
+      "type": "integer"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "started_at": {
+      "format": "date-time",
+      "title": "Started At",
+      "type": "string"
+    },
+    "verification_status": {
+      "const": "observed",
+      "default": "observed",
+      "title": "Verification Status",
+      "type": "string"
+    }
+  },
+  "required": [
+    "operation_id",
+    "repository_digest",
+    "owner",
+    "owner_id",
+    "repository",
+    "repository_id",
+    "candidate_ref",
+    "candidate_commit",
+    "candidate_tree",
+    "candidate_parents",
+    "initial_ref_digest",
+    "commit_digest",
+    "final_ref_digest",
+    "policy",
+    "started_at",
+    "finished_at",
+    "observation_digest"
+  ],
+  "title": "MainPersonalExactCasCandidateObservation",
+  "type": "object"
+}

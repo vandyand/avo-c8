@@ -231,6 +231,14 @@ from avo_correlate.contracts.main_personal_exact_cas import (
 from avo_correlate.contracts.main_personal_exact_cas_controller_composition import (
     MainPersonalExactCasControllerComposition,
 )
+from avo_correlate.contracts.main_personal_exact_cas_candidate_observation import (
+    MainPersonalExactCasCandidateObservation,
+    MainPersonalExactCasCandidateObservationRequest,
+    MainPersonalExactCasCandidatePolicyEvidence,
+)
+from avo_correlate.contracts.main_personal_exact_cas_candidate_observation import (
+    candidate_ref_for_operation as candidate_observation_ref_for_operation,
+)
 from avo_correlate.contracts.main_personal_exact_cas_hosted_configuration import (
     MainPersonalExactCasHostedConfigurationDiagnostic,
 )
@@ -454,6 +462,9 @@ __all__ = [
     "MainMutationStage",
     "MainPersonalExactCasActivation",
     "MainPersonalExactCasAuthorization",
+    "MainPersonalExactCasCandidateObservation",
+    "MainPersonalExactCasCandidateObservationRequest",
+    "MainPersonalExactCasCandidatePolicyEvidence",
     "MainPersonalExactCasCompletion",
     "MainPersonalExactCasControllerComposition",
     "MainPersonalExactCasDispatchStarted",
@@ -538,6 +549,7 @@ __all__ = [
     "VersionedComponentRef",
     "WorkspaceComparison",
     "campaign_package_bytes",
+    "candidate_observation_ref_for_operation",
     "exact_cas_claim_digest",
     "exact_cas_operation_id",
     "exact_cas_raw_request_digest",
