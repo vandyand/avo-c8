@@ -27,6 +27,7 @@ from avo_correlate.adapters.hosted_git.main_personal_exact_cas_hosted_configurat
 from avo_correlate.contracts.main_personal_exact_cas_hosted_configuration import (
     MainPersonalExactCasHostedConfigurationDiagnostic,
 )
+from avo_correlate.domain.canonical import canonical_digest
 
 NOW = datetime(2026, 9, 2, 12, tzinfo=UTC)
 SHA = "a" * 40
@@ -385,6 +386,16 @@ def test_exact_configuration_returns_non_authoritative_diagnostic() -> None:
     assert result.repository_id == REPOSITORY_ID
     assert result.writer_app_id == APP_ID
     assert result.writer_installation_id == INSTALLATION_ID
+    assert result.rollback_ruleset_id == 303
+    assert result.rollback_ruleset_name == "AVO C8 rollback namespace"
+    assert result.rollback_ruleset_digest.startswith("sha256:")
+    assert result.protection_ruleset_digest == canonical_digest(
+        {
+            "writer_ruleset": result.writer_ruleset_digest,
+            "safety_ruleset": result.safety_ruleset_digest,
+            "rollback_ruleset": result.rollback_ruleset_digest,
+        }
+    )
     assert result.selected_repository_ids == (REPOSITORY_ID,)
     assert result.first_pass_digest == result.second_pass_digest
     assert result.is_authoritative is False
@@ -714,6 +725,16 @@ def test_observation_contract_rejects_identity_forgery() -> None:
         MainPersonalExactCasHostedConfigurationDiagnostic.model_validate(
             forged.model_dump(mode="json")
         )
+
+
+def test_rollback_ruleset_id_is_strictly_positive_and_non_boolean() -> None:
+    subject, _ = _subject()
+    result = subject.verify()
+    for value in (True, 0, -1):
+        payload = result.model_dump(mode="json")
+        payload["rollback_ruleset_id"] = value
+        with pytest.raises(ValueError):
+            MainPersonalExactCasHostedConfigurationDiagnostic.model_validate(payload)
 
 
 def test_public_verifier_surface_is_read_only_and_non_authoritative() -> None:

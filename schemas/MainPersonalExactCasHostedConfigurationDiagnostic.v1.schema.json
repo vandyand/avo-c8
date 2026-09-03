@@ -133,6 +133,21 @@
       "title": "Repository Selection",
       "type": "string"
     },
+    "rollback_ruleset_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Rollback Ruleset Digest",
+      "type": "string"
+    },
+    "rollback_ruleset_id": {
+      "exclusiveMinimum": 0,
+      "title": "Rollback Ruleset Id",
+      "type": "integer"
+    },
+    "rollback_ruleset_name": {
+      "minLength": 1,
+      "title": "Rollback Ruleset Name",
+      "type": "string"
+    },
     "safety_ruleset_digest": {
       "pattern": "^sha256:[0-9a-f]{64}$",
       "title": "Safety Ruleset Digest",
@@ -259,11 +274,14 @@
     "writer_ruleset_name",
     "safety_ruleset_id",
     "safety_ruleset_name",
+    "rollback_ruleset_id",
+    "rollback_ruleset_name",
     "writer_app_id",
     "writer_installation_id",
     "selected_repository_ids",
     "writer_ruleset_digest",
     "safety_ruleset_digest",
+    "rollback_ruleset_digest",
     "branch_protection_digest",
     "app_configuration_digest",
     "installation_configuration_digest",

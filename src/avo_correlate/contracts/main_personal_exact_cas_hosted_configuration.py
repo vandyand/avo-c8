@@ -41,6 +41,8 @@ class MainPersonalExactCasHostedConfigurationDiagnostic(StrictModel):
     writer_ruleset_name: NonEmptyString
     safety_ruleset_id: StrictInt = Field(gt=0)
     safety_ruleset_name: NonEmptyString
+    rollback_ruleset_id: StrictInt = Field(gt=0)
+    rollback_ruleset_name: NonEmptyString
     writer_app_id: StrictInt = Field(gt=0)
     writer_app_slug: Literal["avo-c8-main-writer-vandyand"] = _APP_SLUG
     writer_app_name: Literal["avo-c8-main-writer-vandyand"] = _APP_SLUG
@@ -55,6 +57,7 @@ class MainPersonalExactCasHostedConfigurationDiagnostic(StrictModel):
     subscribed_events: tuple[str, ...] = ()
     writer_ruleset_digest: Sha256Digest
     safety_ruleset_digest: Sha256Digest
+    rollback_ruleset_digest: Sha256Digest
     branch_protection_digest: Sha256Digest
     app_configuration_digest: Sha256Digest
     installation_configuration_digest: Sha256Digest
@@ -84,7 +87,13 @@ class MainPersonalExactCasHostedConfigurationDiagnostic(StrictModel):
             minutes=5
         ):
             raise ValueError("hosted configuration observation window is invalid")
-        if self.writer_ruleset_id == self.safety_ruleset_id:
+        if len(
+            {
+                self.writer_ruleset_id,
+                self.safety_ruleset_id,
+                self.rollback_ruleset_id,
+            }
+        ) != 3:
             raise ValueError("hosted configuration ruleset identities overlap")
         if self.selected_repository_ids != (self.repository_id,):
             raise ValueError("hosted configuration selected repository is not exact")
@@ -96,6 +105,7 @@ class MainPersonalExactCasHostedConfigurationDiagnostic(StrictModel):
             {
                 "writer_ruleset": self.writer_ruleset_digest,
                 "safety_ruleset": self.safety_ruleset_digest,
+                "rollback_ruleset": self.rollback_ruleset_digest,
             }
         )
         if self.protection_ruleset_digest != expected_protection:
@@ -110,6 +120,8 @@ class MainPersonalExactCasHostedConfigurationDiagnostic(StrictModel):
                 "writer_ruleset_name": self.writer_ruleset_name,
                 "safety_ruleset_id": self.safety_ruleset_id,
                 "safety_ruleset_name": self.safety_ruleset_name,
+                "rollback_ruleset_id": self.rollback_ruleset_id,
+                "rollback_ruleset_name": self.rollback_ruleset_name,
                 "writer_app_id": self.writer_app_id,
                 "writer_installation_id": self.writer_installation_id,
                 "writer_app_homepage": self.writer_app_homepage,
@@ -145,6 +157,7 @@ class MainPersonalExactCasHostedConfigurationDiagnostic(StrictModel):
             {
                 "writer_ruleset": values["writer_ruleset_digest"],
                 "safety_ruleset": values["safety_ruleset_digest"],
+                "rollback_ruleset": values["rollback_ruleset_digest"],
             }
         )
         values["configuration_digest"] = canonical_digest(
@@ -157,6 +170,8 @@ class MainPersonalExactCasHostedConfigurationDiagnostic(StrictModel):
                 "writer_ruleset_name": values["writer_ruleset_name"],
                 "safety_ruleset_id": values["safety_ruleset_id"],
                 "safety_ruleset_name": values["safety_ruleset_name"],
+                "rollback_ruleset_id": values["rollback_ruleset_id"],
+                "rollback_ruleset_name": values["rollback_ruleset_name"],
                 "writer_app_id": values["writer_app_id"],
                 "writer_installation_id": values["writer_installation_id"],
                 "writer_app_homepage": values.get(
