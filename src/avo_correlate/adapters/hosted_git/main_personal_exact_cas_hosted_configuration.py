@@ -70,6 +70,7 @@ class _ConfigurationPass:
     installation_configuration_digest: str
     selected_repositories_digest: str
     raw_digest: str
+    ruleset_request_ids: tuple[int, ...]
 
 
 class MainPersonalExactCasGitHubHostedConfigurationVerifier:
@@ -114,17 +115,15 @@ class MainPersonalExactCasGitHubHostedConfigurationVerifier:
         observed_owner_id = 0
         observed_app_id = 0
         observed_installation_id = 0
-        previous_trace = getattr(self, "_provenance_trace", None)
-        self._provenance_trace = requests
         try:
             started = self._now()
-            initial_commit, initial_ref_digest = self._read_main_ref()
-            first = self._configuration_pass()
-            second = self._configuration_pass()
+            initial_commit, initial_ref_digest = self._read_main_ref(requests)
+            first = self._configuration_pass(requests)
+            second = self._configuration_pass(requests)
             observed_owner_id = first.owner_id
             observed_app_id = first.app_id
             observed_installation_id = first.installation_id
-            final_commit, final_ref_digest = self._read_main_ref()
+            final_commit, final_ref_digest = self._read_main_ref(requests)
             finished = self._now()
             if (
                 initial_commit != final_commit
@@ -134,6 +133,8 @@ class MainPersonalExactCasGitHubHostedConfigurationVerifier:
                 or finished - started > _MAX_OBSERVATION
             ):
                 raise ValueError("configuration observation drifted")
+            if tuple(requests) != _expected_trace(first, second):
+                raise ValueError("authenticated read trace is incomplete")
             result = MainPersonalExactCasHostedConfigurationDiagnostic.build(
                 repository_digest=github_repository_digest(_OWNER, _REPOSITORY),
                 owner=_OWNER,
@@ -177,11 +178,9 @@ class MainPersonalExactCasGitHubHostedConfigurationVerifier:
             error = MainPersonalExactCasHostedConfigurationUnverified()
             error.__cause__ = None
             error.__context__ = None
-            self._provenance_trace = previous_trace
             raise error
         typed_result = result
-        try:
-            provenance = GitHubReadProvenance(
+        provenance = GitHubReadProvenance(
                 reader_identity=_READER_IDENTITY,
                 api_origin=_API_ORIGIN,
                 api_version=_API_VERSION,
@@ -219,32 +218,30 @@ class MainPersonalExactCasGitHubHostedConfigurationVerifier:
                 ),
                 configuration_digest=typed_result.configuration_digest,
             )
-        finally:
-            self._provenance_trace = previous_trace
         return GitHubReadWithProvenance(result=typed_result, provenance=provenance)
 
-    def _configuration_pass(self) -> _ConfigurationPass:
+    def _configuration_pass(self, trace: list[GitHubReadRequest]) -> _ConfigurationPass:
         raw: dict[str, JsonValue] = {}
-        repo = self._object(self._get(self._repo_path(), self._owner_admin_token))
+        repo = self._object(self._get(self._repo_path(), self._owner_admin_token, trace))
         raw["repository"] = repo
         owner_id = self._verify_repository(repo)
 
-        app = self._object(self._get("/app", self._app_jwt))
+        app = self._object(self._get("/app", self._app_jwt, trace))
         raw["app"] = app
         app_id = self._verify_app(app, owner_id)
 
         installations, installation_raw = self._read_array_pages(
-            "/app/installations", self._app_jwt
+            "/app/installations", self._app_jwt, trace
         )
         raw["installations"] = installation_raw
         if len(installations) != 1:
             raise ValueError("App installation is not exclusive")
         installation = self._object(installations[0])
         installation_id = self._verify_installation(installation, app_id, owner_id)
-        installation_token = self._mint_read_token(installation_id, owner_id)
+        installation_token = self._mint_read_token(installation_id, owner_id, trace)
 
         repositories, selected_raw = self._read_object_pages(
-            "/installation/repositories", "repositories", installation_token
+            "/installation/repositories", "repositories", installation_token, trace
         )
         raw["selected_repositories"] = selected_raw
         if len(repositories) != 1:
@@ -252,22 +249,26 @@ class MainPersonalExactCasGitHubHostedConfigurationVerifier:
         self._verify_selected_repository(self._object(repositories[0]), owner_id)
 
         summaries, ruleset_raw = self._read_array_pages(
-            self._repo_path() + "/rulesets", self._owner_admin_token
+            self._repo_path() + "/rulesets", self._owner_admin_token, trace
         )
         raw["rulesets"] = ruleset_raw
         if len(summaries) != 3:
             raise ValueError("ruleset set is not exact")
         details: list[JsonObject] = []
+        ruleset_request_ids: list[int] = []
         seen: set[int] = set()
         for summary_value in summaries:
             summary = self._object(summary_value)
             ident = self._positive_int(summary, "id")
+            ruleset_request_ids.append(ident)
             if ident in seen:
                 raise ValueError("duplicate ruleset identity")
             seen.add(ident)
             self._verify_ruleset_summary(summary)
             detail = self._object(
-                self._get(self._repo_path() + f"/rulesets/{ident}", self._owner_admin_token)
+                self._get(
+                    self._repo_path() + f"/rulesets/{ident}", self._owner_admin_token, trace
+                )
             )
             self._verify_summary_detail(summary, detail)
             details.append(detail)
@@ -276,7 +277,9 @@ class MainPersonalExactCasGitHubHostedConfigurationVerifier:
         writer, safety, rollback = self._classify_rulesets(details, app_id)
 
         protection = self._object(
-            self._get(self._repo_path() + "/branches/main/protection", self._owner_admin_token)
+            self._get(
+                self._repo_path() + "/branches/main/protection", self._owner_admin_token, trace
+            )
         )
         raw["branch_protection"] = protection
         self._verify_branch_protection(protection)
@@ -292,9 +295,12 @@ class MainPersonalExactCasGitHubHostedConfigurationVerifier:
             installation_configuration_digest=canonical_digest(installation),
             selected_repositories_digest=canonical_digest(selected_raw),
             raw_digest=canonical_digest(raw),
+            ruleset_request_ids=tuple(ruleset_request_ids),
         )
 
-    def _mint_read_token(self, installation_id: int, owner_id: int) -> str:
+    def _mint_read_token(
+        self, installation_id: int, owner_id: int, trace: list[GitHubReadRequest]
+    ) -> str:
         """Mint and validate the exact read-scoped token for this pass."""
 
         body: JsonBody = {
@@ -314,15 +320,13 @@ class MainPersonalExactCasGitHubHostedConfigurationVerifier:
         )
         if type(status) is not int or status != 201:
             raise ValueError("installation token mint failed")
-        trace = getattr(self, "_provenance_trace", None)
-        if trace is not None:
-            trace.append(
-                GitHubReadRequest(
-                    "POST",
-                    f"/app/installations/{installation_id}/access_tokens",
-                    "app_jwt",
-                )
+        trace.append(
+            GitHubReadRequest(
+                "POST",
+                f"/app/installations/{installation_id}/access_tokens",
+                "app_jwt",
             )
+        )
         result = self._object(value)
         token = self._string(result, "token")
         expires_at = self._string(result, "expires_at")
@@ -351,9 +355,9 @@ class MainPersonalExactCasGitHubHostedConfigurationVerifier:
             raise ValueError("installation token expiry is not exact")
         return token
 
-    def _read_main_ref(self) -> tuple[GitObject, str]:
+    def _read_main_ref(self, trace: list[GitHubReadRequest]) -> tuple[GitObject, str]:
         value = self._object(
-            self._get(self._repo_path() + "/git/ref/heads/main", self._owner_admin_token)
+            self._get(self._repo_path() + "/git/ref/heads/main", self._owner_admin_token, trace)
         )
         obj = self._object(value.get("object"))
         sha = self._string(obj, "sha")
@@ -362,13 +366,15 @@ class MainPersonalExactCasGitHubHostedConfigurationVerifier:
         checked = sha
         if _OBJECT_PATTERN.fullmatch(checked) is None:
             raise ValueError("main ref object is malformed")
-        return checked, canonical_digest(value)
+        return checked, canonical_digest(_safe_ref_projection(checked))
 
-    def _read_array_pages(self, path: str, token: str) -> tuple[list[JsonValue], JsonValue]:
+    def _read_array_pages(
+        self, path: str, token: str, trace: list[GitHubReadRequest]
+    ) -> tuple[list[JsonValue], JsonValue]:
         items: list[JsonValue] = []
         pages: list[JsonValue] = []
         for page in range(1, _MAX_PAGES + 1):
-            value = self._get(f"{path}?per_page={_PAGE_SIZE}&page={page}", token)
+            value = self._get(f"{path}?per_page={_PAGE_SIZE}&page={page}", token, trace)
             if not isinstance(value, list):
                 raise ValueError("paginated response is malformed")
             copied = copy.deepcopy(value)
@@ -379,14 +385,14 @@ class MainPersonalExactCasGitHubHostedConfigurationVerifier:
         raise ValueError("pagination bound reached")
 
     def _read_object_pages(
-        self, path: str, key: str, token: str
+        self, path: str, key: str, token: str, trace: list[GitHubReadRequest]
     ) -> tuple[list[JsonValue], JsonValue]:
         items: list[JsonValue] = []
         pages: list[JsonValue] = []
         expected_total: int | None = None
         for page in range(1, _MAX_PAGES + 1):
             value = self._object(
-                self._get(f"{path}?per_page={_PAGE_SIZE}&page={page}", token)
+                self._get(f"{path}?per_page={_PAGE_SIZE}&page={page}", token, trace)
             )
             total = self._nonnegative_int(value, "total_count")
             page_items = value.get(key)
@@ -404,7 +410,7 @@ class MainPersonalExactCasGitHubHostedConfigurationVerifier:
                 raise ValueError("paginated response count is ambiguous")
         raise ValueError("pagination bound reached")
 
-    def _get(self, path: str, token: str) -> JsonValue:
+    def _get(self, path: str, token: str, trace: list[GitHubReadRequest]) -> JsonValue:
         status, value = self._transport(
             "GET",
             _API_ORIGIN + path,
@@ -417,16 +423,14 @@ class MainPersonalExactCasGitHubHostedConfigurationVerifier:
         )
         if type(status) is not int or status != 200:
             raise ValueError("GitHub read failed")
-        trace = getattr(self, "_provenance_trace", None)
-        if trace is not None:
-            role = (
-                "app_jwt"
-                if path == "/app" or path.startswith("/app/installations")
-                else "installation_token"
-                if path.startswith("/installation/")
-                else "owner_admin_token"
-            )
-            trace.append(GitHubReadRequest("GET", path, role))
+        role = (
+            "app_jwt"
+            if path == "/app" or path.startswith("/app/installations")
+            else "installation_token"
+            if path.startswith("/installation/")
+            else "owner_admin_token"
+        )
+        trace.append(GitHubReadRequest("GET", path, role))
         return copy.deepcopy(value)
 
     @staticmethod
@@ -689,6 +693,43 @@ class MainPersonalExactCasGitHubHostedConfigurationVerifier:
         if type(value) is not datetime or value.tzinfo is None or value.utcoffset() is None:
             raise ValueError("trusted time is unavailable")
         return value
+
+
+def _safe_ref_projection(sha: str) -> dict[str, object]:
+    return {"ref": _TARGET_REF, "object": {"type": "commit", "sha": sha}}
+
+
+def _expected_trace(
+    first: _ConfigurationPass, second: _ConfigurationPass
+) -> tuple[GitHubReadRequest, ...]:
+    def pass_trace(configuration: _ConfigurationPass) -> tuple[GitHubReadRequest, ...]:
+        base = "/repos/vandyand/avo-c8"
+        return (
+            GitHubReadRequest("GET", base, "owner_admin_token"),
+            GitHubReadRequest("GET", "/app", "app_jwt"),
+            GitHubReadRequest(
+                "GET", "/app/installations?per_page=100&page=1", "app_jwt"
+            ),
+            GitHubReadRequest(
+                "POST",
+                f"/app/installations/{configuration.installation_id}/access_tokens",
+                "app_jwt",
+            ),
+            GitHubReadRequest(
+                "GET", "/installation/repositories?per_page=100&page=1", "installation_token"
+            ),
+            GitHubReadRequest("GET", base + "/rulesets?per_page=100&page=1", "owner_admin_token"),
+            *(
+                GitHubReadRequest("GET", base + f"/rulesets/{ident}", "owner_admin_token")
+                for ident in configuration.ruleset_request_ids
+            ),
+            GitHubReadRequest(
+                "GET", base + "/branches/main/protection", "owner_admin_token"
+            ),
+        )
+
+    ref = GitHubReadRequest("GET", "/repos/vandyand/avo-c8/git/ref/heads/main", "owner_admin_token")
+    return (ref, *pass_trace(first), *pass_trace(second), ref)
 
 
 __all__ = [

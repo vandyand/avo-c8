@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import copy
 import inspect
+import threading
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -457,6 +459,45 @@ def test_authenticated_configuration_provenance_is_canonical_and_secret_free() -
         replace(provenance, app_id=APP_ID + 1).provenance_digest
         != provenance.provenance_digest
     )
+
+
+def test_same_verifier_concurrent_reads_keep_operation_local_complete_traces() -> None:
+    class ConcurrentTransport:
+        def __init__(self) -> None:
+            self.local = threading.local()
+            self.barrier = threading.Barrier(2)
+
+        def __call__(
+            self, method: str, url: str, body: JsonBody | None, headers: Mapping[str, str]
+        ) -> tuple[int, JsonValue]:
+            del method, url, body, headers
+            responses = getattr(self.local, "responses", None)
+            if responses is None:
+                responses = _responses()
+                self.local.responses = responses
+            self.barrier.wait(timeout=5)
+            response = responses.pop(0)
+            assert not isinstance(response, BaseException)
+            return copy.deepcopy(response)
+
+    subject = MainPersonalExactCasGitHubHostedConfigurationVerifier(
+        owner_admin_token=OWNER_ADMIN_TOKEN,
+        app_jwt=APP_TOKEN,
+        trusted_clock=lambda: NOW,
+        transport=ConcurrentTransport(),
+    )
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: subject.verify_with_provenance(), (1, 2)))
+    assert len(results) == 2
+    first, second = results
+    assert first.result == second.result
+    assert first.provenance.provenance_digest == second.provenance.provenance_digest
+    assert len(first.provenance.requests) == len(second.provenance.requests) == 22
+    assert [item.credential_role for item in first.provenance.requests] == [
+        item.credential_role for item in second.provenance.requests
+    ]
+    assert first.provenance.requests[0].path.endswith("/git/ref/heads/main")
+    assert first.provenance.requests[-1].path.endswith("/git/ref/heads/main")
 
 
 def test_documented_app_shape_without_optional_flags_is_accepted() -> None:

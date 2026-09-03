@@ -524,6 +524,23 @@ def test_authenticated_read_provenance_is_canonical_frozen_and_secret_free(
         provenance.app_id = APP_ID + 1  # type: ignore[misc]
 
 
+def test_ref_provenance_ignores_unvalidated_response_extra_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    baseline = _reader(monkeypatch, _responses()).fresh_main_base_with_provenance()
+    responses = _responses()
+    for index in (4, 6):
+        ref = responses[index][1]
+        assert isinstance(ref, dict)
+        ref["secret_canary"] = "admin-token-secret-canary"
+    changed = _reader(monkeypatch, responses).fresh_main_base_with_provenance()
+    assert changed.result == baseline.result
+    assert changed.provenance.initial_ref_digest == baseline.provenance.initial_ref_digest
+    assert changed.provenance.final_ref_digest == baseline.provenance.final_ref_digest
+    assert changed.provenance.provenance_digest == baseline.provenance.provenance_digest
+    assert "admin-token-secret-canary" not in repr(changed.provenance)
+
+
 def test_post_construction_configuration_tamper_fails_on_every_reader_boundary() -> None:
     config = _configuration()
     reader = GitHubMainBaseReader(config, _credentials())
