@@ -69,6 +69,10 @@ from .main_personal_exact_cas_hosted_configuration import (
     MainPersonalExactCasGitHubHostedConfigurationVerifier,
     MainPersonalExactCasHostedConfigurationUnverified,
 )
+from .main_personal_exact_cas_hosted_identity_bundle import (
+    MainPersonalExactCasHostedIdentityEvidenceBundle,
+    build_main_personal_exact_cas_hosted_identity_evidence_bundle,
+)
 from .main_personal_exact_cas_post_state import (
     MainPersonalExactCasGitHubPostStateReader,
     MainPersonalExactCasPostStateTransportError,
@@ -133,6 +137,7 @@ __all__ = [
     "MainPersonalExactCasGitHubHostedConfigurationVerifier",
     "MainPersonalExactCasGitHubPostStateReader",
     "MainPersonalExactCasHostedConfigurationUnverified",
+    "MainPersonalExactCasHostedIdentityEvidenceBundle",
     "MainPersonalExactCasPostStateTransportError",
     "MainProtectedProvider",
     "MainPullRequestObservation",
@@ -150,6 +155,7 @@ __all__ = [
     "ValidationCheckDiagnostic",
     "ValidationCheckIdentity",
     "ValidationPrincipalEvidence",
+    "build_main_personal_exact_cas_hosted_identity_evidence_bundle",
     "github_repository_digest",
     "parse_branch_protection_checks",
     "parse_c8_workflow_semantics",

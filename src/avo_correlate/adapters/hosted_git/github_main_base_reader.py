@@ -363,6 +363,7 @@ class GitHubMainBaseReader:
                     )
                 )
             ),
+            configuration_digest=self._configuration.configuration_digest,
             initial_ref_digest=canonical_digest(_safe_ref_projection(result.commit)),
             commit_digest=canonical_digest(_safe_commit_facts(result.commit, result.tree)),
             final_ref_digest=canonical_digest(_safe_ref_projection(result.commit)),
