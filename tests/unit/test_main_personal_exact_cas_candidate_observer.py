@@ -325,7 +325,16 @@ def test_reflected_transport_swap_and_invalid_credentials_fail_before_network(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     reader = _reader(monkeypatch, _responses())
-    object.__setattr__(reader, "_transport", lambda *_: (200, {}))
+
+    def reflected_transport(
+        _method: str,
+        _url: str,
+        _body: object,
+        _headers: dict[str, str],
+    ) -> tuple[int, object]:
+        return 200, {}
+
+    object.__setattr__(reader, "_transport", reflected_transport)
     with pytest.raises(MainPersonalExactCasCandidateObservationError):
         reader.observe(_request())
     assert FakeTransport.instances[0].calls == []
