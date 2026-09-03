@@ -14,6 +14,9 @@ from __future__ import annotations
 
 import hashlib
 import os
+import stat
+import sys
+from contextlib import suppress
 from dataclasses import fields
 from pathlib import Path
 from threading import RLock
@@ -51,6 +54,8 @@ _DEFAULT_MAX = 8 * 1024 * 1024
 _INDEX_DIR = "main-personal-exact-cas-hosted-identity-index"
 _INDEX_NAME = "root.json"
 _DIGEST_PREFIX = "sha256:"
+_O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
 
 _CHILD_SPECS: dict[str, tuple[str, str, type[Any]]] = {
     "writer_diagnostic_artifact": (
@@ -260,6 +265,24 @@ class MainPersonalExactCasHostedIdentityJournal:
         self._qualify_same_backend(artifacts)
         self._indexes = self._prepare_directory(self._root / _INDEX_DIR)
         self._qualify_same_backend(self._indexes)
+        self._descriptor_mode = self._supports_descriptor_backend()
+        self._root_fd: int | None = None
+        self._artifacts_fd: int | None = None
+        self._indexes_fd: int | None = None
+        if self._descriptor_mode:
+            self._root_fd = self._open_directory(self._root)
+            try:
+                self._artifacts_fd = _open_dir_at(self._root_fd, "artifacts", create=False)
+                self._indexes_fd = _open_dir_at(self._root_fd, _INDEX_DIR, create=False)
+            except BaseException:
+                for descriptor in (self._indexes_fd, self._artifacts_fd, self._root_fd):
+                    if descriptor is not None:
+                        with suppress(OSError):
+                            os.close(descriptor)
+                raise
+            self._check_descriptor_backend(self._root_fd)
+            self._check_descriptor_backend(self._artifacts_fd)
+            self._check_descriptor_backend(self._indexes_fd)
         _fsync_directory(self._root)
         self._max = max_record_bytes
 
@@ -287,6 +310,28 @@ class MainPersonalExactCasHostedIdentityJournal:
         """Stable private path hook used by recovery and adversarial checks."""
 
         return self.root_path
+
+    def _supports_descriptor_backend(self) -> bool:
+        """Use anchored Linux descriptors; permit only explicit test shims elsewhere."""
+
+        if sys.platform == "linux":
+            if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
+                raise ValueError("descriptor no-follow semantics unavailable")
+            return True
+        # The real durable backend gate rejects native Windows/WSL.  This
+        # compatibility branch is reachable only under a test qualification
+        # shim, and never permits an unqualified production backend.
+        if self._qualification.reason.startswith("test-"):
+            return False
+        raise ValueError("descriptor backend is unsupported")
+
+    @staticmethod
+    def _open_directory(path: Path) -> int:
+        descriptor = os.open(path, os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW)
+        if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            os.close(descriptor)
+            raise ValueError("directory is not a canonical regular directory")
+        return descriptor
 
     def bind(
         self,
@@ -348,15 +393,35 @@ class MainPersonalExactCasHostedIdentityJournal:
 
         try:
             path = self._checked_path(self.root_path)
-            if not path.is_file():
-                return None
-            raw = path.read_bytes()
+            self._qualify_same_backend(path.parent)
+            if self._descriptor_mode:
+                if self._indexes_fd is None:
+                    raise ValueError("index descriptor is unavailable")
+                self._check_descriptor_backend(self._indexes_fd)
+                try:
+                    descriptor = os.open(
+                        _INDEX_NAME, os.O_RDONLY | _O_NOFOLLOW, dir_fd=self._indexes_fd
+                    )
+                except FileNotFoundError:
+                    return None
+                try:
+                    raw = _read_regular_fd(descriptor, min(self._max, _MAX_INDEX_BYTES))
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
+                _fsync_fd(self._indexes_fd)
+                _fsync_fd(self._root_fd)
+            else:
+                if not path.is_file():
+                    return None
+                raw = _read_regular_path(
+                    path, sync=True, max_bytes=min(self._max, _MAX_INDEX_BYTES)
+                )
             if len(raw) > min(self._max, _MAX_INDEX_BYTES):
                 raise ValueError("root is too large")
             root = MainPersonalExactCasHostedIdentityEvidenceRoot.model_validate_json(raw)
             if canonical_bytes(root) != raw:
                 raise ValueError("root is not canonical")
-            self._qualify_same_backend(path.parent)
             children = {
                 name: self._read_child(name, getattr(root, name))
                 for name in _CHILD_SPECS
@@ -436,8 +501,6 @@ class MainPersonalExactCasHostedIdentityJournal:
             raise ValueError("child is too large")
         digest = _DIGEST_PREFIX + hashlib.sha256(data).hexdigest()
         path = self._checked_path(self._store.path_for_digest(digest))
-        self._prepare_directory(path.parent)
-        self._qualify_same_backend(path.parent)
         ref = ArtifactRef(
             digest=digest,
             size_bytes=len(data),
@@ -445,37 +508,96 @@ class MainPersonalExactCasHostedIdentityJournal:
             role=role,
             created_at=created_at,
         )
+        if self._descriptor_mode:
+            self._persist_child_descriptor(digest, data, path)
+            return ref
+        self._prepare_directory(path.parent)
+        self._qualify_same_backend(path.parent)
         try:
             with path.open("xb") as handle:
                 handle.write(data)
                 handle.flush()
                 os.fsync(handle.fileno())
         except FileExistsError:
-            existing = path.read_bytes()
+            existing = _read_regular_path(path, sync=True, max_bytes=self._max)
             if existing != data:
                 raise ValueError("content-addressed child differs") from None
         _fsync_store_ancestors(path, self._store.root)
         _fsync_directory(self._root)
         return ref
 
+    def _persist_child_descriptor(self, digest: str, data: bytes, path: Path) -> None:
+        self._qualify_same_backend(self._store.root)
+        fanout_fd = self._open_child_fanout(digest, create=True)
+        descriptor: int | None = None
+        try:
+            self._qualify_same_backend(path.parent)
+            leaf = digest.removeprefix(_DIGEST_PREFIX)[2:]
+            try:
+                descriptor = os.open(
+                    leaf,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW,
+                    0o600,
+                    dir_fd=fanout_fd,
+                )
+            except FileExistsError:
+                descriptor = os.open(leaf, os.O_RDONLY | _O_NOFOLLOW, dir_fd=fanout_fd)
+                existing = _read_regular_fd(descriptor, self._max)
+                os.fsync(descriptor)
+                if existing != data:
+                    raise ValueError("content-addressed child differs") from None
+            else:
+                _write_all(descriptor, data)
+                os.fsync(descriptor)
+            _fsync_fd(fanout_fd)
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            os.close(fanout_fd)
+        self._sync_retained_directories()
+
     def _publish_root(
         self, root: MainPersonalExactCasHostedIdentityEvidenceRoot, data: bytes
     ) -> MainPersonalExactCasHostedIdentityEvidenceRoot:
         path = self._checked_path(self.root_path)
         self._qualify_same_backend(path.parent)
-        _fsync_directory(path.parent)
+        if self._descriptor_mode:
+            if self._indexes_fd is None:
+                raise ValueError("index descriptor is unavailable")
+            _fsync_fd(self._indexes_fd)
+        else:
+            _fsync_directory(path.parent)
         with _LOCK:
             try:
-                with path.open("xb") as handle:
-                    handle.write(data)
-                    handle.flush()
-                    os.fsync(handle.fileno())
-                _fsync_directory(path.parent)
-                _fsync_directory(self._root)
+                if self._descriptor_mode:
+                    if self._indexes_fd is None:
+                        raise ValueError("index descriptor is unavailable")
+                    self._check_descriptor_backend(self._indexes_fd)
+                    descriptor = os.open(
+                        _INDEX_NAME,
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL | _O_NOFOLLOW,
+                        0o600,
+                        dir_fd=self._indexes_fd,
+                    )
+                    try:
+                        _write_all(descriptor, data)
+                        os.fsync(descriptor)
+                    finally:
+                        os.close(descriptor)
+                    _fsync_fd(self._indexes_fd)
+                    _fsync_fd(self._root_fd)
+                else:
+                    with path.open("xb") as handle:
+                        handle.write(data)
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                    _fsync_directory(path.parent)
+                    _fsync_directory(self._root)
                 return root
             except FileExistsError:
                 existing = self.read()
                 if existing is not None and existing[1] == root:
+                    self._sync_reused_root()
                     return existing[1]
                 raise MainPersonalExactCasHostedIdentityJournalConflictError() from None
 
@@ -492,7 +614,10 @@ class MainPersonalExactCasHostedIdentityJournal:
         path = self._checked_path(self._store.path_for_digest(reference.digest))
         self._qualify_same_backend(self._store.root)
         self._qualify_same_backend(path.parent)
-        data = path.read_bytes()
+        if self._descriptor_mode:
+            data = self._read_child_descriptor(reference.digest, path)
+        else:
+            data = _read_regular_path(path, sync=self._descriptor_mode, max_bytes=self._max)
         if len(data) != reference.size_bytes or hashlib.sha256(data).hexdigest() != (
             reference.digest.removeprefix(_DIGEST_PREFIX)
         ):
@@ -538,6 +663,76 @@ class MainPersonalExactCasHostedIdentityJournal:
         if canonical_bytes(_snapshot_payload(value)) != data:
             raise ValueError("snapshot is not canonical")
         return _revalidate_snapshot(value)
+
+    def _read_child_descriptor(self, digest: str, path: Path) -> bytes:
+        fanout_fd = self._open_child_fanout(digest, create=False)
+        descriptor: int | None = None
+        try:
+            self._qualify_same_backend(path.parent)
+            descriptor = os.open(
+                digest.removeprefix(_DIGEST_PREFIX)[2:],
+                os.O_RDONLY | _O_NOFOLLOW,
+                dir_fd=fanout_fd,
+            )
+            data = _read_regular_fd(descriptor, self._max)
+            os.fsync(descriptor)
+            _fsync_fd(fanout_fd)
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            os.close(fanout_fd)
+        self._sync_retained_directories()
+        return data
+
+    def _open_child_fanout(self, digest: str, *, create: bool) -> int:
+        if self._artifacts_fd is None:
+            raise ValueError("artifact descriptor is unavailable")
+        objects = _open_dir_at(self._artifacts_fd, "objects", create=create)
+        sha256: int | None = None
+        fanout: int | None = None
+        try:
+            self._check_descriptor_backend(objects)
+            sha256 = _open_dir_at(objects, "sha256", create=create)
+            if create:
+                _fsync_fd(objects)
+            self._check_descriptor_backend(sha256)
+            fanout = _open_dir_at(
+                sha256, digest.removeprefix(_DIGEST_PREFIX)[:2], create=create
+            )
+            self._check_descriptor_backend(fanout)
+            if create:
+                _fsync_fd(sha256)
+            result = fanout
+            fanout = None
+            return result
+        finally:
+            for descriptor in (fanout, sha256, objects):
+                if descriptor is not None:
+                    with suppress(OSError):
+                        os.close(descriptor)
+
+    def _check_descriptor_backend(self, descriptor: int) -> None:
+        if self._root_fd is None:
+            raise ValueError("root descriptor is unavailable")
+        if os.fstat(descriptor).st_dev != os.fstat(self._root_fd).st_dev:
+            raise ValueError("nested mount/device differs")
+
+    def _sync_reused_root(self) -> None:
+        if self._descriptor_mode:
+            if self._indexes_fd is None or self._root_fd is None:
+                raise ValueError("retained root descriptors are unavailable")
+            _fsync_fd(self._indexes_fd)
+            _fsync_fd(self._root_fd)
+        else:
+            _fsync_directory(self.root_path.parent)
+            _fsync_directory(self._root)
+
+    def _sync_retained_directories(self) -> None:
+        if self._descriptor_mode:
+            if self._artifacts_fd is None or self._root_fd is None:
+                raise ValueError("retained artifact descriptors are unavailable")
+            _fsync_fd(self._artifacts_fd)
+            _fsync_fd(self._root_fd)
 
     def _prepare_directory(self, path: Path) -> Path:
         canonical = self._canonical_path(path)
@@ -585,6 +780,70 @@ def _json_object(data: bytes) -> dict[str, Any]:
     if type(value) is not dict:
         raise ValueError("child JSON is not an object")
     return cast(dict[str, Any], value)
+
+
+def _open_dir_at(parent_fd: int, name: str, *, create: bool) -> int:
+    """Open one directory relative to a retained descriptor."""
+
+    if create:
+        with suppress(FileExistsError):
+            os.mkdir(name, 0o700, dir_fd=parent_fd)
+    descriptor = os.open(
+        name,
+        os.O_RDONLY | _O_DIRECTORY | _O_NOFOLLOW,
+        dir_fd=parent_fd,
+    )
+    mode = os.fstat(descriptor).st_mode
+    if not stat.S_ISDIR(mode):
+        os.close(descriptor)
+        raise ValueError("fanout component is not a directory")
+    return descriptor
+
+
+def _read_regular_fd(descriptor: int, max_bytes: int | None = None) -> bytes:
+    mode = os.fstat(descriptor).st_mode
+    if not stat.S_ISREG(mode):
+        raise ValueError("artifact is not a regular file")
+    chunks: list[bytes] = []
+    remaining = None if max_bytes is None else max_bytes + 1
+    while remaining is None or remaining > 0:
+        read_size = 1024 * 1024 if remaining is None else min(1024 * 1024, remaining)
+        chunk = os.read(descriptor, read_size)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        if remaining is not None:
+            remaining -= len(chunk)
+    if max_bytes is not None and sum(map(len, chunks)) > max_bytes:
+        raise ValueError("file exceeds bounded read")
+    return b"".join(chunks)
+
+
+def _read_regular_path(path: Path, *, sync: bool, max_bytes: int | None = None) -> bytes:
+    flags = (os.O_RDWR if sync else os.O_RDONLY) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        data = _read_regular_fd(descriptor, max_bytes)
+        if sync:
+            os.fsync(descriptor)
+        return data
+    finally:
+        os.close(descriptor)
+
+
+def _write_all(descriptor: int, data: bytes) -> None:
+    offset = 0
+    while offset < len(data):
+        written = os.write(descriptor, data[offset:])
+        if written <= 0:
+            raise OSError("short artifact write")
+        offset += written
+
+
+def _fsync_fd(descriptor: int | None) -> None:
+    if descriptor is None:
+        raise ValueError("descriptor is unavailable")
+    os.fsync(descriptor)
 
 
 def _fsync_directory(path: Path) -> None:

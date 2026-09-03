@@ -4,7 +4,9 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -71,6 +73,178 @@ def test_root_and_child_drift_fail_closed(
     path.write_bytes(canonical_bytes(root.model_copy(update={"root_digest": "sha256:" + "0" * 64})))
     with pytest.raises(MainPersonalExactCasHostedIdentityJournalError):
         journal.read()
+
+
+def test_bounded_fd_read_does_not_consume_an_unbounded_hostile_file(tmp_path: Path) -> None:
+    path = tmp_path / "oversized.json"
+    path.write_bytes(b"x" * 32)
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        with pytest.raises(ValueError, match="bounded read"):
+            module._read_regular_fd(descriptor, max_bytes=8)
+    finally:
+        os.close(descriptor)
+
+
+def test_oversized_root_is_rejected_before_json_reparse(
+    journal: MainPersonalExactCasHostedIdentityJournal,
+) -> None:
+    root = journal.bind(_writer(), _observer()[0], _observer()[1])
+    raw = canonical_bytes(root)
+    journal.root_path.write_bytes(raw + b"x")
+    journal._max = len(raw)
+    with pytest.raises(MainPersonalExactCasHostedIdentityJournalError):
+        journal.read()
+
+
+def test_oversized_child_is_rejected_by_bounded_leaf_read(
+    journal: MainPersonalExactCasHostedIdentityJournal,
+) -> None:
+    root = journal.bind(_writer(), _observer()[0], _observer()[1])
+    name = "writer_diagnostic_artifact"
+    reference = getattr(root, name)
+    path = journal.artifact_store.path_for_digest(reference.digest)
+    raw = path.read_bytes()
+    path.write_bytes(raw + b"x")
+    journal._max = len(raw)
+    with pytest.raises(ValueError, match="bounded read"):
+        journal._read_child(name, reference)
+
+
+def test_existing_child_reuse_failure_is_not_reported_as_success(
+    journal: MainPersonalExactCasHostedIdentityJournal,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    writer = _writer()
+    observer, configuration = _observer()
+    journal.bind(writer, observer, configuration)
+
+    if journal._descriptor_mode:
+        def fail_fd_sync(_: object) -> None:
+            raise OSError("injected child reuse fsync failure")
+
+        monkeypatch.setattr(module, "_fsync_fd", fail_fd_sync)
+    else:
+        def fail_ancestor_sync(_: Path, __: Path) -> None:
+            raise OSError("injected child reuse fsync failure")
+
+        monkeypatch.setattr(module, "_fsync_store_ancestors", fail_ancestor_sync)
+    with pytest.raises(MainPersonalExactCasHostedIdentityJournalError):
+        journal.bind(writer, observer, configuration)
+
+
+def test_existing_root_reuse_failure_is_not_reported_as_success(
+    journal: MainPersonalExactCasHostedIdentityJournal,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    writer = _writer()
+    observer, configuration = _observer()
+    journal.bind(writer, observer, configuration)
+
+    def fail_sync() -> None:
+        raise OSError("injected root reuse fsync failure")
+
+    monkeypatch.setattr(journal, "_sync_reused_root", fail_sync)
+    with pytest.raises(MainPersonalExactCasHostedIdentityJournalError):
+        journal.bind(writer, observer, configuration)
+
+
+def test_descriptor_read_does_not_create_missing_fanout(
+    journal: MainPersonalExactCasHostedIdentityJournal,
+) -> None:
+    if not journal._descriptor_mode:
+        pytest.skip("descriptor anchoring is Linux-only")
+    digest = "sha256:" + "f" * 64
+    fanout = journal._store.root / "objects" / "sha256" / "ff"
+    assert not fanout.exists()
+    with pytest.raises(OSError):
+        journal._open_child_fanout(digest, create=False)
+    assert not fanout.exists()
+
+
+def test_descriptor_leaf_open_rejects_symlinked_fanout(
+    journal: MainPersonalExactCasHostedIdentityJournal,
+    tmp_path: Path,
+) -> None:
+    if not journal._descriptor_mode:
+        pytest.skip("descriptor anchoring is Linux-only")
+    objects = journal._store.root / "objects"
+    objects.mkdir()
+    target = tmp_path / "target"
+    target.mkdir()
+    link = objects / "sha256"
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation unavailable")
+    with pytest.raises(OSError):
+        journal._open_child_fanout("sha256:" + "a" * 64, create=False)
+
+
+def test_descriptor_writes_are_relative_nofollow_operations(
+    journal: MainPersonalExactCasHostedIdentityJournal,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if not journal._descriptor_mode:
+        pytest.skip("descriptor anchoring is Linux-only")
+    original_open = module.os.open
+    calls: list[tuple[object, int, int | None]] = []
+
+    def anchored_open(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        if dir_fd is not None:
+            calls.append((path, flags, dir_fd))
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(module.os, "open", anchored_open)
+    journal.bind(_writer(), _observer()[0], _observer()[1])
+    assert calls
+    assert all(dir_fd is not None for _, _, dir_fd in calls)
+    assert all(flags & module._O_NOFOLLOW for _, flags, _ in calls)
+
+
+def test_descriptor_checks_each_opened_directory_device(
+    journal: MainPersonalExactCasHostedIdentityJournal,
+) -> None:
+    if not journal._descriptor_mode or journal._root_fd is None:
+        pytest.skip("descriptor anchoring is Linux-only")
+    root_fd = journal._root_fd
+
+    def fake_fstat(descriptor: int) -> SimpleNamespace:
+        return SimpleNamespace(st_dev=1 if descriptor == root_fd else 2)
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(module.os, "fstat", fake_fstat)
+        with pytest.raises(ValueError, match="nested mount/device"):
+            journal._check_descriptor_backend(root_fd + 1)
+
+
+def test_descriptor_fanout_requalification_fails_closed(
+    journal: MainPersonalExactCasHostedIdentityJournal,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if not journal._descriptor_mode:
+        pytest.skip("descriptor anchoring is Linux-only")
+    original = journal._check_descriptor_backend
+    checks = 0
+
+    def reject_nested_mount(descriptor: int) -> None:
+        nonlocal checks
+        checks += 1
+        if checks == 3:
+            raise ValueError("nested mount/device differs")
+        original(descriptor)
+
+    monkeypatch.setattr(journal, "_check_descriptor_backend", reject_nested_mount)
+    with pytest.raises(MainPersonalExactCasHostedIdentityJournalError):
+        journal.bind(_writer(), _observer()[0], _observer()[1])
+    assert checks >= 3
+    assert not journal.root_path.exists()
 
 
 def test_public_surface_is_offline_and_non_authoritative() -> None:
