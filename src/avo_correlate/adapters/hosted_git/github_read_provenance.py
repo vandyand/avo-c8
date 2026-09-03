@@ -66,6 +66,8 @@ class GitHubReadProvenance:
     final_ref_digest: str
     configuration_pass_digests: tuple[str, ...] = ()
     configuration_digest: str | None = None
+    writer_app_id: int | None = None
+    writer_installation_id: int | None = None
     provenance_digest: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -105,6 +107,8 @@ class GitHubReadProvenance:
             ),
             "target_ref": self.target_ref,
             "token_expiry_policy": self.token_expiry_policy,
+            "writer_app_id": self.writer_app_id,
+            "writer_installation_id": self.writer_installation_id,
         }
 
     def assert_valid(self, *, include_digest: bool = True) -> None:
@@ -148,6 +152,17 @@ class GitHubReadProvenance:
             raise ValueError("GitHub provenance App ID is invalid")
         if type(self.installation_id) is not int or self.installation_id <= 0:
             raise ValueError("GitHub provenance installation ID is invalid")
+        if (self.writer_app_id is None) != (self.writer_installation_id is None):
+            raise ValueError("GitHub provenance writer identity is incomplete")
+        if self.writer_app_id is not None and (
+            type(self.writer_app_id) is not int
+            or self.writer_app_id <= 0
+            or type(self.writer_installation_id) is not int
+            or self.writer_installation_id <= 0
+            or self.app_id == self.writer_app_id
+            or self.installation_id == self.writer_installation_id
+        ):
+            raise ValueError("GitHub provenance observer and writer must be distinct")
         if self.requested_permissions != ("contents:read",):
             raise ValueError("GitHub provenance requested permissions are not exact")
         if self.observed_permissions != ("contents:read", "metadata:read"):

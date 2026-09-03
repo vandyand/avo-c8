@@ -23,6 +23,8 @@ REPO = "avo-c8"
 REPOSITORY_ID = 1_354_880_741
 APP_ID = 91_001
 INSTALLATION_ID = 92_002
+WRITER_APP_ID = 4_817_867
+WRITER_INSTALLATION_ID = 158_775_763
 APP_SLUG = "avo-c8-main-observer-vandyand"
 APP_NAME = "AVO C8 Main Observer"
 COMMIT = "a" * 40
@@ -63,6 +65,8 @@ def _configuration(**changes: object) -> GitHubMainBaseReaderConfiguration:
         "observer_app_name": APP_NAME,
         "observer_app_id": APP_ID,
         "observer_installation_id": INSTALLATION_ID,
+        "writer_app_id": WRITER_APP_ID,
+        "writer_installation_id": WRITER_INSTALLATION_ID,
         "timeout_seconds": 17.5,
         "max_response_bytes": 1024,
     }
@@ -181,6 +185,8 @@ def test_configuration_is_frozen_secret_safe_and_digest_binds_stable_state() -> 
         {"observer_app_name": "Other Observer"},
         {"observer_app_id": APP_ID + 1},
         {"observer_installation_id": INSTALLATION_ID + 1},
+        {"writer_app_id": WRITER_APP_ID + 1},
+        {"writer_installation_id": WRITER_INSTALLATION_ID + 1},
         {"timeout_seconds": 18.0},
         {"max_response_bytes": 2048},
     )
@@ -210,6 +216,10 @@ def test_configuration_is_frozen_secret_safe_and_digest_binds_stable_state() -> 
         {"observer_app_name": ""},
         {"observer_app_id": True},
         {"observer_installation_id": 0},
+        {"writer_app_id": True},
+        {"writer_installation_id": False},
+        {"writer_app_id": 0},
+        {"writer_installation_id": -1},
         {"timeout_seconds": float("nan")},
         {"timeout_seconds": 61},
         {"max_response_bytes": 4 * 1024 * 1024 + 1},
@@ -255,6 +265,29 @@ def test_exact_authenticated_request_sequence_and_snapshot(monkeypatch: pytest.M
     assert snapshot.repository_digest == github_repository_digest(OWNER, REPO)
     assert snapshot.target_ref == "refs/heads/main"
     assert (snapshot.commit, snapshot.tree) == (COMMIT, TREE)
+
+
+def test_optional_app_privacy_and_webhook_fields_are_checked_when_present(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    responses = _responses()
+    app = responses[0][1]
+    assert isinstance(app, dict)
+    del app["public"]
+    del app["webhook_active"]
+    assert _reader(monkeypatch, responses).fresh_main_base().commit == COMMIT
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"writer_app_id": APP_ID},
+        {"writer_installation_id": INSTALLATION_ID},
+    ],
+)
+def test_observer_identity_cannot_overlap_writer_identity(changes: dict[str, object]) -> None:
+    with pytest.raises(ValueError, match="distinct"):
+        _configuration(**changes)
 
 
 @pytest.mark.parametrize(
@@ -503,6 +536,8 @@ def test_authenticated_read_provenance_is_canonical_frozen_and_secret_free(
     assert provenance.provenance_digest.startswith("sha256:")
     assert provenance.requests[0].credential_role == "app_jwt"
     assert provenance.requests[2].method == "POST"
+    assert provenance.writer_app_id == WRITER_APP_ID
+    assert provenance.writer_installation_id == WRITER_INSTALLATION_ID
     assert provenance.requests[-1].path.endswith("/git/ref/heads/main")
     text = repr(provenance)
     assert "short-lived-app-jwt" not in text
@@ -522,6 +557,17 @@ def test_authenticated_read_provenance_is_canonical_frozen_and_secret_free(
     )
     with pytest.raises(FrozenInstanceError):
         provenance.app_id = APP_ID + 1  # type: ignore[misc]
+
+    tampered = replace(provenance, writer_app_id=WRITER_APP_ID + 1)
+    assert tampered.provenance_digest != provenance.provenance_digest
+    object.__setattr__(tampered, "writer_app_id", WRITER_APP_ID + 2)
+    with pytest.raises(ValueError, match="digest"):
+        tampered.assert_valid()
+
+    tampered = replace(provenance, writer_app_id=WRITER_APP_ID + 1)
+    object.__setattr__(tampered, "writer_installation_id", INSTALLATION_ID)
+    with pytest.raises(ValueError, match="distinct"):
+        tampered.assert_valid()
 
 
 def test_ref_provenance_ignores_unvalidated_response_extra_fields(
