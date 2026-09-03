@@ -85,6 +85,18 @@ def _reference(value: object, expected_role: str, expected_media: str) -> Artifa
     return result
 
 
+def _revalidate_identity_bundle(
+    value: object,
+) -> MainPersonalExactCasHostedIdentityEvidenceBundle:
+    """Close dataclass/model-construction escapes at this composition boundary."""
+
+    if type(value) is not MainPersonalExactCasHostedIdentityEvidenceBundle:
+        raise ValueError("hosted identity bundle is not exact")
+    bundle = value
+    bundle.assert_valid()
+    return bundle
+
+
 class MainPersonalExactCasControllerCompositionJournal:
     """Create-once evidence root; no provider or mutation capability."""
 
@@ -179,8 +191,7 @@ class MainPersonalExactCasControllerCompositionJournal:
             if identity is None:
                 raise ValueError("hosted identity evidence is missing")
             identity_bundle, identity_root = identity
-            if type(identity_bundle) is not MainPersonalExactCasHostedIdentityEvidenceBundle:
-                raise ValueError("hosted identity bundle is not exact")
+            identity_bundle = _revalidate_identity_bundle(identity_bundle)
             identity_root = _exact(identity_root, MainPersonalExactCasHostedIdentityEvidenceRoot)
             activation_result = personal_journal.read_activation()
             if activation_result is None:
@@ -297,6 +308,9 @@ class MainPersonalExactCasControllerCompositionJournal:
                 or activation.candidate_parents != (composition.candidate_parent_commit,)
                 or identity_bundle.bundle_digest != identity_root.bundle_digest
                 or identity_bundle.repository_digest != activation.repository_digest
+                or identity_bundle.main_commit != activation.base_commit
+                or identity_bundle.writer_protection_ruleset_digest
+                != activation.protection_ruleset_digest
                 or identity_bundle.writer_app_id != activation.writer_app_id
                 or identity_bundle.writer_installation_id != activation.writer_installation_id
                 or identity_bundle.writer_configuration_digest == ""

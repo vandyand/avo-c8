@@ -269,6 +269,11 @@
       "title": "Writer App Id",
       "type": "integer"
     },
+    "writer_configuration_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Writer Configuration Digest",
+      "type": "string"
+    },
     "writer_identity": {
       "minLength": 1,
       "title": "Writer Identity",
@@ -303,6 +308,7 @@
     "writer_app_id",
     "writer_installation_id",
     "writer_identity",
+    "writer_configuration_digest",
     "observer_configuration_digest",
     "protection_ruleset_digest",
     "lease_identity",

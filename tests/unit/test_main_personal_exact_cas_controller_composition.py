@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import fields
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,7 @@ from avo_correlate.contracts.main_personal_exact_cas import (
     personal_cas_operation_id,
 )
 from avo_correlate.domain.canonical import canonical_bytes
+from tests.unit.test_main_personal_exact_cas_hosted_identity_bundle import _bundle
 
 _TIME = datetime(2026, 1, 1, tzinfo=UTC)
 _DIGEST = "sha256:" + "a" * 64
@@ -165,6 +167,19 @@ def test_bounded_read_rejects_oversized_regular_file(tmp_path: Path) -> None:
             module._read_bounded(descriptor, 8)
     finally:
         os.close(descriptor)
+
+
+def test_hosted_identity_bundle_is_semantically_revalidated() -> None:
+    bundle = _bundle()
+    assert module._revalidate_identity_bundle(bundle) == bundle
+    tampered = object.__new__(type(bundle))
+    for item in fields(bundle):
+        object.__setattr__(tampered, item.name, getattr(bundle, item.name))
+    object.__setattr__(tampered, "main_commit", "f" * 40)
+    with pytest.raises(ValueError):
+        module._revalidate_identity_bundle(tampered)
+    with pytest.raises(ValueError):
+        module._revalidate_identity_bundle(object())
 
 
 def test_close_is_idempotent_and_blocks_operations(
