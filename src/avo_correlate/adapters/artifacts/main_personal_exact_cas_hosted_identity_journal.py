@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import stat
 import sys
 from contextlib import suppress
@@ -56,6 +57,7 @@ _INDEX_NAME = "root.json"
 _DIGEST_PREFIX = "sha256:"
 _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 _O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
+_FDINFO_MAX_BYTES = 4096
 
 _CHILD_SPECS: dict[str, tuple[str, str, type[Any]]] = {
     "writer_diagnostic_artifact": (
@@ -249,6 +251,11 @@ class MainPersonalExactCasHostedIdentityJournal:
         artifact_store: FilesystemArtifactStore | None = None,
         max_record_bytes: int = _DEFAULT_MAX,
     ) -> None:
+        self._closed = False
+        self._descriptor_mode = False
+        self._root_fd: int | None = None
+        self._artifacts_fd: int | None = None
+        self._indexes_fd: int | None = None
         if type(max_record_bytes) is not int or max_record_bytes <= 0:
             raise ValueError("max_record_bytes must be positive")
         self._qualification = require_durable_backend(root)
@@ -266,24 +273,22 @@ class MainPersonalExactCasHostedIdentityJournal:
         self._indexes = self._prepare_directory(self._root / _INDEX_DIR)
         self._qualify_same_backend(self._indexes)
         self._descriptor_mode = self._supports_descriptor_backend()
-        self._root_fd: int | None = None
-        self._artifacts_fd: int | None = None
-        self._indexes_fd: int | None = None
         if self._descriptor_mode:
-            self._root_fd = self._open_directory(self._root)
             try:
+                self._root_fd = self._open_directory(self._root)
                 self._artifacts_fd = _open_dir_at(self._root_fd, "artifacts", create=False)
                 self._indexes_fd = _open_dir_at(self._root_fd, _INDEX_DIR, create=False)
+                self._check_descriptor_backend(self._root_fd)
+                self._check_descriptor_backend(self._artifacts_fd)
+                self._check_descriptor_backend(self._indexes_fd)
             except BaseException:
-                for descriptor in (self._indexes_fd, self._artifacts_fd, self._root_fd):
-                    if descriptor is not None:
-                        with suppress(OSError):
-                            os.close(descriptor)
+                self.close()
                 raise
-            self._check_descriptor_backend(self._root_fd)
-            self._check_descriptor_backend(self._artifacts_fd)
-            self._check_descriptor_backend(self._indexes_fd)
-        _fsync_directory(self._root)
+        try:
+            _fsync_directory(self._root)
+        except BaseException:
+            self.close()
+            raise
         self._max = max_record_bytes
 
     @property
@@ -310,6 +315,69 @@ class MainPersonalExactCasHostedIdentityJournal:
         """Stable private path hook used by recovery and adversarial checks."""
 
         return self.root_path
+
+    def close(self) -> None:
+        """Close retained descriptors exactly once; safe to call repeatedly."""
+
+        if self._closed:
+            return
+        self._closed = True
+        descriptors = (self._indexes_fd, self._artifacts_fd, self._root_fd)
+        self._indexes_fd = None
+        self._artifacts_fd = None
+        self._root_fd = None
+        for descriptor in descriptors:
+            if descriptor is not None:
+                with suppress(OSError):
+                    os.close(descriptor)
+
+    def __enter__(self) -> MainPersonalExactCasHostedIdentityJournal:
+        self._ensure_open()
+        return self
+
+    def __exit__(self, _type: object, _value: object, _traceback: object) -> bool:
+        self.close()
+        return False
+
+    def _ensure_open(self) -> None:
+        if self._closed:
+            raise _failure("hosted_identity_closed")
+
+    def _verify_retained_directories(self) -> None:
+        """Reject a renamed/recreated root or retained directory split."""
+
+        self._ensure_open()
+        if not self._descriptor_mode:
+            return
+        if self._root_fd is None or self._artifacts_fd is None or self._indexes_fd is None:
+            raise ValueError("retained directory descriptors are unavailable")
+        current_root = self._open_directory(self._root)
+        current_artifacts: int | None = None
+        current_indexes: int | None = None
+        try:
+            self._compare_directory_identity(self._root_fd, current_root)
+            current_artifacts = _open_dir_at(current_root, "artifacts", create=False)
+            current_indexes = _open_dir_at(current_root, _INDEX_DIR, create=False)
+            self._compare_directory_identity(self._artifacts_fd, current_artifacts)
+            self._compare_directory_identity(self._indexes_fd, current_indexes)
+        finally:
+            for descriptor in (current_indexes, current_artifacts, current_root):
+                if descriptor is not None:
+                    with suppress(OSError):
+                        os.close(descriptor)
+
+    def _compare_directory_identity(self, expected: int, current: int) -> None:
+        expected_stat = os.fstat(expected)
+        current_stat = os.fstat(current)
+        if not stat.S_ISDIR(current_stat.st_mode):
+            raise ValueError("current retained path is not a directory")
+        if (expected_stat.st_dev, expected_stat.st_ino) != (
+            current_stat.st_dev,
+            current_stat.st_ino,
+        ):
+            raise ValueError("retained directory was renamed or recreated")
+        if _fd_mount_id(expected) != _fd_mount_id(current):
+            raise ValueError("retained directory mount differs")
 
     def _supports_descriptor_backend(self) -> bool:
         """Use anchored Linux descriptors; permit only explicit test shims elsewhere."""
@@ -342,6 +410,7 @@ class MainPersonalExactCasHostedIdentityJournal:
         """Validate inputs, persist leaves, then exclusively publish the root."""
 
         try:
+            self._verify_retained_directories()
             checked_writer, checked_observer, checked_configuration = self._inputs(
                 writer, observer, observer_configuration
             )
@@ -374,7 +443,9 @@ class MainPersonalExactCasHostedIdentityJournal:
             data = canonical_bytes(root)
             if len(data) > min(self._max, _MAX_INDEX_BYTES):
                 raise ValueError("root is too large")
-            return self._publish_root(root, data)
+            published = self._publish_root(root, data)
+            self._verify_retained_directories()
+            return published
         except MainPersonalExactCasHostedIdentityJournalError:
             raise
         except Exception:
@@ -392,6 +463,7 @@ class MainPersonalExactCasHostedIdentityJournal:
         """Reparse every leaf, rebuild the bundle, and verify the root binding."""
 
         try:
+            self._verify_retained_directories()
             path = self._checked_path(self.root_path)
             self._qualify_same_backend(path.parent)
             if self._descriptor_mode:
@@ -403,8 +475,10 @@ class MainPersonalExactCasHostedIdentityJournal:
                         _INDEX_NAME, os.O_RDONLY | _O_NOFOLLOW, dir_fd=self._indexes_fd
                     )
                 except FileNotFoundError:
+                    self._verify_retained_directories()
                     return None
                 try:
+                    self._check_descriptor_backend(descriptor)
                     raw = _read_regular_fd(descriptor, min(self._max, _MAX_INDEX_BYTES))
                     os.fsync(descriptor)
                 finally:
@@ -413,6 +487,7 @@ class MainPersonalExactCasHostedIdentityJournal:
                 _fsync_fd(self._root_fd)
             else:
                 if not path.is_file():
+                    self._verify_retained_directories()
                     return None
                 raw = _read_regular_path(
                     path, sync=True, max_bytes=min(self._max, _MAX_INDEX_BYTES)
@@ -449,6 +524,7 @@ class MainPersonalExactCasHostedIdentityJournal:
                     raise ValueError("child timestamp differs from writer observation")
             if bundle.bundle_digest != root.bundle_digest:
                 raise ValueError("bundle digest differs from root")
+            self._verify_retained_directories()
             return bundle, root
         except MainPersonalExactCasHostedIdentityJournalError:
             raise
@@ -540,8 +616,10 @@ class MainPersonalExactCasHostedIdentityJournal:
                     0o600,
                     dir_fd=fanout_fd,
                 )
+                self._check_descriptor_backend(descriptor)
             except FileExistsError:
                 descriptor = os.open(leaf, os.O_RDONLY | _O_NOFOLLOW, dir_fd=fanout_fd)
+                self._check_descriptor_backend(descriptor)
                 existing = _read_regular_fd(descriptor, self._max)
                 os.fsync(descriptor)
                 if existing != data:
@@ -580,6 +658,7 @@ class MainPersonalExactCasHostedIdentityJournal:
                         dir_fd=self._indexes_fd,
                     )
                     try:
+                        self._check_descriptor_backend(descriptor)
                         _write_all(descriptor, data)
                         os.fsync(descriptor)
                     finally:
@@ -593,11 +672,13 @@ class MainPersonalExactCasHostedIdentityJournal:
                         os.fsync(handle.fileno())
                     _fsync_directory(path.parent)
                     _fsync_directory(self._root)
+                self._verify_retained_directories()
                 return root
             except FileExistsError:
                 existing = self.read()
                 if existing is not None and existing[1] == root:
                     self._sync_reused_root()
+                    self._verify_retained_directories()
                     return existing[1]
                 raise MainPersonalExactCasHostedIdentityJournalConflictError() from None
 
@@ -674,6 +755,7 @@ class MainPersonalExactCasHostedIdentityJournal:
                 os.O_RDONLY | _O_NOFOLLOW,
                 dir_fd=fanout_fd,
             )
+            self._check_descriptor_backend(descriptor)
             data = _read_regular_fd(descriptor, self._max)
             os.fsync(descriptor)
             _fsync_fd(fanout_fd)
@@ -716,6 +798,8 @@ class MainPersonalExactCasHostedIdentityJournal:
             raise ValueError("root descriptor is unavailable")
         if os.fstat(descriptor).st_dev != os.fstat(self._root_fd).st_dev:
             raise ValueError("nested mount/device differs")
+        if _fd_mount_id(descriptor) != _fd_mount_id(self._root_fd):
+            raise ValueError("nested mount differs")
 
     def _sync_reused_root(self) -> None:
         if self._descriptor_mode:
@@ -780,6 +864,47 @@ def _json_object(data: bytes) -> dict[str, Any]:
     if type(value) is not dict:
         raise ValueError("child JSON is not an object")
     return cast(dict[str, Any], value)
+
+
+def _fd_mount_id(descriptor: int) -> int:
+    """Read one strict Linux fdinfo mount ID, bounded and fail-closed."""
+
+    if sys.platform != "linux":
+        raise ValueError("descriptor mount IDs require Linux")
+    path = f"/proc/self/fdinfo/{descriptor}"
+    fdinfo = os.open(path, os.O_RDONLY | _O_NOFOLLOW)
+    try:
+        raw = _read_descriptor_bytes(fdinfo, _FDINFO_MAX_BYTES)
+    finally:
+        os.close(fdinfo)
+    try:
+        text = raw.decode("ascii")
+    except UnicodeDecodeError as exc:
+        raise ValueError("fdinfo is not ASCII") from exc
+    values: list[int] = []
+    for line in text.splitlines():
+        if line.startswith("mnt_id:"):
+            match = re.fullmatch(r"mnt_id:\s+([1-9][0-9]*)", line)
+            if match is None:
+                raise ValueError("fdinfo mount ID is malformed")
+            values.append(int(match.group(1)))
+    if len(values) != 1:
+        raise ValueError("fdinfo must contain one mount ID")
+    return values[0]
+
+
+def _read_descriptor_bytes(descriptor: int, max_bytes: int) -> bytes:
+    chunks: list[bytes] = []
+    remaining = max_bytes + 1
+    while remaining > 0:
+        chunk = os.read(descriptor, min(1024, remaining))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    if sum(map(len, chunks)) > max_bytes:
+        raise ValueError("fdinfo exceeds bounded read")
+    return b"".join(chunks)
 
 
 def _open_dir_at(parent_fd: int, name: str, *, create: bool) -> int:

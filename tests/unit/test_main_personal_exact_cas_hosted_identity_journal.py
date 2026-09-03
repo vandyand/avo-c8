@@ -224,6 +224,80 @@ def test_descriptor_checks_each_opened_directory_device(
             journal._check_descriptor_backend(root_fd + 1)
 
 
+def test_descriptor_mount_id_parser_is_strict_and_bounded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if module.sys.platform != "linux":
+        pytest.skip("fdinfo mount IDs are Linux-only")
+    monkeypatch.setattr(module.os, "open", lambda *_args, **_kwargs: 99)
+    monkeypatch.setattr(module.os, "close", lambda _fd: None)
+    monkeypatch.setattr(
+        module,
+        "_read_descriptor_bytes",
+        lambda _fd, _max: b"pos:\t0\nmnt_id:\t42\nflags:\t0100000\n",
+    )
+    assert module._fd_mount_id(7) == 42
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [b"mnt_id: 0\n", b"mnt_id: 4\nmnt_id: 5\n", b"mnt_id: nope\n"],
+)
+def test_descriptor_mount_id_parser_rejects_malformed_values(
+    monkeypatch: pytest.MonkeyPatch, payload: bytes
+) -> None:
+    if module.sys.platform != "linux":
+        pytest.skip("fdinfo mount IDs are Linux-only")
+    monkeypatch.setattr(module.os, "open", lambda *_args, **_kwargs: 99)
+    monkeypatch.setattr(module.os, "close", lambda _fd: None)
+    monkeypatch.setattr(module, "_read_descriptor_bytes", lambda _fd, _max: payload)
+    with pytest.raises(ValueError, match="mount ID"):
+        module._fd_mount_id(7)
+
+
+def test_close_is_idempotent_and_blocks_operations(
+    journal: MainPersonalExactCasHostedIdentityJournal,
+) -> None:
+    retained = tuple(
+        descriptor
+        for descriptor in (journal._root_fd, journal._artifacts_fd, journal._indexes_fd)
+        if descriptor is not None
+    )
+    journal.close()
+    journal.close()
+    assert journal._closed is True
+    for descriptor in retained:
+        with pytest.raises(OSError):
+            os.fstat(descriptor)
+    with pytest.raises(MainPersonalExactCasHostedIdentityJournalError, match="closed"):
+        journal.read()
+    with pytest.raises(MainPersonalExactCasHostedIdentityJournalError, match="closed"):
+        journal.bind(_writer(), _observer()[0], _observer()[1])
+
+
+def test_context_manager_closes_retained_descriptors(
+    journal: MainPersonalExactCasHostedIdentityJournal,
+) -> None:
+    with journal as entered:
+        assert entered is journal
+    assert journal._closed is True
+
+
+def test_descriptor_rejects_root_rename_and_recreate(
+    journal: MainPersonalExactCasHostedIdentityJournal,
+) -> None:
+    if not journal._descriptor_mode:
+        pytest.skip("descriptor anchoring is Linux-only")
+    original = journal.root
+    moved = original.with_name("moved-journal")
+    original.rename(moved)
+    original.mkdir()
+    (original / "artifacts").mkdir()
+    (original / "main-personal-exact-cas-hosted-identity-index").mkdir()
+    with pytest.raises(MainPersonalExactCasHostedIdentityJournalError):
+        journal.read()
+
+
 def test_descriptor_fanout_requalification_fails_closed(
     journal: MainPersonalExactCasHostedIdentityJournal,
     monkeypatch: pytest.MonkeyPatch,
