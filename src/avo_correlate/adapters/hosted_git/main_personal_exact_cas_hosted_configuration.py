@@ -25,6 +25,7 @@ _REPOSITORY = "avo-c8"
 _REPOSITORY_ID = 1_354_880_741
 _APP_SLUG = "avo-c8-main-writer-vandyand"
 _TARGET_REF = "refs/heads/main"
+_ROLLBACK_REF = "refs/heads/avo/main-rollback/*"
 _MAX_PAGES = 10
 _PAGE_SIZE = 100
 _MAX_OBSERVATION = timedelta(minutes=5)
@@ -54,6 +55,7 @@ class _ConfigurationPass:
     owner_id: int
     writer: _Ruleset
     safety: _Ruleset
+    rollback: _Ruleset
     app_id: int
     installation_id: int
     branch_protection_digest: str
@@ -189,7 +191,7 @@ class MainPersonalExactCasGitHubHostedConfigurationVerifier:
             self._repo_path() + "/rulesets", self._owner_admin_token
         )
         raw["rulesets"] = ruleset_raw
-        if len(summaries) != 2:
+        if len(summaries) != 3:
             raise ValueError("ruleset set is not exact")
         details: list[JsonObject] = []
         seen: set[int] = set()
@@ -207,7 +209,7 @@ class MainPersonalExactCasGitHubHostedConfigurationVerifier:
             details.append(detail)
         details.sort(key=lambda item: self._positive_int(item, "id"))
         raw["ruleset_details"] = cast(JsonValue, details)
-        writer, safety = self._classify_rulesets(details, app_id)
+        writer, safety, rollback = self._classify_rulesets(details, app_id)
 
         protection = self._object(
             self._get(self._repo_path() + "/branches/main/protection", self._owner_admin_token)
@@ -218,6 +220,7 @@ class MainPersonalExactCasGitHubHostedConfigurationVerifier:
             owner_id=owner_id,
             writer=writer,
             safety=safety,
+            rollback=rollback,
             app_id=app_id,
             installation_id=installation_id,
             branch_protection_digest=canonical_digest(protection),
@@ -407,10 +410,10 @@ class MainPersonalExactCasGitHubHostedConfigurationVerifier:
     @staticmethod
     def _verify_ruleset_summary(value: JsonObject) -> None:
         if (
-            "target" in value
+            value.get("target") != "branch"
             or value.get("source_type") != "Repository"
             or value.get("source") != f"{_OWNER}/{_REPOSITORY}"
-            or value.get("enforcement") != "enabled"
+            or value.get("enforcement") != "active"
         ):
             raise ValueError("ruleset summary is not exact")
 
@@ -428,14 +431,32 @@ class MainPersonalExactCasGitHubHostedConfigurationVerifier:
         if set(conditions) != {"ref_name"}:
             raise ValueError("ruleset conditions are not exact")
         ref_name = self._object(conditions.get("ref_name"))
-        if ref_name.get("include") != [_TARGET_REF] or ref_name.get("exclude") != []:
-            raise ValueError("ruleset target is not exact main")
+        if (
+            set(ref_name) != {"include", "exclude"}
+            or ref_name.get("include") not in ([_TARGET_REF], [_ROLLBACK_REF])
+            or ref_name.get("exclude") != []
+        ):
+            raise ValueError("ruleset target is not exact")
+
+    @staticmethod
+    def _update_rule_is_restrictive(rule: JsonObject) -> bool:
+        if set(rule) == {"type"}:
+            # GitHub omits the optional parameters object for this non-fork repository.
+            # An explicit allowance is never accepted.
+            return True
+        if set(rule) != {"type", "parameters"}:
+            return False
+        parameters = rule.get("parameters")
+        return type(parameters) is dict and parameters == {
+            "update_allows_fetch_and_merge": False
+        }
 
     def _classify_rulesets(
         self, values: list[JsonObject], app_id: int
-    ) -> tuple[_Ruleset, _Ruleset]:
+    ) -> tuple[_Ruleset, _Ruleset, _Ruleset]:
         writer: _Ruleset | None = None
         safety: _Ruleset | None = None
+        rollback: _Ruleset | None = None
         for value in values:
             rules = value.get("rules")
             bypass = value.get("bypass_actors")
@@ -448,13 +469,7 @@ class MainPersonalExactCasGitHubHostedConfigurationVerifier:
                 if type(rule_type) is not str:
                     raise ValueError("ruleset rule is not exact")
                 if rule_type == "update":
-                    if set(rule) != {"type", "parameters"}:
-                        raise ValueError("writer update rule is not exact")
-                    parameters = self._object(rule.get("parameters"))
-                    if (
-                        set(parameters) != {"update_allows_fetch_and_merge"}
-                        or parameters.get("update_allows_fetch_and_merge") is not False
-                    ):
+                    if not self._update_rule_is_restrictive(rule):
                         raise ValueError("writer update parameters are not exact")
                 elif set(rule) != {"type"}:
                     raise ValueError("safety rule is not exact")
@@ -462,7 +477,9 @@ class MainPersonalExactCasGitHubHostedConfigurationVerifier:
             ident = self._positive_int(value, "id")
             name = self._string(value, "name")
             digest = canonical_digest(value)
-            if rule_types == ["update"]:
+            ref_name = self._object(self._object(value.get("conditions")).get("ref_name"))
+            include = ref_name.get("include")
+            if rule_types == ["update"] and include == [_TARGET_REF]:
                 if len(bypass) != 1:
                     raise ValueError("writer bypass is not exact")
                 actor = self._object(bypass[0])
@@ -473,16 +490,43 @@ class MainPersonalExactCasGitHubHostedConfigurationVerifier:
                     or actor.get("bypass_mode") != "always"
                 ):
                     raise ValueError("writer bypass actor is not exact")
+                if name != "AVO C8 main writer":
+                    raise ValueError("writer ruleset name is not exact")
                 writer = _Ruleset(ident, name, digest, "writer")
-            elif sorted(rule_types) == ["deletion", "non_fast_forward", "required_linear_history"]:
+            elif (
+                sorted(rule_types)
+                == ["deletion", "non_fast_forward", "required_linear_history"]
+                and include == [_TARGET_REF]
+            ):
                 if bypass:
                     raise ValueError("safety ruleset permits bypass")
+                if name != "AVO C8 main safety":
+                    raise ValueError("safety ruleset name is not exact")
                 safety = _Ruleset(ident, name, digest, "safety")
+            elif (
+                sorted(rule_types) == ["creation", "deletion", "non_fast_forward", "update"]
+                and include == [_ROLLBACK_REF]
+            ):
+                if len(bypass) != 1:
+                    raise ValueError("rollback bypass is not exact")
+                actor = self._object(bypass[0])
+                if (
+                    set(actor) != {"actor_id", "actor_type", "bypass_mode"}
+                    or actor.get("actor_id") != app_id
+                    or actor.get("actor_type") != "Integration"
+                    or actor.get("bypass_mode") != "always"
+                ):
+                    raise ValueError("rollback bypass actor is not exact")
+                if name != "AVO C8 rollback namespace":
+                    raise ValueError("rollback ruleset name is not exact")
+                rollback = _Ruleset(ident, name, digest, "rollback")
             else:
                 raise ValueError("ruleset rule set is not exact")
-        if writer is None or safety is None:
+        if writer is None or safety is None or rollback is None:
             raise ValueError("required rulesets are missing")
-        return writer, safety
+        if len({writer.ident, safety.ident, rollback.ident}) != 3:
+            raise ValueError("ruleset identities overlap")
+        return writer, safety, rollback
 
     def _verify_branch_protection(self, value: JsonObject) -> None:
         def enabled(key: str) -> bool:
@@ -496,9 +540,6 @@ class MainPersonalExactCasGitHubHostedConfigurationVerifier:
             "required_linear_history",
             "allow_force_pushes",
             "allow_deletions",
-            "required_status_checks",
-            "required_pull_request_reviews",
-            "restrictions",
         }
         if (
             not required.issubset(value)
