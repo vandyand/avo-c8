@@ -1,5 +1,10 @@
 # AVO-004.7 C8 personal exact-CAS result
 
+Supersession notice: this record remains the immutable offline-boundary result. The later
+[hosted writer setup result](avo-0047-c8-hosted-writer-setup-result.md) records the 2026-09-03 App,
+ruleset, rollback-namespace, and initial denial-probe provisioning without claiming live CAS
+readiness.
+
 Status: Terra-approved offline personal-repository exact-CAS boundary; hosted canonical CI
 passes the unchanged 85% coverage floor.
 No live `main` CAS attempt or rollback occurred.

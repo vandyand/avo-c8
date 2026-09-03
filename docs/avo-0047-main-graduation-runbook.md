@@ -3,9 +3,10 @@
 Status: activation and evidence runbook; C4 coordinator/recovery gate complete on
 2026-09-01 at HEAD `82ace056cf9f0453b43c71845179c437914a041b` with Terra approval; C5 main
 rollback authority complete for offline acceptance on HEAD `e38d0b826f94f3f559fb2e3ef0b26d1d17128c53`
-with Terra APPROVE and combined 24 passed; live `main`
-mutation remains blocked until the selected personal exact-CAS route has its final writer ruleset,
-an isolated writer principal, and a durable controller/journal. C7 deterministic offline gate is complete at code HEAD
+with Terra APPROVE and combined 24 passed. The selected personal route's writer App, exact main
+rulesets, and rollback namespace rule were provisioned on 2026-09-03 and initial hosted denial
+probes passed without touching `main`; live mutation remains blocked until candidate verifier
+remediation `5e02ea1` passes review/hosted CI and the durable controller/journal is verified. C7 deterministic offline gate is complete at code HEAD
 `9c70c36074810606692f8c2030b25ce83c10a1e4`.
 
 C8 local Wave 1/2 foundations are Terra-approved through commits `ecd773c`, `935363c`, and
@@ -25,9 +26,11 @@ diagnostic and an isolated App-authenticated GitHub `main`-base reader; hosted r
 [33707053367](https://github.com/vandyand/avo-c8/actions/runs/33707053367) passed Ubuntu and
 Windows on that exact commit. Commit `ae4aaa8` adds pure offline, non-authoritative evidence
 composition; hosted run [33709514612](https://github.com/vandyand/avo-c8/actions/runs/33709514612)
-passed Ubuntu and Windows on exact commit `ae4aaa8242758e664d4acc2252579ff76999e2b0`. No writer
-App or final writer ruleset is provisioned or authorized; these leaves establish no live CAS,
-rollback, or readiness.
+passed Ubuntu and Windows on exact commit `ae4aaa8242758e664d4acc2252579ff76999e2b0`. Those leaves
+established no live CAS, rollback, or readiness. The later
+[hosted writer setup result](avo-0047-c8-hosted-writer-setup-result.md) records the provisioned App,
+rulesets, initial denial probes, and candidate live-shape verifier remediation without authorizing
+a hosted write.
 
 The atomic authenticated Phase 2 snapshot is Terra-approved at `1d911e3` with 30 snapshot/parser
 review tests and 82 combined focused checks. It uses two-pass mutable-configuration and final
@@ -72,7 +75,7 @@ CLI/live execution path, writer capability, activation authority, or readiness m
 semantics and check identity, effective protection and queue configuration, isolated issuer, and
 rollback namespace remained unverifiable at that historical boundary. The Phase 2 parsers, atomic
 snapshot, workflow semantics, read-only CLI, and validation-principal diagnostic are delivered
-and approved; issuer and rollback observations remain unsupported. No live run occurred because
+and approved; issuer and rollback observations remained unsupported by that diagnostic. No live run occurred because
 `GITHUB_TOKEN` is absent. No further local diagnostic leaf is currently authority-sufficient.
 
 The GitHub REST ref-delete endpoint provides no expected-SHA CAS precondition. Before hosted
@@ -96,17 +99,17 @@ Commits `bbc4d827` and `2f35d653` enforce the unchanged floor and add meaningful
 coverage without excluding production files. The strict
 Pyright baseline repair is recorded at `a0d1a7d`.
 
-The follow-on diagnostic and evidence-composition leaves above remain offline/read-only evidence;
-no writer App or final writer ruleset is provisioned or authorized, and no live CAS or rollback
-has occurred.
+The follow-on diagnostic and evidence-composition leaves above remain offline/read-only evidence.
+The external App/rulesets now exist and targeted denial probes passed, but no live `main` CAS or
+rollback has occurred.
 
 This boundary is offline evidence only: no live CAS attempt or rollback occurred. Bootstrap
-protection is already live as a topology guard; before any hosted write, provision and independently
-check the final writer-restricting ruleset, isolated writer principal, and durable controller/journal.
+protection and final rulesets are live; before any hosted write, independently accept candidate
+`5e02ea1` and verify the isolated writer principal plus durable controller/journal composition.
 The real read-only trusted-source adapter (`ae65b73`), fail-closed durable-backend gate
 (`d9f6d3d`), and offline exact-CAS contracts/journal (`a26fd7a`; 15 passed and two Windows
 symlink-privilege skips) are Terra-approved. They expose no provider, HTTP, token, or hosted writer
-surface; the live controller/transport remains unimplemented.
+surface; the live controller/transport composition remains unverified.
 Then run the protected hosted rollback drill,
 activate the ledger, and count 12 consecutive eligible successes. App 15368 remains validation
 only. The merge-queue route and its organization-hosting requirements remain an alternate,
@@ -135,9 +138,9 @@ The selected route is the separately reviewed personal exact-CAS protocol, not t
 organization-owned merge queue. Bootstrap `main` branch protection is live on `vandyand/avo-c8`
 with `enforce_admins=true`, `required_linear_history=true`, `allow_force_pushes=false`,
 `allow_deletions=false`, and no PR/status requirements. Terra reviewed this as a topology
-guard only, not writer isolation or readiness. Activation remains blocked until a repository
-ruleset restricts updates/deletions to the dedicated writer GitHub App as the only Always
-bypass, hosted denial tests pass, and the durable controller/journal exists. App 15368 is
+guard only, not writer isolation or readiness. The dedicated App and rulesets are now provisioned
+and initial denial probes pass; activation remains blocked until candidate `5e02ea1`, the complete
+hosted denial/recovery matrix, and the durable controller/journal are independently accepted. App 15368 is
 validation-only. The queue route remains an alternate, not-selected protocol.
 
 After that authority exists, independently capture the personal repository identity, final

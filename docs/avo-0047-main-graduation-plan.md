@@ -4,9 +4,11 @@ Status: implementation plan; C4 complete on 2026-09-01 at HEAD
 `82ace056cf9f0453b43c71845179c437914a041b` and C5 complete for offline acceptance on
 2026-09-01 at HEAD `e38d0b826f94f3f559fb2e3ef0b26d1d17128c53` with Terra APPROVE and combined
 24 passed; the separately reviewed personal exact-CAS boundary is approved offline at
-`9e59638` and hosted canonical CI passes the unchanged 85% coverage floor. Live `main` mutation remains blocked until final
-writer-restricting protections,
-an isolated writer principal, and a durable controller/journal are provisioned.
+`9e59638` and hosted canonical CI passes the unchanged 85% coverage floor. On 2026-09-03 the
+operator provisioned the dedicated writer App, exact main safety/writer rulesets, and rollback
+namespace rule; initial hosted denial probes passed without touching `main`. Live `main` mutation
+remains blocked until candidate verifier remediation `5e02ea1` passes independent review and hosted
+CI and the durable live controller/journal composition is verified.
 C6 is complete for offline acceptance at final code HEAD `e6db424cc671d7a5d63b9b8a7246a316c4867f91`;
 C7 deterministic offline gate is complete for offline acceptance at final code HEAD
 `9c70c36074810606692f8c2030b25ce83c10a1e4`; see the [C7 result](avo-0047-c7-result.md).
@@ -21,7 +23,8 @@ controller-rooted activation plus raw-proof CAS/legacy-compatible ledger schema 
 implemented locally. Phase 1 is now also accepted at `daeff01` through `f38840d`: its immutable
 single-flight snapshot performs five authenticated GETs (repository, main ref, commit, workflow
 blob, final main fence), verifies blob binding, and has 52 focused tests. This remains diagnostic
-only: the final writer ruleset, queue/issuer authority, and rollback ACL remain unsupported;
+only: at that historical Phase 1 boundary the final writer ruleset, queue/issuer authority, and
+rollback ACL remained unsupported;
 validation-principal diagnostics are covered by the later accepted diagnostic gate below.
 The rollback and activation preparers are explicitly non-consumable drafts; there
 is no live execution, concrete trust root, authority-bearing adapter, runner, readiness, or
@@ -32,9 +35,11 @@ diagnostic and an isolated App-authenticated GitHub `main`-base reader; hosted r
 [33707053367](https://github.com/vandyand/avo-c8/actions/runs/33707053367) passed Ubuntu and
 Windows on that exact commit. Commit `ae4aaa8` adds pure offline, non-authoritative evidence
 composition; hosted run [33709514612](https://github.com/vandyand/avo-c8/actions/runs/33709514612)
-passed Ubuntu and Windows on exact commit `ae4aaa8242758e664d4acc2252579ff76999e2b0`. No writer
-App or final writer ruleset is provisioned or authorized; these leaves establish no live CAS,
-rollback, or readiness.
+passed Ubuntu and Windows on exact commit `ae4aaa8242758e664d4acc2252579ff76999e2b0`. Those leaves
+established no live CAS, rollback, or readiness. The later
+[hosted writer setup result](avo-0047-c8-hosted-writer-setup-result.md) records the provisioned App,
+rulesets, initial denial probes, and candidate live-shape verifier remediation without authorizing
+a hosted write.
 
 The workflow-semantics and env-only diagnostic CLI gate is Terra-approved at
 `7ded390436010844f6044151c59b05a02c74b810` with 69 Terra-focused tests and 125 focused parent
@@ -42,7 +47,7 @@ tests. It pins PyYAML 6.0.3/YAML 1.2 `on`, rejects unsafe YAML features and unbo
 validates static PR/merge_group checks-requested facts and exact lowercase 40-hex `github.sha`
 checkout refs with `persist-credentials=false`, and exposes only a fixed-origin, no-redirect,
 sanitized, read-only env-only `GITHUB_TOKEN` diagnostic. No live run occurred because the token is
-absent; validation identity, issuer, and rollback remain unsupported.
+absent; validation identity, issuer, and rollback remained unsupported by that diagnostic.
 
 The atomic authenticated Phase 2 snapshot is Terra-approved at `1d911e3` with 30 snapshot/parser
 review tests and 82 combined focused checks: two-pass mutable-configuration and final main-ref
@@ -56,7 +61,7 @@ run-ID and two-pass raw-page digests, unrelated in-progress tolerance, and final
 blockers for success/wrong-App/failure/duplicate. It is secret-safe and non-authoritative.
 Terra APPROVE found no P0/P1 issues; 149 focused parent/Terra tests passed and Ruff/scoped
 Pyright/diff were clean. No further local diagnostic leaf is currently authority-sufficient;
-issuer and rollback remain unsupported.
+issuer and rollback remained unsupported by that diagnostic.
 
 The public personal repository [vandyand/avo-c8](https://github.com/vandyand/avo-c8) was
 created and seeded while [vandyand/avo](https://github.com/vandyand/avo) remained unchanged.
@@ -177,7 +182,7 @@ accepted and its write scope is reviewed.
 | AVO-004.7-C5 | Main rollback authority | AVO-004.7-C1, AVO-004.7-C3, AVO-004.7-C4 | New `MainRollbackAuthority`, inverse-delta contracts, and tests. No reset, force update, or direct ref update. | Offline acceptance complete at HEAD `e38d0b826f94f3f559fb2e3ef0b26d1d17128c53`: Terra APPROVE, combined 24 passed. Covers aggregate orchestration, terminal cleanup/closure, crash/replay, and adversarial recovery. No hosted/provider/main/deploy mutation. [Result](avo-0047-c5-result.md) |
 | AVO-004.7-C6 | Campaign runner and eligibility ledger | AVO-004.7-C4, AVO-004.7-C5 | New runner, frozen activation record, eligibility ledger, threshold accumulator, and evidence package writer. | Complete for offline acceptance at `e6db424`; [result](avo-0047-c6-result.md). Enforces gap-free scheduler sequence after watermark, exactly one next-sequence admission with no speculative tail, ordinary nonempty eligibility from submission, terminal upstream failure/reset, and exact unresolved-tail closure. Hosted activation remains gated by C8 prerequisites and a fresh hosted rollback drill. |
 | AVO-004.7-C7 | Deterministic offline gate | AVO-004.7-C1 through AVO-004.7-C6 | Offline harness, fault matrix, and result artifact only. No hosted mutation. | Complete at code HEAD `9c70c36074810606692f8c2030b25ce83c10a1e4`: 47 exact frozen case/vector entries passed, replay returned the exact same result with `executor_calls=0` and `clock_calls=0`, and `deploy_performed=false`. Two truthful failed-closed dry attempts exposed datetime-canonicalization and semantic-versus-artifact verifier bugs; both were remediated and reviewed. [Result](avo-0047-c7-result.md) |
-| AVO-004.7-C8 | Hosted personal exact-CAS gate | AVO-004.7-C7 | Terra-approved local foundations plus hosted workflow/configuration and operator-controlled state root only after explicit authority. | The organization/merge-queue protocol remains alternate/not selected. Terra approved the personal exact-CAS boundary offline at `9e59638`; [vandyand/avo-c8](https://github.com/vandyand/avo-c8) was created/seeded and [vandyand/avo](https://github.com/vandyand/avo) remained unchanged. Canonical hosted run [33688935928](https://github.com/vandyand/avo-c8/actions/runs/33688935928) on exact commit `2f35d653` passed Ubuntu and Windows with the unchanged 85% floor enforced (85.20% total). Follow-on Terra-approved leaves `7dd0ba8` (read-only hosted-configuration diagnostic plus isolated GitHub `main`-base reader; run [33707053367](https://github.com/vandyand/avo-c8/actions/runs/33707053367) passed both platforms) and `ae4aaa8` (pure offline non-authoritative evidence composition; run [33709514612](https://github.com/vandyand/avo-c8/actions/runs/33709514612) passed both platforms on exact `ae4aaa8242758e664d4acc2252579ff76999e2b0`) add evidence only. The [personal exact-CAS result](avo-0047-c8-personal-exact-cas-result.md) records the fixed no-force/no-delete protocol and no live CAS/rollback. Offline trusted-source (`ae65b73`), durable-backend (`d9f6d3d`), and exact-CAS journal (`a26fd7a`) leaves are Terra-approved, but expose no provider/HTTP writer. No writer App or final writer ruleset is provisioned or authorized; bootstrap protection remains topology-only, and hosted denial tests are incomplete. Then a protected hosted rollback drill, ledger activation, and 12 consecutive eligible successes with 0 failures/boundary violations remain. |
+| AVO-004.7-C8 | Hosted personal exact-CAS gate | AVO-004.7-C7 | Terra-approved local foundations plus hosted workflow/configuration and operator-controlled state root only after explicit authority. | The organization/merge-queue protocol remains alternate/not selected. Terra approved the personal exact-CAS boundary offline at `9e59638`; [vandyand/avo-c8](https://github.com/vandyand/avo-c8) was created/seeded and [vandyand/avo](https://github.com/vandyand/avo) remained unchanged. Canonical hosted run [33688935928](https://github.com/vandyand/avo-c8/actions/runs/33688935928) on exact commit `2f35d653` passed Ubuntu and Windows with the unchanged 85% floor enforced (85.20% total). Follow-on Terra-approved leaves `7dd0ba8` (read-only hosted-configuration diagnostic plus isolated GitHub `main`-base reader; run [33707053367](https://github.com/vandyand/avo-c8/actions/runs/33707053367) passed both platforms) and `ae4aaa8` (pure offline non-authoritative evidence composition; run [33709514612](https://github.com/vandyand/avo-c8/actions/runs/33709514612) passed both platforms on exact `ae4aaa8242758e664d4acc2252579ff76999e2b0`) add evidence only. The [personal exact-CAS result](avo-0047-c8-personal-exact-cas-result.md) records the fixed no-force/no-delete protocol and no live CAS/rollback. Offline trusted-source (`ae65b73`), durable-backend (`d9f6d3d`), and exact-CAS journal (`a26fd7a`) leaves are Terra-approved, but expose no provider/HTTP writer. The [hosted writer setup result](avo-0047-c8-hosted-writer-setup-result.md) records the dedicated App, exact main and rollback-namespace rulesets, initial hosted denial probes, and unchanged `main`; candidate verifier remediation `5e02ea1` matches the live state but remains non-authoritative pending review, hosted CI, and promotion. Then the durable live controller/transport, a protected hosted rollback drill, ledger activation, and 12 consecutive eligible successes with 0 failures/boundary violations remain. |
 
 ## Contract and evidence boundary
 
