@@ -45,6 +45,13 @@ from avo_correlate.adapters.artifacts.main_personal_exact_cas_evidence_bundle im
     MainPersonalExactCasEvidenceBundleAdapter,
     MainPersonalExactCasEvidenceBundleError,
 )
+from avo_correlate.adapters.artifacts.main_personal_exact_cas_hosted_identity_journal import (
+    MainPersonalExactCasHostedIdentityEvidenceJournal,
+    MainPersonalExactCasHostedIdentityJournal,
+    MainPersonalExactCasHostedIdentityJournalConflict,
+    MainPersonalExactCasHostedIdentityJournalConflictError,
+    MainPersonalExactCasHostedIdentityJournalError,
+)
 from avo_correlate.adapters.artifacts.main_personal_exact_cas_journal import (
     MainPersonalExactCasAuthorityVerifier,
     MainPersonalExactCasJournal,
@@ -109,6 +116,11 @@ __all__ = [
     "MainPersonalExactCasEvidenceBundle",
     "MainPersonalExactCasEvidenceBundleAdapter",
     "MainPersonalExactCasEvidenceBundleError",
+    "MainPersonalExactCasHostedIdentityEvidenceJournal",
+    "MainPersonalExactCasHostedIdentityJournal",
+    "MainPersonalExactCasHostedIdentityJournalConflict",
+    "MainPersonalExactCasHostedIdentityJournalConflictError",
+    "MainPersonalExactCasHostedIdentityJournalError",
     "MainPersonalExactCasJournal",
     "MainPersonalExactCasJournalError",
     "MainPersonalExactCasPostStateJournalConflictError",

@@ -193,6 +193,9 @@ from avo_correlate.contracts.main_personal_exact_cas import (
 from avo_correlate.contracts.main_personal_exact_cas_hosted_configuration import (
     MainPersonalExactCasHostedConfigurationDiagnostic,
 )
+from avo_correlate.contracts.main_personal_exact_cas_hosted_identity import (
+    MainPersonalExactCasHostedIdentityEvidenceRoot,
+)
 from avo_correlate.contracts.main_personal_exact_cas_post_state import (
     MainPersonalExactCasReadOnlyPostState,
 )
@@ -300,6 +303,7 @@ MODELS: tuple[type[StrictModel], ...] = (
     MainPersonalExactCasReceipt,
     MainPersonalExactCasReconciliation,
     MainPersonalExactCasHostedConfigurationDiagnostic,
+    MainPersonalExactCasHostedIdentityEvidenceRoot,
     MainPersonalExactCasResponseEvidence,
     MainPersonalExactCasResponseReconciliationClassification,
     MainPersonalExactCasReadOnlyPostState,
