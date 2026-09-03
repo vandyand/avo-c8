@@ -40,6 +40,11 @@ from avo_correlate.adapters.artifacts.main_graduation_offline_drill_journal impo
     OfflineDrillJournalError,
     OfflineDrillRecordConflictError,
 )
+from avo_correlate.adapters.artifacts.main_personal_exact_cas_controller_composition import (
+    MainPersonalExactCasControllerCompositionConflictError,
+    MainPersonalExactCasControllerCompositionError,
+    MainPersonalExactCasControllerCompositionJournal,
+)
 from avo_correlate.adapters.artifacts.main_personal_exact_cas_evidence_bundle import (
     MainPersonalExactCasEvidenceBundle,
     MainPersonalExactCasEvidenceBundleAdapter,
@@ -113,6 +118,9 @@ __all__ = [
     "MainLedgerJournalError",
     "MainLedgerRecordConflictError",
     "MainPersonalExactCasAuthorityVerifier",
+    "MainPersonalExactCasControllerCompositionConflictError",
+    "MainPersonalExactCasControllerCompositionError",
+    "MainPersonalExactCasControllerCompositionJournal",
     "MainPersonalExactCasEvidenceBundle",
     "MainPersonalExactCasEvidenceBundleAdapter",
     "MainPersonalExactCasEvidenceBundleError",
