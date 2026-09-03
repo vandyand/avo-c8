@@ -665,7 +665,12 @@ def test_minted_installation_token_scope_is_exact(mutation: str) -> None:
 
 
 def test_minted_installation_token_status_or_shape_fails_closed() -> None:
-    for response in ((200, _minted_token()), (201, {}), (201, {"token": "foreign"})):
+    responses_to_test: tuple[tuple[int, JsonValue], ...] = (
+        (200, _minted_token()),
+        (201, {}),
+        (201, {"token": "foreign"}),
+    )
+    for response in responses_to_test:
         responses = _responses()
         responses[4] = response
         subject, _ = _subject(responses)
