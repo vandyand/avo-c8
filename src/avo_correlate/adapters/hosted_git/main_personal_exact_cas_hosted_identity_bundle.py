@@ -304,9 +304,11 @@ def validate_hosted_configuration_provenance(
 
     # The rollback ruleset identity is not part of the public diagnostic, so
     # validate that its observed request is an additional positive ruleset ID.
+    rollback_ids: list[int] = []
     for offset in (1, 11):
         observed = requests[offset : offset + 10]
-        if observed[:7] != expected_pass()[:7] or observed[9:] != expected_pass()[9:]:
+        expected = expected_pass()
+        if observed[:8] != expected[:8] or observed[9:] != expected[9:]:
             raise ValueError("hosted writer provenance trace shape differs")
         rollback_path = observed[8].path
         match = re.fullmatch(r"/repos/vandyand/avo-c8/rulesets/([1-9][0-9]*)", rollback_path)
@@ -314,17 +316,22 @@ def validate_hosted_configuration_provenance(
             raise ValueError("hosted writer provenance rollback request differs")
         if match is None or int(match.group(1)) in {writer, safety}:
             raise ValueError("hosted writer provenance ruleset identity is not exact")
+        rollback_ids.append(int(match.group(1)))
+    if rollback_ids[0] != rollback_ids[1]:
+        raise ValueError("hosted writer provenance rollback identity drifted")
     ref = GitHubReadRequest("GET", base + "/git/ref/heads/main", "owner_admin_token")
     if requests[0] != ref or requests[-1] != ref:
         raise ValueError("hosted writer provenance main fence differs")
     if (
         provenance.repository_digest != typed_diagnostic.repository_digest
         or provenance.owner != typed_diagnostic.owner
+        or provenance.owner_id != typed_diagnostic.owner_id
         or provenance.repository != typed_diagnostic.repository
         or provenance.repository_id != typed_diagnostic.repository_id
         or provenance.target_ref != typed_diagnostic.target_ref
         or provenance.app_id != typed_diagnostic.writer_app_id
         or provenance.installation_id != typed_diagnostic.writer_installation_id
+        or provenance.app_slug != typed_diagnostic.writer_app_slug
         or provenance.configuration_digest != typed_diagnostic.configuration_digest
         or provenance.initial_ref_digest != typed_diagnostic.initial_ref_digest
         or provenance.final_ref_digest != typed_diagnostic.final_ref_digest
@@ -352,6 +359,21 @@ def validate_main_base_provenance(
 
     if provenance.reader_identity != MAIN_BASE_READER_IDENTITY:
         raise ValueError("main base provenance reader identity differs")
+    if (
+        provenance.owner != configuration.owner
+        or provenance.owner_id != configuration.owner_id
+        or provenance.repository != configuration.repo
+        or provenance.repository_id != configuration.repository_id
+        or provenance.repository_digest != configuration.repository_digest
+        or provenance.app_slug != configuration.observer_identity
+        or provenance.app_id != configuration.observer_app_id
+        or provenance.installation_id != configuration.observer_installation_id
+        or provenance.writer_app_id != configuration.writer_app_id
+        or provenance.writer_installation_id != configuration.writer_installation_id
+        or provenance.target_ref != "refs/heads/main"
+        or snapshot.repository_digest != configuration.repository_digest
+    ):
+        raise ValueError("main base provenance configuration binding differs")
     base = f"/repos/{configuration.owner}/{configuration.repo}"
     expected = (
         GitHubReadRequest("GET", "/app", "app_jwt"),

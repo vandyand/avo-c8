@@ -229,6 +229,19 @@ def test_builder_requires_authenticated_writer_wrapper_and_exact_observer_trace(
         )
 
 
+def test_writer_safety_ruleset_request_cannot_be_skipped() -> None:
+    writer = _writer()
+    requests = list(writer.provenance.requests)
+    requests[8] = requests[7]
+    tampered = replace(writer.provenance, requests=tuple(requests))
+    observer, configuration = _observer()
+    # The changed provenance has a fresh digest but fails the exact safety slot.
+    with pytest.raises(ValueError, match="trace shape"):
+        MainPersonalExactCasHostedIdentityEvidenceBundle.build(
+            GitHubReadWithProvenance(writer.result, tampered), observer, configuration
+        )
+
+
 def test_bundle_is_deterministic_scalar_and_non_authoritative() -> None:
     first = _bundle()
     second = _bundle()
@@ -271,6 +284,27 @@ def test_observer_writer_identity_mismatch_fails_closed(field: str) -> None:
     with pytest.raises(ValueError):
         MainPersonalExactCasHostedIdentityEvidenceBundle.build(
             _writer(), GitHubReadWithProvenance(observer.result, provenance), configuration
+        )
+
+
+@pytest.mark.parametrize("field", ["app_id", "app_slug"])
+def test_observer_identity_mismatch_fails_closed(field: str) -> None:
+    observer, configuration = _observer()
+    value: object = OBSERVER_APP_ID + 1 if field == "app_id" else "other-observer"
+    provenance = replace(observer.provenance, **{field: value})
+    with pytest.raises(ValueError):
+        MainPersonalExactCasHostedIdentityEvidenceBundle.build(
+            _writer(), GitHubReadWithProvenance(observer.result, provenance), configuration
+        )
+
+
+@pytest.mark.parametrize("field", ["owner", "repo"])
+def test_observer_configuration_repository_mismatch_fails_closed(field: str) -> None:
+    observer, configuration = _observer()
+    changes = {field: "other"}
+    with pytest.raises(ValueError):
+        MainPersonalExactCasHostedIdentityEvidenceBundle.build(
+            _writer(), observer, replace(configuration, **changes)
         )
 
 
