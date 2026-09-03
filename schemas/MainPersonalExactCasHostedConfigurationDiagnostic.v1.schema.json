@@ -12,6 +12,86 @@
       "title": "Branch Protection Digest",
       "type": "string"
     },
+    "candidate_creation_ruleset_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Candidate Creation Ruleset Digest",
+      "type": "string"
+    },
+    "candidate_creation_ruleset_id": {
+      "exclusiveMinimum": 0,
+      "title": "Candidate Creation Ruleset Id",
+      "type": "integer"
+    },
+    "candidate_creation_ruleset_name": {
+      "minLength": 1,
+      "title": "Candidate Creation Ruleset Name",
+      "type": "string"
+    },
+    "candidate_immutable_ruleset_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Candidate Immutable Ruleset Digest",
+      "type": "string"
+    },
+    "candidate_immutable_ruleset_id": {
+      "exclusiveMinimum": 0,
+      "title": "Candidate Immutable Ruleset Id",
+      "type": "integer"
+    },
+    "candidate_immutable_ruleset_name": {
+      "minLength": 1,
+      "title": "Candidate Immutable Ruleset Name",
+      "type": "string"
+    },
+    "candidate_publisher_app_configuration_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Candidate Publisher App Configuration Digest",
+      "type": "string"
+    },
+    "candidate_publisher_app_homepage": {
+      "const": "https://github.com/vandyand/avo-c8",
+      "title": "Candidate Publisher App Homepage",
+      "type": "string"
+    },
+    "candidate_publisher_app_id": {
+      "exclusiveMinimum": 0,
+      "title": "Candidate Publisher App Id",
+      "type": "integer"
+    },
+    "candidate_publisher_app_name": {
+      "const": "avo-c8-candidate-publisher-vandyand",
+      "title": "Candidate Publisher App Name",
+      "type": "string"
+    },
+    "candidate_publisher_app_slug": {
+      "const": "avo-c8-candidate-publisher-vandyand",
+      "title": "Candidate Publisher App Slug",
+      "type": "string"
+    },
+    "candidate_publisher_identity_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Candidate Publisher Identity Digest",
+      "type": "string"
+    },
+    "candidate_publisher_installation_configuration_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Candidate Publisher Installation Configuration Digest",
+      "type": "string"
+    },
+    "candidate_publisher_installation_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Candidate Publisher Installation Digest",
+      "type": "string"
+    },
+    "candidate_publisher_installation_id": {
+      "exclusiveMinimum": 0,
+      "title": "Candidate Publisher Installation Id",
+      "type": "integer"
+    },
+    "candidate_publisher_selected_repositories_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Candidate Publisher Selected Repositories Digest",
+      "type": "string"
+    },
     "configuration_digest": {
       "pattern": "^sha256:[0-9a-f]{64}$",
       "title": "Configuration Digest",
@@ -276,12 +356,28 @@
     "safety_ruleset_name",
     "rollback_ruleset_id",
     "rollback_ruleset_name",
+    "candidate_creation_ruleset_id",
+    "candidate_creation_ruleset_name",
+    "candidate_immutable_ruleset_id",
+    "candidate_immutable_ruleset_name",
     "writer_app_id",
     "writer_installation_id",
+    "candidate_publisher_app_id",
+    "candidate_publisher_app_slug",
+    "candidate_publisher_app_name",
+    "candidate_publisher_app_homepage",
+    "candidate_publisher_installation_id",
     "selected_repository_ids",
     "writer_ruleset_digest",
     "safety_ruleset_digest",
     "rollback_ruleset_digest",
+    "candidate_creation_ruleset_digest",
+    "candidate_immutable_ruleset_digest",
+    "candidate_publisher_identity_digest",
+    "candidate_publisher_installation_digest",
+    "candidate_publisher_app_configuration_digest",
+    "candidate_publisher_installation_configuration_digest",
+    "candidate_publisher_selected_repositories_digest",
     "branch_protection_digest",
     "app_configuration_digest",
     "installation_configuration_digest",

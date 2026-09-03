@@ -29,8 +29,11 @@ _OWNER = "vandyand"
 _REPOSITORY = "avo-c8"
 _REPOSITORY_ID = 1_354_880_741
 _APP_SLUG = "avo-c8-main-writer-vandyand"
+_CANDIDATE_APP_SLUG = "avo-c8-candidate-publisher-vandyand"
+_CANDIDATE_APP_HOMEPAGE = "https://github.com/vandyand/avo-c8"
 _TARGET_REF = "refs/heads/main"
 _ROLLBACK_REF = "refs/heads/avo/main-rollback/*"
+_CANDIDATE_REF = "refs/heads/avo/candidate/*"
 _MAX_PAGES = 10
 _PAGE_SIZE = 100
 _MAX_OBSERVATION = timedelta(minutes=5)
@@ -63,8 +66,20 @@ class _ConfigurationPass:
     writer: _Ruleset
     safety: _Ruleset
     rollback: _Ruleset
+    candidate_creation: _Ruleset
+    candidate_immutable: _Ruleset
     app_id: int
     installation_id: int
+    candidate_publisher_app_id: int
+    candidate_publisher_app_slug: str
+    candidate_publisher_app_name: str
+    candidate_publisher_app_homepage: str
+    candidate_publisher_installation_id: int
+    candidate_publisher_app_configuration_digest: str
+    candidate_publisher_installation_configuration_digest: str
+    candidate_publisher_selected_repositories_digest: str
+    candidate_publisher_identity_digest: str
+    candidate_publisher_installation_digest: str
     branch_protection_digest: str
     app_configuration_digest: str
     installation_configuration_digest: str
@@ -81,6 +96,9 @@ class MainPersonalExactCasGitHubHostedConfigurationVerifier:
         *,
         owner_admin_token: str,
         app_jwt: str,
+        candidate_publisher_app_jwt: str,
+        candidate_publisher_app_id: int,
+        candidate_publisher_installation_id: int,
         trusted_clock: Callable[[], datetime],
         transport: Callable[
             [str, str, JsonBody | None, Mapping[str, str]], tuple[int, JsonValue]
@@ -91,10 +109,22 @@ class MainPersonalExactCasGitHubHostedConfigurationVerifier:
             raise ValueError("GitHub owner/admin read token is required")
         if type(app_jwt) is not str or not app_jwt.strip():
             raise ValueError("GitHub App JWT is required")
+        if type(candidate_publisher_app_jwt) is not str or not candidate_publisher_app_jwt.strip():
+            raise ValueError("candidate publisher GitHub App JWT is required")
+        if type(candidate_publisher_app_id) is not int or candidate_publisher_app_id <= 0:
+            raise ValueError("candidate publisher App ID is required")
+        if (
+            type(candidate_publisher_installation_id) is not int
+            or candidate_publisher_installation_id <= 0
+        ):
+            raise ValueError("candidate publisher installation ID is required")
         if not callable(trusted_clock):
             raise ValueError("trusted clock is required")
         self._owner_admin_token = owner_admin_token
         self._app_jwt = app_jwt
+        self._candidate_publisher_app_jwt = candidate_publisher_app_jwt
+        self._candidate_publisher_app_id = candidate_publisher_app_id
+        self._candidate_publisher_installation_id = candidate_publisher_installation_id
         self._clock = trusted_clock
         self._transport = transport or GitHubJsonTransport(origin=_API_ORIGIN)
 
@@ -151,11 +181,20 @@ class MainPersonalExactCasGitHubHostedConfigurationVerifier:
                 safety_ruleset_name=first.safety.name,
                 rollback_ruleset_id=first.rollback.ident,
                 rollback_ruleset_name=first.rollback.name,
+                candidate_creation_ruleset_id=first.candidate_creation.ident,
+                candidate_creation_ruleset_name=first.candidate_creation.name,
+                candidate_immutable_ruleset_id=first.candidate_immutable.ident,
+                candidate_immutable_ruleset_name=first.candidate_immutable.name,
                 writer_app_id=first.app_id,
                 writer_app_slug=_APP_SLUG,
                 writer_app_name=_APP_SLUG,
                 writer_app_homepage="https://github.com/vandyand/avo-c8",
                 writer_installation_id=first.installation_id,
+                candidate_publisher_app_id=first.candidate_publisher_app_id,
+                candidate_publisher_app_slug=first.candidate_publisher_app_slug,
+                candidate_publisher_app_name=first.candidate_publisher_app_name,
+                candidate_publisher_app_homepage=first.candidate_publisher_app_homepage,
+                candidate_publisher_installation_id=first.candidate_publisher_installation_id,
                 repository_selection="selected",
                 selected_repository_ids=(_REPOSITORY_ID,),
                 contents_permission="write",
@@ -164,6 +203,13 @@ class MainPersonalExactCasGitHubHostedConfigurationVerifier:
                 writer_ruleset_digest=first.writer.digest,
                 safety_ruleset_digest=first.safety.digest,
                 rollback_ruleset_digest=first.rollback.digest,
+                candidate_creation_ruleset_digest=first.candidate_creation.digest,
+                candidate_immutable_ruleset_digest=first.candidate_immutable.digest,
+                candidate_publisher_identity_digest=first.candidate_publisher_identity_digest,
+                candidate_publisher_installation_digest=first.candidate_publisher_installation_digest,
+                candidate_publisher_app_configuration_digest=first.candidate_publisher_app_configuration_digest,
+                candidate_publisher_installation_configuration_digest=first.candidate_publisher_installation_configuration_digest,
+                candidate_publisher_selected_repositories_digest=first.candidate_publisher_selected_repositories_digest,
                 branch_protection_digest=first.branch_protection_digest,
                 app_configuration_digest=first.app_configuration_digest,
                 installation_configuration_digest=first.installation_configuration_digest,
@@ -207,6 +253,26 @@ class MainPersonalExactCasGitHubHostedConfigurationVerifier:
                         (
                             ("app", typed_result.app_configuration_digest),
                             ("installation", typed_result.installation_configuration_digest),
+                            (
+                                "candidate_publisher_identity",
+                                typed_result.candidate_publisher_identity_digest,
+                            ),
+                            (
+                                "candidate_publisher_installation",
+                                typed_result.candidate_publisher_installation_digest,
+                            ),
+                            (
+                                "candidate_publisher_app",
+                                typed_result.candidate_publisher_app_configuration_digest,
+                            ),
+                            (
+                                "candidate_publisher_installation_observation",
+                                typed_result.candidate_publisher_installation_configuration_digest,
+                            ),
+                            (
+                                "candidate_publisher_selected_repositories",
+                                typed_result.candidate_publisher_selected_repositories_digest,
+                            ),
                             ("repository", typed_result.repository_digest),
                             ("selected_repositories", typed_result.selected_repositories_digest),
                         )
@@ -251,11 +317,49 @@ class MainPersonalExactCasGitHubHostedConfigurationVerifier:
             raise ValueError("selected repository set is not exact")
         self._verify_selected_repository(self._object(repositories[0]), owner_id)
 
+        candidate_app = self._object(self._get("/app", self._candidate_publisher_app_jwt, trace))
+        raw["candidate_publisher_app"] = candidate_app
+        candidate_app_id = self._verify_app(
+            candidate_app,
+            owner_id,
+            _CANDIDATE_APP_SLUG,
+            _CANDIDATE_APP_SLUG,
+            _CANDIDATE_APP_HOMEPAGE,
+        )
+        if candidate_app_id != self._candidate_publisher_app_id:
+            raise ValueError("candidate publisher App identity is not exact")
+        candidate_installation = self._object(
+            self._get(
+                f"/app/installations/{self._candidate_publisher_installation_id}",
+                self._candidate_publisher_app_jwt,
+                trace,
+            )
+        )
+        raw["candidate_publisher_installation"] = candidate_installation
+        candidate_installation_id = self._verify_installation(
+            candidate_installation,
+            candidate_app_id,
+            owner_id,
+            _CANDIDATE_APP_SLUG,
+        )
+        if candidate_installation_id != self._candidate_publisher_installation_id:
+            raise ValueError("candidate publisher installation identity is not exact")
+        candidate_token = self._mint_read_token(
+            candidate_installation_id, owner_id, trace, app_jwt=self._candidate_publisher_app_jwt
+        )
+        candidate_repositories, candidate_selected_raw = self._read_object_pages(
+            "/installation/repositories", "repositories", candidate_token, trace
+        )
+        raw["candidate_publisher_selected_repositories"] = candidate_selected_raw
+        if len(candidate_repositories) != 1:
+            raise ValueError("candidate publisher selected repository set is not exact")
+        self._verify_selected_repository(self._object(candidate_repositories[0]), owner_id)
+
         summaries, ruleset_raw = self._read_array_pages(
             self._repo_path() + "/rulesets", self._owner_admin_token, trace
         )
         raw["rulesets"] = ruleset_raw
-        if len(summaries) != 3:
+        if len(summaries) != 5:
             raise ValueError("ruleset set is not exact")
         details: list[JsonObject] = []
         ruleset_request_ids: list[int] = []
@@ -275,9 +379,12 @@ class MainPersonalExactCasGitHubHostedConfigurationVerifier:
             )
             self._verify_summary_detail(summary, detail)
             details.append(detail)
-        details.sort(key=lambda item: self._positive_int(item, "id"))
+        # Preserve GitHub's stable summary/detail order in the raw pass digest;
+        # role classification below is deliberately order-independent.
         raw["ruleset_details"] = cast(JsonValue, details)
-        writer, safety, rollback = self._classify_rulesets(details, app_id)
+        writer, safety, rollback, candidate_creation, candidate_immutable = self._classify_rulesets(
+            details, app_id
+        )
 
         protection = self._object(
             self._get(
@@ -291,8 +398,36 @@ class MainPersonalExactCasGitHubHostedConfigurationVerifier:
             writer=writer,
             safety=safety,
             rollback=rollback,
+            candidate_creation=candidate_creation,
+            candidate_immutable=candidate_immutable,
             app_id=app_id,
             installation_id=installation_id,
+            candidate_publisher_app_id=candidate_app_id,
+            candidate_publisher_app_slug=self._string(candidate_app, "slug"),
+            candidate_publisher_app_name=self._string(candidate_app, "name"),
+            candidate_publisher_app_homepage=self._string(candidate_app, "external_url"),
+            candidate_publisher_installation_id=candidate_installation_id,
+            candidate_publisher_identity_digest=canonical_digest(
+                {
+                    "app_id": candidate_app_id,
+                    "slug": self._string(candidate_app, "slug"),
+                    "name": self._string(candidate_app, "name"),
+                    "homepage": self._string(candidate_app, "external_url"),
+                }
+            ),
+            candidate_publisher_installation_digest=canonical_digest(
+                {
+                    "app_id": candidate_app_id,
+                    "installation_id": candidate_installation_id,
+                }
+            ),
+            candidate_publisher_app_configuration_digest=canonical_digest(candidate_app),
+            candidate_publisher_installation_configuration_digest=canonical_digest(
+                candidate_installation
+            ),
+            candidate_publisher_selected_repositories_digest=canonical_digest(
+                candidate_selected_raw
+            ),
             branch_protection_digest=canonical_digest(protection),
             app_configuration_digest=canonical_digest(app),
             installation_configuration_digest=canonical_digest(installation),
@@ -302,7 +437,12 @@ class MainPersonalExactCasGitHubHostedConfigurationVerifier:
         )
 
     def _mint_read_token(
-        self, installation_id: int, owner_id: int, trace: list[GitHubReadRequest]
+        self,
+        installation_id: int,
+        owner_id: int,
+        trace: list[GitHubReadRequest],
+        *,
+        app_jwt: str | None = None,
     ) -> str:
         """Mint and validate the exact read-scoped token for this pass."""
 
@@ -310,13 +450,14 @@ class MainPersonalExactCasGitHubHostedConfigurationVerifier:
             "repository_ids": [_REPOSITORY_ID],
             "permissions": {"contents": "read"},
         }
+        jwt = self._app_jwt if app_jwt is None else app_jwt
         status, value = self._transport(
             "POST",
             _API_ORIGIN + f"/app/installations/{installation_id}/access_tokens",
             body,
             {
                 "Accept": "application/vnd.github+json",
-                "Authorization": "Bearer " + self._app_jwt,
+                "Authorization": "Bearer " + jwt,
                 "Content-Type": "application/json",
                 "X-GitHub-Api-Version": _API_VERSION,
             },
@@ -497,28 +638,41 @@ class MainPersonalExactCasGitHubHostedConfigurationVerifier:
             raise ValueError("repository is not exact")
         return owner_id
 
-    def _verify_app(self, value: JsonObject, owner_id: int) -> int:
+    def _verify_app(
+        self,
+        value: JsonObject,
+        owner_id: int,
+        expected_slug: str = _APP_SLUG,
+        expected_name: str = _APP_SLUG,
+        expected_homepage: str = "https://github.com/vandyand/avo-c8",
+    ) -> int:
         owner = self._object(value.get("owner"))
         app_id = self._positive_int(value, "id")
         self._permissions(value)
         if (
-            value.get("slug") != _APP_SLUG
-            or value.get("name") != _APP_SLUG
-            or value.get("external_url") != "https://github.com/vandyand/avo-c8"
+            value.get("slug") != expected_slug
+            or value.get("name") != expected_name
+            or value.get("external_url") != expected_homepage
             or owner.get("login") != _OWNER
             or owner.get("id") != owner_id
             or owner.get("type") != "User"
         ):
             raise ValueError("GitHub App identity is not exact")
+        if expected_slug != _APP_SLUG and any(
+            key in value and value[key] is not False for key in ("public", "webhook_active")
+        ):
+            raise ValueError("candidate publisher App privacy/webhook state is not exact")
         return app_id
 
-    def _verify_installation(self, value: JsonObject, app_id: int, owner_id: int) -> int:
+    def _verify_installation(
+        self, value: JsonObject, app_id: int, owner_id: int, expected_slug: str = _APP_SLUG
+    ) -> int:
         account = self._object(value.get("account"))
         installation_id = self._positive_int(value, "id")
         self._permissions(value)
         if (
             value.get("app_id") != app_id
-            or value.get("app_slug") != _APP_SLUG
+            or value.get("app_slug") != expected_slug
             or value.get("target_id") != owner_id
             or value.get("target_type") != "User"
             or value.get("repository_selection") != "selected"
@@ -548,10 +702,10 @@ class MainPersonalExactCasGitHubHostedConfigurationVerifier:
     @staticmethod
     def _verify_ruleset_summary(value: JsonObject) -> None:
         if (
-            value.get("target") != "branch"
+            value.get("target", "branch") != "branch"
             or value.get("source_type") != "Repository"
             or value.get("source") != f"{_OWNER}/{_REPOSITORY}"
-            or value.get("enforcement") != "active"
+            or value.get("enforcement") not in {"enabled", "active"}
         ):
             raise ValueError("ruleset summary is not exact")
 
@@ -571,7 +725,7 @@ class MainPersonalExactCasGitHubHostedConfigurationVerifier:
         ref_name = self._object(conditions.get("ref_name"))
         if (
             set(ref_name) != {"include", "exclude"}
-            or ref_name.get("include") not in ([_TARGET_REF], [_ROLLBACK_REF])
+            or ref_name.get("include") not in ([_TARGET_REF], [_ROLLBACK_REF], [_CANDIDATE_REF])
             or ref_name.get("exclude") != []
         ):
             raise ValueError("ruleset target is not exact")
@@ -591,10 +745,12 @@ class MainPersonalExactCasGitHubHostedConfigurationVerifier:
 
     def _classify_rulesets(
         self, values: list[JsonObject], app_id: int
-    ) -> tuple[_Ruleset, _Ruleset, _Ruleset]:
+    ) -> tuple[_Ruleset, _Ruleset, _Ruleset, _Ruleset, _Ruleset]:
         writer: _Ruleset | None = None
         safety: _Ruleset | None = None
         rollback: _Ruleset | None = None
+        candidate_creation: _Ruleset | None = None
+        candidate_immutable: _Ruleset | None = None
         for value in values:
             rules = value.get("rules")
             bypass = value.get("bypass_actors")
@@ -658,13 +814,50 @@ class MainPersonalExactCasGitHubHostedConfigurationVerifier:
                 if name != "AVO C8 rollback namespace":
                     raise ValueError("rollback ruleset name is not exact")
                 rollback = _Ruleset(ident, name, digest, "rollback")
+            elif rule_types == ["creation"] and include == [_CANDIDATE_REF]:
+                if len(bypass) != 1:
+                    raise ValueError("candidate creation bypass is not exact")
+                actor = self._object(bypass[0])
+                if (
+                    set(actor) != {"actor_id", "actor_type", "bypass_mode"}
+                    or actor.get("actor_id") != self._candidate_publisher_app_id
+                    or actor.get("actor_type") != "Integration"
+                    or actor.get("bypass_mode") != "always"
+                ):
+                    raise ValueError("candidate creation bypass actor is not exact")
+                if name != "AVO C8 candidate creation":
+                    raise ValueError("candidate creation ruleset name is not exact")
+                candidate_creation = _Ruleset(ident, name, digest, "candidate_creation")
+            elif (
+                sorted(rule_types) == ["deletion", "non_fast_forward", "update"]
+                and include == [_CANDIDATE_REF]
+            ):
+                if bypass != []:
+                    raise ValueError("candidate immutable ruleset permits bypass")
+                if name != "AVO C8 candidate immutable":
+                    raise ValueError("candidate immutable ruleset name is not exact")
+                candidate_immutable = _Ruleset(ident, name, digest, "candidate_immutable")
             else:
                 raise ValueError("ruleset rule set is not exact")
-        if writer is None or safety is None or rollback is None:
+        if (
+            writer is None
+            or safety is None
+            or rollback is None
+            or candidate_creation is None
+            or candidate_immutable is None
+        ):
             raise ValueError("required rulesets are missing")
-        if len({writer.ident, safety.ident, rollback.ident}) != 3:
+        if len(
+            {
+                writer.ident,
+                safety.ident,
+                rollback.ident,
+                candidate_creation.ident,
+                candidate_immutable.ident,
+            }
+        ) != 5:
             raise ValueError("ruleset identities overlap")
-        return writer, safety, rollback
+        return writer, safety, rollback, candidate_creation, candidate_immutable
 
     def _verify_branch_protection(self, value: JsonObject) -> None:
         def enabled(key: str) -> bool:
@@ -716,6 +909,20 @@ def _expected_trace(
             GitHubReadRequest(
                 "POST",
                 f"/app/installations/{configuration.installation_id}/access_tokens",
+                "app_jwt",
+            ),
+            GitHubReadRequest(
+                "GET", "/installation/repositories?per_page=100&page=1", "installation_token"
+            ),
+            GitHubReadRequest("GET", "/app", "app_jwt"),
+            GitHubReadRequest(
+                "GET",
+                f"/app/installations/{configuration.candidate_publisher_installation_id}",
+                "app_jwt",
+            ),
+            GitHubReadRequest(
+                "POST",
+                f"/app/installations/{configuration.candidate_publisher_installation_id}/access_tokens",
                 "app_jwt",
             ),
             GitHubReadRequest(
