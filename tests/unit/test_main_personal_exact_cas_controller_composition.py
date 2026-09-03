@@ -305,9 +305,15 @@ def test_journal_create_once_reuse_conflict_and_reuse_fsync_failure(
         forged = MainPersonalExactCasControllerComposition.model_construct(**forged_values)
         journal._publish(root.operation_id, forged)
 
-    def fail_fsync(_path: Path) -> None:
-        raise OSError("reuse directory fsync failure")
+    if journal._descriptor_mode:
+        def fail_fd_fsync(_descriptor: int) -> None:
+            raise OSError("reuse directory fsync failure")
 
-    monkeypatch.setattr(module, "_fsync_directory", fail_fsync)
+        monkeypatch.setattr(module.os, "fsync", fail_fd_fsync)
+    else:
+        def fail_fsync(_path: Path) -> None:
+            raise OSError("reuse directory fsync failure")
+
+        monkeypatch.setattr(module, "_fsync_directory", fail_fsync)
     with pytest.raises(OSError, match="reuse directory fsync failure"):
         journal._publish(root.operation_id, root)
