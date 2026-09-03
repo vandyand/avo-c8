@@ -7,12 +7,14 @@ from __future__ import annotations
 import copy
 import inspect
 from collections.abc import Mapping
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
 from avo_correlate.adapters.hosted_git.github import JsonBody, JsonObject, JsonValue
+from avo_correlate.adapters.hosted_git.github_read_provenance import GitHubReadRequest
 from avo_correlate.adapters.hosted_git.main_personal_exact_cas_hosted_configuration import (
     MainPersonalExactCasGitHubHostedConfigurationVerifier,
     MainPersonalExactCasHostedConfigurationUnverified,
@@ -420,6 +422,40 @@ def test_exact_configuration_returns_non_authoritative_diagnostic() -> None:
         and call[2]
         == {"repository_ids": [REPOSITORY_ID], "permissions": {"contents": "read"}}
         for call in mint_calls
+    )
+
+
+def test_authenticated_configuration_provenance_is_canonical_and_secret_free() -> None:
+    subject, _ = _subject()
+    observed = subject.verify_with_provenance()
+    provenance = observed.provenance
+    assert observed.result.main_commit == SHA
+    assert provenance.provenance_digest.startswith("sha256:")
+    assert len(provenance.configuration_pass_digests) == 2
+    assert provenance.configuration_pass_digests[0] == provenance.configuration_pass_digests[1]
+    assert provenance.requests[0] == GitHubReadRequest(
+        "GET", "/repos/vandyand/avo-c8/git/ref/heads/main", "owner_admin_token"
+    )
+    assert provenance.requests[4].method == "POST"
+    assert provenance.requests[4].credential_role == "app_jwt"
+    assert provenance.requests[-1].path.endswith("/git/ref/heads/main")
+    text = repr(provenance)
+    assert OWNER_ADMIN_TOKEN not in text
+    assert APP_TOKEN not in text
+    assert MINTED_INSTALLATION_TOKEN not in text
+
+    rotated = _responses()
+    for index, token in ((4, "rotated-first-secret"), (14, "rotated-second-secret")):
+        token_body = rotated[index][1]
+        assert isinstance(token_body, dict)
+        token_body["token"] = token
+    rotated_subject, _ = _subject(rotated)
+    rotated_observed = rotated_subject.verify_with_provenance()
+    assert rotated_observed.provenance.provenance_digest == provenance.provenance_digest
+
+    assert (
+        replace(provenance, app_id=APP_ID + 1).provenance_digest
+        != provenance.provenance_digest
     )
 
 

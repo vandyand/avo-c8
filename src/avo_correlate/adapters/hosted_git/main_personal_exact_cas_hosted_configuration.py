@@ -7,7 +7,7 @@ import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import cast
+from typing import Any, cast
 
 from avo_correlate.contracts.main_personal_exact_cas import GitObject
 from avo_correlate.contracts.main_personal_exact_cas_hosted_configuration import (
@@ -16,6 +16,11 @@ from avo_correlate.contracts.main_personal_exact_cas_hosted_configuration import
 from avo_correlate.domain.canonical import canonical_digest
 
 from .github import JsonBody, JsonObject, JsonValue, github_repository_digest
+from .github_read_provenance import (
+    GitHubReadProvenance,
+    GitHubReadRequest,
+    GitHubReadWithProvenance,
+)
 from .github_transport import GitHubJsonTransport
 
 _API_ORIGIN = "https://api.github.com"
@@ -31,6 +36,7 @@ _PAGE_SIZE = 100
 _MAX_OBSERVATION = timedelta(minutes=5)
 _OBJECT_PATTERN = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
 _GITHUB_TIMESTAMP_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
+_READER_IDENTITY = "main_personal_exact_cas_hosted_configuration_verifier"
 
 
 class MainPersonalExactCasHostedConfigurationUnverified(RuntimeError):
@@ -94,13 +100,30 @@ class MainPersonalExactCasGitHubHostedConfigurationVerifier:
     def verify(self) -> MainPersonalExactCasHostedConfigurationDiagnostic:
         """Perform two complete reads and fence them by the exact main ref."""
 
+        wrapped: Any = self.verify_with_provenance()
+        return cast(MainPersonalExactCasHostedConfigurationDiagnostic, wrapped.result)
+
+    def verify_with_provenance(
+        self,
+    ) -> GitHubReadWithProvenance[MainPersonalExactCasHostedConfigurationDiagnostic]:
+        """Return one exact configuration result and immutable read provenance."""
+
         result: MainPersonalExactCasHostedConfigurationDiagnostic | None = None
         failed = False
+        requests: list[GitHubReadRequest] = []
+        observed_owner_id = 0
+        observed_app_id = 0
+        observed_installation_id = 0
+        previous_trace = getattr(self, "_provenance_trace", None)
+        self._provenance_trace = requests
         try:
             started = self._now()
             initial_commit, initial_ref_digest = self._read_main_ref()
             first = self._configuration_pass()
             second = self._configuration_pass()
+            observed_owner_id = first.owner_id
+            observed_app_id = first.app_id
+            observed_installation_id = first.installation_id
             final_commit, final_ref_digest = self._read_main_ref()
             finished = self._now()
             if (
@@ -154,8 +177,51 @@ class MainPersonalExactCasGitHubHostedConfigurationVerifier:
             error = MainPersonalExactCasHostedConfigurationUnverified()
             error.__cause__ = None
             error.__context__ = None
+            self._provenance_trace = previous_trace
             raise error
-        return result
+        typed_result = result
+        try:
+            provenance = GitHubReadProvenance(
+                reader_identity=_READER_IDENTITY,
+                api_origin=_API_ORIGIN,
+                api_version=_API_VERSION,
+                owner=_OWNER,
+                owner_id=observed_owner_id,
+                repository=_REPOSITORY,
+                repository_id=_REPOSITORY_ID,
+                repository_digest=typed_result.repository_digest,
+                target_ref=_TARGET_REF,
+                app_slug=_APP_SLUG,
+                app_id=observed_app_id,
+                installation_id=observed_installation_id,
+                requested_repository_id=_REPOSITORY_ID,
+                requested_permissions=("contents:read",),
+                observed_permissions=("contents:read", "metadata:read"),
+                repository_selection="selected",
+                token_expiry_policy="now<expires_at<=now+65m",
+                requests=tuple(requests),
+                endpoint_observation_digests=tuple(
+                    sorted(
+                        (
+                            ("app", typed_result.app_configuration_digest),
+                            ("installation", typed_result.installation_configuration_digest),
+                            ("repository", typed_result.repository_digest),
+                            ("selected_repositories", typed_result.selected_repositories_digest),
+                        )
+                    )
+                ),
+                initial_ref_digest=typed_result.initial_ref_digest,
+                commit_digest=canonical_digest({"commit": typed_result.main_commit}),
+                final_ref_digest=typed_result.final_ref_digest,
+                configuration_pass_digests=(
+                    typed_result.first_pass_digest,
+                    typed_result.second_pass_digest,
+                ),
+                configuration_digest=typed_result.configuration_digest,
+            )
+        finally:
+            self._provenance_trace = previous_trace
+        return GitHubReadWithProvenance(result=typed_result, provenance=provenance)
 
     def _configuration_pass(self) -> _ConfigurationPass:
         raw: dict[str, JsonValue] = {}
@@ -248,6 +314,15 @@ class MainPersonalExactCasGitHubHostedConfigurationVerifier:
         )
         if type(status) is not int or status != 201:
             raise ValueError("installation token mint failed")
+        trace = getattr(self, "_provenance_trace", None)
+        if trace is not None:
+            trace.append(
+                GitHubReadRequest(
+                    "POST",
+                    f"/app/installations/{installation_id}/access_tokens",
+                    "app_jwt",
+                )
+            )
         result = self._object(value)
         token = self._string(result, "token")
         expires_at = self._string(result, "expires_at")
@@ -342,6 +417,16 @@ class MainPersonalExactCasGitHubHostedConfigurationVerifier:
         )
         if type(status) is not int or status != 200:
             raise ValueError("GitHub read failed")
+        trace = getattr(self, "_provenance_trace", None)
+        if trace is not None:
+            role = (
+                "app_jwt"
+                if path == "/app" or path.startswith("/app/installations")
+                else "installation_token"
+                if path.startswith("/installation/")
+                else "owner_admin_token"
+            )
+            trace.append(GitHubReadRequest("GET", path, role))
         return copy.deepcopy(value)
 
     @staticmethod
@@ -607,6 +692,9 @@ class MainPersonalExactCasGitHubHostedConfigurationVerifier:
 
 
 __all__ = [
+    "GitHubReadProvenance",
+    "GitHubReadRequest",
+    "GitHubReadWithProvenance",
     "MainPersonalExactCasGitHubHostedConfigurationVerifier",
     "MainPersonalExactCasHostedConfigurationUnverified",
 ]
