@@ -74,6 +74,36 @@ from tests.unit.test_main_graduation_journal_coverage import (
 # pyright: reportPrivateUsage=false, reportArgumentType=false, reportUnknownArgumentType=false, reportUnknownLambdaType=false
 
 
+def _target_fence_fixture(
+    journal: MainGraduationJournal,
+) -> tuple[MainUnresolvedMutationFence, ArtifactRef]:
+    values = {
+        "repository_digest": R,
+        "target_ref": "refs/heads/main",
+        "operation_id": D,
+        "stage": "candidate_publication",
+        "intent_digest": D,
+        "source_receipt_digest": D,
+        "external_identity_digest": D,
+        "lease_identity": "avo-controller",
+        "lease_digest": D,
+        "target_scope_digest": main_target_scope_digest(R, "refs/heads/main"),
+        "opened_at": NOW,
+    }
+    probe = MainUnresolvedMutationFence.model_construct(**values, fence_digest=D)
+    values["fence_digest"] = canonical_digest(
+        probe.model_dump(exclude={"fence_digest"}, mode="json")
+    )
+    fence = MainUnresolvedMutationFence.model_validate(values)
+    reference = journal._store.put_bytes(  # pyright: ignore[reportPrivateUsage]
+        canonical_bytes(fence),
+        media_type="application/vnd.avo.main-graduation-unresolved-mutation-fence+json",
+        role="main-graduation-unresolved-mutation-fence",
+        max_bytes=journal._max,  # pyright: ignore[reportPrivateUsage]
+    )
+    return fence, reference
+
+
 def test_exclusive_durable_handles_long_identity_path_without_replacing_winner(
     tmp_path: Path,
 ) -> None:
@@ -863,16 +893,14 @@ def test_target_fence_open_claim_is_atomic_under_competing_writers(
         )
         return MainUnresolvedMutationFence.model_validate(values)
 
-    # Repeat the race against fresh scopes.  The filesystem primitive is
-    # atomic, but a real scheduler can let the losing writer observe the
-    # winner's mkdir-created, not-yet-ready slot.  Make the interleaving
-    # deterministic: whichever writer reaches the exclusive-create seam first
-    # publishes its complete record before the other writer attempts the
-    # create.  This preserves the competing-writer assertion without making
-    # the test depend on timing or a partially written file.
+    # Repeat the race against fresh scopes.  Hold the first writer after its
+    # mkdir-created slot but before record.json publication.  The other writer
+    # must wait for readiness, then classify the complete winner as a conflict.
     original_writer = journal_module._write_exclusive_durable
     first_writer = True
     writer_lock = Lock()
+    first_writer_entered = Event()
+    release_first_writer = Event()
     first_published = Event()
 
     def ordered_exclusive_writer(path: Path, payload: bytes) -> None:
@@ -881,22 +909,37 @@ def test_target_fence_open_claim_is_atomic_under_competing_writers(
             is_first = first_writer
             first_writer = False
         if is_first:
+            first_writer_entered.set()
+            if not release_first_writer.wait(timeout=10):
+                raise AssertionError("first target-fence writer was not released")
             try:
                 original_writer(path, payload)
             finally:
                 first_published.set()
             return
+        original_writer(path, payload)
+
+    def release_after_empty_slot_observation() -> None:
+        if not first_writer_entered.wait(timeout=10):
+            raise AssertionError("first target-fence writer did not enter publication")
+        release_first_writer.set()
         if not first_published.wait(timeout=10):
             raise AssertionError("first target-fence writer did not publish")
-        original_writer(path, payload)
 
     monkeypatch.setattr(
         journal_module, "_write_exclusive_durable", ordered_exclusive_writer
+    )
+    monkeypatch.setattr(
+        journal_module,
+        "_sleep_for_target_slot_readiness",
+        release_after_empty_slot_observation,
     )
 
     for iteration in range(20):
         with writer_lock:
             first_writer = True
+        first_writer_entered.clear()
+        release_first_writer.clear()
         first_published.clear()
         journal = MainGraduationJournal(tmp_path / str(iteration))
         fences = [make_fence(D), make_fence(D2)]
@@ -928,6 +971,45 @@ def test_target_fence_open_claim_is_atomic_under_competing_writers(
         with ThreadPoolExecutor(max_workers=2) as pool:
             outcomes = list(pool.map(claim, range(2)))
         assert sorted(outcomes) == ["claimed", "conflict"]
+
+
+def test_target_fence_empty_slot_times_out_fail_closed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(journal_module, "_sleep_for_target_slot_readiness", lambda: None)
+    journal = MainGraduationJournal(tmp_path)
+    fence, reference = _target_fence_fixture(journal)
+    journal._target_fence_path(fence).mkdir(parents=True)  # pyright: ignore[reportPrivateUsage]
+
+    with pytest.raises(MainGraduationJournalError, match="readiness timed out"):
+        journal._cas_target_fence(fence, reference)  # pyright: ignore[reportPrivateUsage]
+
+
+def test_target_fence_nonempty_unready_slot_is_malformed(tmp_path: Path) -> None:
+    journal = MainGraduationJournal(tmp_path)
+    fence, reference = _target_fence_fixture(journal)
+    path = journal._target_fence_path(fence)
+    path.mkdir(parents=True)
+    (path / "unexpected").write_bytes(b"foreign")
+
+    with pytest.raises(MainGraduationJournalError, match="slot is malformed"):
+        journal._cas_target_fence(fence, reference)  # pyright: ignore[reportPrivateUsage]
+
+
+def test_target_fence_symlink_slot_is_rejected(tmp_path: Path) -> None:
+    journal = MainGraduationJournal(tmp_path)
+    fence, reference = _target_fence_fixture(journal)
+    path = journal._target_fence_path(fence)
+    target = tmp_path / "outside"
+    target.mkdir()
+    path.parent.mkdir(parents=True)
+    try:
+        path.symlink_to(target, target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"directory symlink unavailable: {exc}")
+
+    with pytest.raises(MainGraduationJournalError, match="symlink or reparse"):
+        journal._cas_target_fence(fence, reference)  # pyright: ignore[reportPrivateUsage]
 
 
 def test_eligibility_sequence_and_attempt_recovery_branches(
