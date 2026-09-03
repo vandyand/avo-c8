@@ -190,13 +190,13 @@ from avo_correlate.contracts.main_personal_exact_cas import (
     MainPersonalExactCasReceipt,
     MainPersonalExactCasReconciliation,
 )
-from avo_correlate.contracts.main_personal_exact_cas_controller_composition import (
-    MainPersonalExactCasControllerComposition,
-)
 from avo_correlate.contracts.main_personal_exact_cas_candidate_observation import (
     MainPersonalExactCasCandidateObservation,
     MainPersonalExactCasCandidateObservationRequest,
     MainPersonalExactCasCandidatePolicyEvidence,
+)
+from avo_correlate.contracts.main_personal_exact_cas_controller_composition import (
+    MainPersonalExactCasControllerComposition,
 )
 from avo_correlate.contracts.main_personal_exact_cas_hosted_configuration import (
     MainPersonalExactCasHostedConfigurationDiagnostic,

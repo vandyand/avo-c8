@@ -228,9 +228,6 @@ from avo_correlate.contracts.main_personal_exact_cas import (
     personal_cas_claim_digest,
     personal_cas_operation_id,
 )
-from avo_correlate.contracts.main_personal_exact_cas_controller_composition import (
-    MainPersonalExactCasControllerComposition,
-)
 from avo_correlate.contracts.main_personal_exact_cas_candidate_observation import (
     MainPersonalExactCasCandidateObservation,
     MainPersonalExactCasCandidateObservationRequest,
@@ -238,6 +235,9 @@ from avo_correlate.contracts.main_personal_exact_cas_candidate_observation impor
 )
 from avo_correlate.contracts.main_personal_exact_cas_candidate_observation import (
     candidate_ref_for_operation as candidate_observation_ref_for_operation,
+)
+from avo_correlate.contracts.main_personal_exact_cas_controller_composition import (
+    MainPersonalExactCasControllerComposition,
 )
 from avo_correlate.contracts.main_personal_exact_cas_hosted_configuration import (
     MainPersonalExactCasHostedConfigurationDiagnostic,
