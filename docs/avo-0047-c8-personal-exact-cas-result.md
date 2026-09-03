@@ -33,6 +33,15 @@ and schema-parity checks also passed. Commit `bbc4d827` makes the literal
 and `2f35d653` adds meaningful adversarial coverage. The floor was not lowered and production
 files were not excluded.
 
+Follow-on C8 leaves are also Terra-approved. Commit `7dd0ba8` adds a read-only hosted-configuration
+diagnostic and an isolated App-authenticated GitHub `main`-base reader; hosted run
+[33707053367](https://github.com/vandyand/avo-c8/actions/runs/33707053367) passed Ubuntu and
+Windows on that exact commit. Commit `ae4aaa8` adds pure offline, non-authoritative evidence
+composition; hosted run [33709514612](https://github.com/vandyand/avo-c8/actions/runs/33709514612)
+passed Ubuntu and Windows on exact commit `ae4aaa8242758e664d4acc2252579ff76999e2b0`. Their
+review and tests made no live GitHub calls or repository/ref mutations; no writer App or final
+writer ruleset is provisioned or authorized, and they establish no live CAS, rollback, or readiness.
+
 This result records a reviewed protocol boundary, not hosted readiness or successful mutation.
 Bootstrap `main` branch protection is live on `vandyand/avo-c8` with
 `enforce_admins=true`, `required_linear_history=true`, `allow_force_pushes=false`,

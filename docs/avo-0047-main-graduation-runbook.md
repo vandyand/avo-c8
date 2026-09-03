@@ -20,6 +20,15 @@ ACL, authority, or readiness. Local rollback and activation preparers are explic
 non-consumable drafts. No live execution, concrete trust root, live adapter, runner, or
 hosted mutation occurred.
 
+Follow-on C8 leaves are Terra-approved. Commit `7dd0ba8` adds a read-only hosted-configuration
+diagnostic and an isolated App-authenticated GitHub `main`-base reader; hosted run
+[33707053367](https://github.com/vandyand/avo-c8/actions/runs/33707053367) passed Ubuntu and
+Windows on that exact commit. Commit `ae4aaa8` adds pure offline, non-authoritative evidence
+composition; hosted run [33709514612](https://github.com/vandyand/avo-c8/actions/runs/33709514612)
+passed Ubuntu and Windows on exact commit `ae4aaa8242758e664d4acc2252579ff76999e2b0`. No writer
+App or final writer ruleset is provisioned or authorized; these leaves establish no live CAS,
+rollback, or readiness.
+
 The atomic authenticated Phase 2 snapshot is Terra-approved at `1d911e3` with 30 snapshot/parser
 review tests and 82 combined focused checks. It uses two-pass mutable-configuration and final
 main-ref fences, bounded rules pagination, REST/GraphQL cross-binding, SHA-1/SHA-256 binding, and
@@ -86,6 +95,10 @@ two skipped, 85.20% with the literal floor enforced) and Windows (2,589 passed, 
 Commits `bbc4d827` and `2f35d653` enforce the unchanged floor and add meaningful adversarial
 coverage without excluding production files. The strict
 Pyright baseline repair is recorded at `a0d1a7d`.
+
+The follow-on diagnostic and evidence-composition leaves above remain offline/read-only evidence;
+no writer App or final writer ruleset is provisioned or authorized, and no live CAS or rollback
+has occurred.
 
 This boundary is offline evidence only: no live CAS attempt or rollback occurred. Bootstrap
 protection is already live as a topology guard; before any hosted write, provision and independently
