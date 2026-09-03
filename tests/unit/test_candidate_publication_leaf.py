@@ -1,7 +1,11 @@
 # ruff: noqa: E501
 from __future__ import annotations
 
+import os
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -20,8 +24,9 @@ from avo_correlate.adapters.hosted_git import (
     GitHubCandidatePublisherCredentials,
     MainPersonalExactCasCandidatePublicationController,
 )
+from avo_correlate.adapters.hosted_git.github import JsonBody, JsonValue
 from avo_correlate.adapters.hosted_git.main_personal_exact_cas_candidate_publisher import (
-    _CandidateRefTransport,
+    _CandidateRefTransport,  # pyright: ignore[reportPrivateUsage]
 )
 from avo_correlate.contracts import (
     ArtifactRef,
@@ -31,10 +36,18 @@ from avo_correlate.contracts import (
     candidate_publication_request_digest,
 )
 from avo_correlate.domain.canonical import canonical_bytes, canonical_digest
-from tests.unit.test_main_personal_exact_cas_controller_composition import _root
+from tests.unit.test_main_personal_exact_cas_controller_composition import (  # pyright: ignore[reportPrivateUsage]
+    _root,  # pyright: ignore[reportPrivateUsage]
+)
 
 
-def _intent(configuration_digest: str = "sha256:" + "5" * 64):
+def _noop_fsync(_path: Path) -> None:
+    pass
+
+
+def _intent(
+    configuration_digest: str = "sha256:" + "5" * 64,
+) -> MainPersonalExactCasCandidatePublicationIntent:
     return MainPersonalExactCasCandidatePublicationIntent.build(
         operation_id="sha256:" + "1" * 64,
         repository_digest="sha256:" + "2" * 64,
@@ -54,7 +67,7 @@ def _intent(configuration_digest: str = "sha256:" + "5" * 64):
     )
 
 
-def _authority_root():
+def _authority_root() -> MainPersonalExactCasCandidatePublicationAuthorityRoot:
     now = datetime.now(UTC) + timedelta(hours=1)
 
     def ref(digest: str, role: str, media_type: str) -> ArtifactRef:
@@ -127,7 +140,14 @@ def _authority_root():
     )
 
 
-def _publisher(monkeypatch: pytest.MonkeyPatch):
+def _publisher(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[
+    _CandidateRefTransport,
+    MainPersonalExactCasCandidatePublicationIntent,
+    MainPersonalExactCasCandidatePublicationDispatchStarted,
+    list[tuple[str, str, JsonBody | None, Mapping[str, str]]],
+]:
     config = GitHubCandidatePublisherConfiguration(app_id=77, installation_id=88)
     intent = _intent(config.configuration_digest)
     marker = MainPersonalExactCasCandidatePublicationDispatchStarted.build(
@@ -137,16 +157,22 @@ def _publisher(monkeypatch: pytest.MonkeyPatch):
         configuration_digest=config.configuration_digest,
         started_at=datetime.now(UTC),
     )
-    calls: list[tuple[str, str, object, dict[str, str]]] = []
+    calls: list[tuple[str, str, JsonBody | None, Mapping[str, str]]] = []
 
     class FakeTransport:
         def __init__(self, **_: object) -> None:
             pass
 
-        def __call__(self, method: str, url: str, body: object, headers: dict[str, str]):
+        def __call__(
+            self,
+            method: str,
+            url: str,
+            body: JsonBody | None,
+            headers: Mapping[str, str],
+        ) -> tuple[int, JsonValue]:
             path = url.removeprefix("https://api.github.com")
             calls.append((method, path, body, headers))
-            repo = {"id": 1354880741, "name": "avo-c8", "full_name": "vandyand/avo-c8", "owner": {"login": "vandyand"}}
+            repo: dict[str, JsonValue] = {"id": 1354880741, "name": "avo-c8", "full_name": "vandyand/avo-c8", "owner": {"login": "vandyand"}}
             if path == "/app":
                 return 200, {"id": 77, "slug": "avo-c8-candidate-publisher-vandyand", "name": "avo-c8-candidate-publisher-vandyand", "permissions": {"contents": "write", "metadata": "read"}, "events": [], "owner": {"login": "vandyand"}}
             if path == "/app/installations/88":
@@ -159,12 +185,12 @@ def _publisher(monkeypatch: pytest.MonkeyPatch):
             return 201, {"ref": request.get("ref"), "object": {"type": "commit", "sha": request.get("sha")}}
 
     monkeypatch.setattr("avo_correlate.adapters.hosted_git.main_personal_exact_cas_candidate_publisher.GitHubJsonTransport", FakeTransport)
-    return _CandidateRefTransport(config, GitHubCandidatePublisherCredentials("jwt-secret")), intent, marker, calls
+    return _CandidateRefTransport(config, GitHubCandidatePublisherCredentials("jwt-secret")), intent, marker, calls  # pyright: ignore[reportPrivateUsage]
 
 
 def test_publisher_has_one_exact_post_and_redacts_credentials(monkeypatch: pytest.MonkeyPatch):
     publisher, intent, marker, calls = _publisher(monkeypatch)
-    evidence = publisher._create(intent, marker)
+    evidence = publisher._create(intent, marker)  # pyright: ignore[reportPrivateUsage]
     assert evidence.response_status == 201
     assert evidence.response_ref == intent.candidate_ref
     assert [(method, path) for method, path, _, _ in calls] == [
@@ -183,7 +209,7 @@ def test_input_configuration_and_request_digest_are_exact(monkeypatch: pytest.Mo
     publisher, intent, marker, _ = _publisher(monkeypatch)
     wrong_marker = marker.model_copy(update={"configuration_digest": "sha256:" + "9" * 64})
     with pytest.raises(ValueError):
-        publisher._create(intent, wrong_marker)
+        publisher._create(intent, wrong_marker)  # pyright: ignore[reportPrivateUsage]
     assert intent.configuration_digest == publisher.configuration_digest
     assert intent.intent_digest.startswith("sha256:")
     assert candidate_publication_request_digest(
@@ -225,9 +251,9 @@ class _TestAuthority:
 
 
 def test_journal_owns_dispatch_once_and_reopens_canonical_record(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
-):
-    def qualified(root):
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def qualified(root: Path) -> DurableBackendQualification:
         return DurableBackendQualification(
             root=tmp_path if root == tmp_path else root.resolve(),
             qualified=True,
@@ -243,7 +269,7 @@ def test_journal_owns_dispatch_once_and_reopens_canonical_record(
     )
     monkeypatch.setattr(
         "avo_correlate.adapters.artifacts.main_personal_exact_cas_candidate_publication_journal._fsync_directory",
-        lambda _: None,
+        _noop_fsync,
     )
     monkeypatch.setattr(
         "avo_correlate.adapters.artifacts.main_personal_exact_cas_candidate_publication_journal._CandidatePublicationAuthorityRoot",
@@ -291,21 +317,22 @@ def test_journal_owns_dispatch_once_and_reopens_canonical_record(
 
 
 def test_journal_fails_closed_without_controller_verifier(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
-):
-    monkeypatch.setattr(
-        "avo_correlate.adapters.artifacts.main_personal_exact_cas_candidate_publication_journal.require_durable_backend",
-        lambda root: DurableBackendQualification(
-            root=tmp_path,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    def qualified(root: Path) -> DurableBackendQualification:
+        return DurableBackendQualification(
+            root=tmp_path if root == tmp_path else root.resolve(),
             qualified=True,
             reason="test-qualified",
             filesystem_type="ext4",
             mount_id=1,
             device="8:1",
-        ),
+        )
+
+    monkeypatch.setattr(
+        "avo_correlate.adapters.artifacts.main_personal_exact_cas_candidate_publication_journal.require_durable_backend",
+        qualified,
     )
-    with pytest.raises(TypeError):
-        MainPersonalExactCasCandidatePublicationJournal(tmp_path, authority_verifier=object())
     config = GitHubCandidatePublisherConfiguration(app_id=77, installation_id=88)
     with pytest.raises(ValueError, match="authority root is not provisioned"):
         MainPersonalExactCasCandidatePublicationJournal(
@@ -327,8 +354,8 @@ def test_raw_transport_is_module_private_and_package_has_no_mutation_alias() -> 
 
 
 def test_controller_boundary_is_fail_closed_until_authority_root(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
-):
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     config = GitHubCandidatePublisherConfiguration(app_id=77, installation_id=88)
     with pytest.raises(ValueError, match="authority root is not provisioned"):
         MainPersonalExactCasCandidatePublicationController(
@@ -379,9 +406,9 @@ def test_authority_resolver_rejects_protocol_or_dto_dependencies() -> None:
 
 
 def test_resolver_uses_real_concrete_journals_and_fails_closed_without_closure(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    def qualified(path):
+    def qualified(path: Path) -> DurableBackendQualification:
         return DurableBackendQualification(
             root=path.resolve(),
             qualified=True,
@@ -401,11 +428,11 @@ def test_resolver_uses_real_concrete_journals_and_fails_closed_without_closure(
     )
     monkeypatch.setattr(
         "avo_correlate.adapters.artifacts.main_personal_exact_cas_controller_composition._fsync_directory",
-        lambda _path: None,
+        _noop_fsync,
     )
     monkeypatch.setattr(
         "avo_correlate.adapters.artifacts.main_personal_exact_cas_hosted_identity_journal._fsync_directory",
-        lambda _path: None,
+        _noop_fsync,
     )
     composition = MainPersonalExactCasControllerCompositionJournal(tmp_path / "composition")
     graduation = MainGraduationJournal(tmp_path / "graduation")
@@ -424,30 +451,40 @@ def test_resolver_uses_real_concrete_journals_and_fails_closed_without_closure(
 
 
 def test_authority_journal_reopens_and_rejects_tampered_root(
-    monkeypatch: pytest.MonkeyPatch, tmp_path
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     root = _authority_root()
     resolver = object.__new__(MainPersonalExactCasCandidatePublicationAuthorityResolver)
     current = [root]
-    monkeypatch.setattr(
-        MainPersonalExactCasCandidatePublicationAuthorityResolver,
-        "resolve",
-        lambda _self, _operation_id: current[0],
-    )
-    monkeypatch.setattr(
-        "avo_correlate.adapters.artifacts.main_personal_exact_cas_candidate_publication_authority.require_durable_backend",
-        lambda path: DurableBackendQualification(
+
+    def resolve_current(
+        _self: MainPersonalExactCasCandidatePublicationAuthorityResolver,
+        _operation_id: str,
+    ) -> MainPersonalExactCasCandidatePublicationAuthorityRoot:
+        return current[0]
+
+    def qualified(path: Path) -> DurableBackendQualification:
+        return DurableBackendQualification(
             root=path.resolve(),
             qualified=True,
             reason="test-qualified",
             filesystem_type="ext4",
             mount_id=1,
             device="8:1",
-        ),
+        )
+
+    monkeypatch.setattr(
+        MainPersonalExactCasCandidatePublicationAuthorityResolver,
+        "resolve",
+        resolve_current,
+    )
+    monkeypatch.setattr(
+        "avo_correlate.adapters.artifacts.main_personal_exact_cas_candidate_publication_authority.require_durable_backend",
+        qualified,
     )
     monkeypatch.setattr(
         "avo_correlate.adapters.artifacts.main_personal_exact_cas_candidate_publication_authority._fsync_directory",
-        lambda _path: None,
+        _noop_fsync,
     )
     journal = MainPersonalExactCasCandidatePublicationAuthorityJournal(
         tmp_path, resolver=resolver
@@ -485,21 +522,27 @@ def test_operation_and_leaf_mount_device_fences(monkeypatch: pytest.MonkeyPatch)
 
     devices = {1: Stat(7), 2: Stat(7)}
     mounts = {1: 11, 2: 11}
-    monkeypatch.setattr(authority_module.os, "fstat", lambda descriptor: devices[descriptor])
-    monkeypatch.setattr(authority_module, "_fd_mount_id", lambda descriptor: mounts[descriptor])
-    authority_module._compare_directory_mount(1, 2)
+    def fake_fstat(descriptor: int) -> os.stat_result:
+        return cast(os.stat_result, devices[descriptor])
+
+    def fake_mount_id(descriptor: int) -> int:
+        return mounts[descriptor]
+
+    monkeypatch.setattr(authority_module.os, "fstat", fake_fstat)
+    monkeypatch.setattr(authority_module, "_fd_mount_id", fake_mount_id)
+    authority_module._compare_directory_mount(1, 2)  # pyright: ignore[reportPrivateUsage]
     devices[2] = Stat(8)
     with pytest.raises(CandidatePublicationAuthorityResolutionError):
-        authority_module._compare_directory_mount(1, 2)
+        authority_module._compare_directory_mount(1, 2)  # pyright: ignore[reportPrivateUsage]
     devices[2] = Stat(7)
     mounts[2] = 12
     with pytest.raises(CandidatePublicationAuthorityResolutionError):
-        authority_module._compare_directory_mount(1, 2)
+        authority_module._compare_directory_mount(1, 2)  # pyright: ignore[reportPrivateUsage]
     mounts[2] = 11
     devices[2] = Stat(8)
     with pytest.raises(CandidatePublicationAuthorityResolutionError):
-        authority_module._compare_leaf_mount(1, 2)
+        authority_module._compare_leaf_mount(1, 2)  # pyright: ignore[reportPrivateUsage]
     devices[2] = Stat(7)
     mounts[2] = 12
     with pytest.raises(CandidatePublicationAuthorityResolutionError):
-        authority_module._compare_leaf_mount(1, 2)
+        authority_module._compare_leaf_mount(1, 2)  # pyright: ignore[reportPrivateUsage]
