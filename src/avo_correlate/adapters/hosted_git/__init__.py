@@ -65,6 +65,14 @@ from .main_exact_cas_github import (
     MainExactCasError,
     MainExactCasReconciliationVerifier,
 )
+from .main_personal_exact_cas_candidate_observer import (
+    GitHubCandidateObserver,
+    GitHubCandidateObserverError,
+    GitHubCandidateReadProvenance,
+    GitHubCandidateReadWithProvenance,
+    GitHubCandidateRefObserver,
+    MainPersonalExactCasCandidateObservationError,
+)
 from .main_personal_exact_cas_hosted_configuration import (
     MainPersonalExactCasGitHubHostedConfigurationVerifier,
     MainPersonalExactCasHostedConfigurationUnverified,
@@ -118,6 +126,11 @@ __all__ = [
     "GitHubC8PreflightSnapshot",
     "GitHubC8SnapshotAdapter",
     "GitHubCampaignProvider",
+    "GitHubCandidateObserver",
+    "GitHubCandidateObserverError",
+    "GitHubCandidateReadProvenance",
+    "GitHubCandidateReadWithProvenance",
+    "GitHubCandidateRefObserver",
     "GitHubEvidenceSnapshot",
     "GitHubIntegrationProvider",
     "GitHubJsonTransport",
@@ -142,6 +155,7 @@ __all__ = [
     "MainExactCasReconciliationVerifier",
     "MainGraduationAttester",
     "MainMergeGroupObservation",
+    "MainPersonalExactCasCandidateObservationError",
     "MainPersonalExactCasGitHubHostedConfigurationVerifier",
     "MainPersonalExactCasGitHubPostStateReader",
     "MainPersonalExactCasHostedConfigurationUnverified",

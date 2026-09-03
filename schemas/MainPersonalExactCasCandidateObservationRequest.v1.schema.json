@@ -1,0 +1,34 @@
+{
+  "additionalProperties": false,
+  "description": "Exact operation/repository/ref scope supplied to the observer.",
+  "properties": {
+    "candidate_ref": {
+      "minLength": 1,
+      "title": "Candidate Ref",
+      "type": "string"
+    },
+    "operation_id": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Operation Id",
+      "type": "string"
+    },
+    "repository_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Repository Digest",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "operation_id",
+    "repository_digest",
+    "candidate_ref"
+  ],
+  "title": "MainPersonalExactCasCandidateObservationRequest",
+  "type": "object"
+}

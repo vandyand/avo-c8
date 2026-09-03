@@ -1,0 +1,81 @@
+{
+  "additionalProperties": false,
+  "description": "Static namespace policy facts, or a precise statement of why absent.",
+  "properties": {
+    "deletion_coverage": {
+      "enum": [
+        "covered",
+        "unverifiable"
+      ],
+      "title": "Deletion Coverage",
+      "type": "string"
+    },
+    "evidence_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Evidence Digest",
+      "type": "string"
+    },
+    "force_update_coverage": {
+      "enum": [
+        "covered",
+        "unverifiable"
+      ],
+      "title": "Force Update Coverage",
+      "type": "string"
+    },
+    "missing_prerequisite": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Missing Prerequisite"
+    },
+    "namespace": {
+      "const": "refs/heads/avo/candidate/*",
+      "title": "Namespace",
+      "type": "string"
+    },
+    "ruleset_digest": {
+      "anyOf": [
+        {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Ruleset Digest"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "status": {
+      "enum": [
+        "verified",
+        "unverifiable"
+      ],
+      "title": "Status",
+      "type": "string"
+    }
+  },
+  "required": [
+    "namespace",
+    "deletion_coverage",
+    "force_update_coverage",
+    "status",
+    "evidence_digest"
+  ],
+  "title": "MainPersonalExactCasCandidatePolicyEvidence",
+  "type": "object"
+}
