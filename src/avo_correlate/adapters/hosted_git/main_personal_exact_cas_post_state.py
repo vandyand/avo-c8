@@ -1,8 +1,10 @@
 """Read-only fixed-origin GitHub main post-state observation.
 
-The adapter performs three bounded GETs (ref, exact commit, ref fence).  It
-returns only a nonterminal topology observation and never constructs the
-receipt-bound application post-state contract.
+The legacy reader below performs three bounded GETs for compatibility.  The
+production ``GitHubMainBasePostStateReader`` authenticates an observer App,
+mints one repository-scoped read credential, and delegates the exact seven
+request trace to the reviewed main-base reader before binding a nonterminal
+topology observation.
 """
 
 from __future__ import annotations
@@ -10,15 +12,26 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import cast
 
+from avo_correlate.adapters.git.main_composition import MainBaseSnapshot
 from avo_correlate.adapters.hosted_git.github import (
     GitHubRejected,
     GitHubTransportError,
     github_repository_digest,
 )
+from avo_correlate.adapters.hosted_git.github_main_base_reader import (
+    GitHubMainBaseReader,
+    GitHubMainBaseReaderConfiguration,
+    GitHubMainBaseReaderCredentials,
+)
+from avo_correlate.adapters.hosted_git.github_read_provenance import GitHubReadWithProvenance
 from avo_correlate.adapters.hosted_git.github_transport import GitHubJsonTransport
+from avo_correlate.adapters.hosted_git.main_personal_exact_cas_hosted_identity_bundle import (
+    validate_main_base_provenance,
+)
 from avo_correlate.contracts.main_personal_exact_cas import MainPersonalExactCasIntent
 from avo_correlate.contracts.main_personal_exact_cas_post_state import (
     MainPersonalExactCasReadOnlyPostState,
@@ -50,7 +63,11 @@ class MainPersonalExactCasPostStateTransportError(RuntimeError):
 
 
 class MainPersonalExactCasGitHubPostStateReader:
-    """Constructor-pinned, no-redirect, read-only GitHub topology reader."""
+    """Deprecated compatibility reader accepting a raw bearer credential.
+
+    New callers must use :class:`GitHubMainBasePostStateReader`, which routes
+    an App JWT through the reviewed observer authentication boundary.
+    """
 
     def __init__(
         self,
@@ -273,7 +290,169 @@ def _parse_commit(
     )
 
 
+@dataclass(frozen=True, slots=True, init=False, repr=False)
+class GitHubMainBasePostStateReader:
+    """Read-only exact-CAS post-state adapter backed by App authentication.
+
+    The adapter owns no provider mutation capability.  Authentication,
+    repository scoping, and the seven-request ref fence are delegated to the
+    reviewed :class:`GitHubMainBaseReader`; this leaf only binds that safe
+    result to the exact operation intent and post-state contract.
+    """
+
+    _configuration: GitHubMainBaseReaderConfiguration
+    _credentials: GitHubMainBaseReaderCredentials = field(repr=False, compare=False)
+    _clock: Callable[[], datetime] = field(repr=False, compare=False)
+    _reader: GitHubMainBaseReader = field(repr=False, compare=False)
+
+    def __init__(
+        self,
+        configuration: GitHubMainBaseReaderConfiguration,
+        credentials: GitHubMainBaseReaderCredentials,
+        trusted_clock: Callable[[], datetime],
+    ) -> None:
+        if type(configuration) is not GitHubMainBaseReaderConfiguration:
+            raise TypeError("exact GitHub main base reader configuration is required")
+        if type(credentials) is not GitHubMainBaseReaderCredentials:
+            raise TypeError("exact GitHub main base reader credentials are required")
+        if not callable(trusted_clock):
+            raise TypeError("trusted clock must be callable")
+        configuration.assert_valid()
+        credentials.assert_valid()
+        object.__setattr__(self, "_configuration", configuration)
+        object.__setattr__(self, "_credentials", credentials)
+        object.__setattr__(self, "_clock", trusted_clock)
+        object.__setattr__(self, "_reader", GitHubMainBaseReader(configuration, credentials))
+
+    @property
+    def configuration_digest(self) -> str:
+        self._configuration.assert_valid()
+        return self._configuration.configuration_digest
+
+    @property
+    def repository_digest(self) -> str:
+        self._configuration.assert_valid()
+        return self._configuration.repository_digest
+
+    def observe(
+        self, intent: MainPersonalExactCasIntent
+    ) -> MainPersonalExactCasReadOnlyPostState:
+        """Observe exact main topology, returning only the nonterminal leaf."""
+
+        return self.observe_with_provenance(intent).result
+
+    def observe_with_provenance(
+        self, intent: MainPersonalExactCasIntent
+    ) -> GitHubReadWithProvenance[MainPersonalExactCasReadOnlyPostState]:
+        """Observe exact main topology and carry the immutable seven-read trace."""
+
+        failure = False
+        result: GitHubReadWithProvenance[MainPersonalExactCasReadOnlyPostState] | None = None
+        checked: MainPersonalExactCasIntent | None = None
+        try:
+            checked = _revalidate_exact_intent(intent, self._configuration)
+            self._configuration.assert_valid()
+            started = self._now()
+            observed = self._reader.fresh_main_base_with_provenance()
+            if type(observed) is not GitHubReadWithProvenance:
+                raise TypeError("main base provenance result is malformed")
+            observed.provenance.assert_valid()
+            if type(observed.result) is not MainBaseSnapshot:
+                raise TypeError("main base result is malformed")
+            snapshot = observed.result
+            validate_main_base_provenance(self._configuration, snapshot, observed.provenance)
+            if observed.provenance.commit_digest != canonical_digest(
+                {"commit": snapshot.commit, "tree": snapshot.tree}
+            ):
+                raise ValueError("main base commit evidence does not bind snapshot")
+            expected_ref_digest = canonical_digest(
+                {
+                    "ref": "refs/heads/main",
+                    "object": {"type": "commit", "sha": snapshot.commit},
+                }
+            )
+            if (
+                observed.provenance.initial_ref_digest != expected_ref_digest
+                or observed.provenance.final_ref_digest != expected_ref_digest
+            ):
+                raise ValueError("main base ref fence does not bind snapshot")
+            if snapshot.repository_digest != checked.repository_digest:
+                raise ValueError("main base repository differs from intent")
+            finished = self._now()
+            post_state = MainPersonalExactCasReadOnlyPostState.build(
+                operation_id=checked.operation_id,
+                intent_digest=checked.intent_digest,
+                repository_digest=checked.repository_digest,
+                owner=self._configuration.owner,
+                repository=self._configuration.repo,
+                target_ref="refs/heads/main",
+                observed_ref="refs/heads/main",
+                base_commit=checked.base_commit,
+                candidate_commit=checked.candidate_commit,
+                observed_commit=snapshot.commit,
+                observed_tree=snapshot.tree,
+                observed_parents=snapshot.parents,
+                response_ref_digest=observed.provenance.initial_ref_digest,
+                response_commit_digest=observed.provenance.commit_digest,
+                response_fence_digest=observed.provenance.final_ref_digest,
+                source_digest=canonical_digest(
+                    {
+                        "ref": observed.provenance.initial_ref_digest,
+                        "commit": observed.provenance.commit_digest,
+                        "fence": observed.provenance.final_ref_digest,
+                    }
+                ),
+                started_at=started,
+                finished_at=finished,
+            )
+            checked_state = MainPersonalExactCasReadOnlyPostState.model_validate(
+                post_state.model_dump(mode="python"), strict=True
+            )
+            if type(checked_state) is not MainPersonalExactCasReadOnlyPostState:
+                raise TypeError("post-state result is malformed")
+            result = GitHubReadWithProvenance(result=checked_state, provenance=observed.provenance)
+        except Exception:
+            failure = True
+        if failure or result is None:
+            raise MainPersonalExactCasPostStateTransportError()
+        return result
+
+    def _now(self) -> datetime:
+        try:
+            value = self._clock()
+            if (
+                type(value) is not datetime
+                or value.tzinfo is None
+                or value.utcoffset() is None
+            ):
+                raise ValueError
+            return value
+        except Exception:
+            raise MainPersonalExactCasPostStateTransportError() from None
+
+
+def _revalidate_exact_intent(
+    intent: MainPersonalExactCasIntent,
+    configuration: GitHubMainBaseReaderConfiguration,
+) -> MainPersonalExactCasIntent:
+    if type(intent) is not MainPersonalExactCasIntent:
+        raise TypeError("personal exact-CAS intent is required")
+    checked = MainPersonalExactCasIntent.model_validate(
+        intent.model_dump(mode="python", warnings="error"), strict=True
+    )
+    if (
+        checked != intent
+        or checked.repository_digest != configuration.repository_digest
+        or checked.target_ref != "refs/heads/main"
+        or checked.writer_app_id != configuration.writer_app_id
+        or checked.writer_installation_id != configuration.writer_installation_id
+    ):
+        raise ValueError("intent is not canonical exact main scope")
+    return checked
+
+
 __all__ = [
+    "GitHubMainBasePostStateReader",
     "MainPersonalExactCasGitHubPostStateReader",
     "MainPersonalExactCasPostStateTransportError",
 ]
