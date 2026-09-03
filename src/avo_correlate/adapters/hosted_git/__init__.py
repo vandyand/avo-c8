@@ -54,6 +54,10 @@ from .main_exact_cas_github import (
     MainExactCasError,
     MainExactCasReconciliationVerifier,
 )
+from .main_personal_exact_cas_post_state import (
+    MainPersonalExactCasGitHubPostStateReader,
+    MainPersonalExactCasPostStateTransportError,
+)
 from .protected_main import (
     MainGraduationAttester,
     MainMergeGroupObservation,
@@ -104,6 +108,8 @@ __all__ = [
     "MainExactCasReconciliationVerifier",
     "MainGraduationAttester",
     "MainMergeGroupObservation",
+    "MainPersonalExactCasGitHubPostStateReader",
+    "MainPersonalExactCasPostStateTransportError",
     "MainProtectedProvider",
     "MainPullRequestObservation",
     "MainRefObservation",

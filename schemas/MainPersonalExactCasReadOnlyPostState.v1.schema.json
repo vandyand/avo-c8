@@ -1,0 +1,145 @@
+{
+  "additionalProperties": false,
+  "description": "Three-read exact topology observation; never a receipt or authority.",
+  "properties": {
+    "base_commit": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Base Commit",
+      "type": "string"
+    },
+    "candidate_commit": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Candidate Commit",
+      "type": "string"
+    },
+    "finished_at": {
+      "format": "date-time",
+      "title": "Finished At",
+      "type": "string"
+    },
+    "intent_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Intent Digest",
+      "type": "string"
+    },
+    "is_authoritative": {
+      "const": false,
+      "default": false,
+      "title": "Is Authoritative",
+      "type": "boolean"
+    },
+    "is_terminal": {
+      "const": false,
+      "default": false,
+      "title": "Is Terminal",
+      "type": "boolean"
+    },
+    "observation_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Observation Digest",
+      "type": "string"
+    },
+    "observed_commit": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Observed Commit",
+      "type": "string"
+    },
+    "observed_parents": {
+      "items": {
+        "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+        "type": "string"
+      },
+      "title": "Observed Parents",
+      "type": "array"
+    },
+    "observed_ref": {
+      "const": "refs/heads/main",
+      "default": "refs/heads/main",
+      "title": "Observed Ref",
+      "type": "string"
+    },
+    "observed_tree": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Observed Tree",
+      "type": "string"
+    },
+    "operation_id": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Operation Id",
+      "type": "string"
+    },
+    "owner": {
+      "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38}[A-Za-z0-9])?$",
+      "title": "Owner",
+      "type": "string"
+    },
+    "repository": {
+      "pattern": "^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,98}[A-Za-z0-9])?$",
+      "title": "Repository",
+      "type": "string"
+    },
+    "repository_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Repository Digest",
+      "type": "string"
+    },
+    "response_commit_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Response Commit Digest",
+      "type": "string"
+    },
+    "response_fence_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Response Fence Digest",
+      "type": "string"
+    },
+    "response_ref_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Response Ref Digest",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "source_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Source Digest",
+      "type": "string"
+    },
+    "started_at": {
+      "format": "date-time",
+      "title": "Started At",
+      "type": "string"
+    },
+    "target_ref": {
+      "const": "refs/heads/main",
+      "default": "refs/heads/main",
+      "title": "Target Ref",
+      "type": "string"
+    }
+  },
+  "required": [
+    "operation_id",
+    "intent_digest",
+    "repository_digest",
+    "owner",
+    "repository",
+    "base_commit",
+    "candidate_commit",
+    "observed_commit",
+    "observed_tree",
+    "observed_parents",
+    "response_ref_digest",
+    "response_commit_digest",
+    "response_fence_digest",
+    "source_digest",
+    "started_at",
+    "finished_at",
+    "observation_digest"
+  ],
+  "title": "MainPersonalExactCasReadOnlyPostState",
+  "type": "object"
+}

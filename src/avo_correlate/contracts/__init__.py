@@ -228,6 +228,11 @@ from avo_correlate.contracts.main_personal_exact_cas import (
     personal_cas_claim_digest,
     personal_cas_operation_id,
 )
+from avo_correlate.contracts.main_personal_exact_cas_post_state import (
+    GitHubOwner,
+    GitHubRepository,
+    MainPersonalExactCasReadOnlyPostState,
+)
 from avo_correlate.contracts.main_personal_exact_cas_response_evidence import (
     MainPersonalExactCasResponseClassification,
     MainPersonalExactCasResponseEvidence,
@@ -318,6 +323,8 @@ __all__ = [
     "ExactCasOutcome",
     "ExperimentSpec",
     "FailedSoakAttestation",
+    "GitHubOwner",
+    "GitHubRepository",
     "GitRefSnapshot",
     "HarnessInvocationRecord",
     "HarnessRuntimeProfile",
@@ -438,6 +445,7 @@ __all__ = [
     "MainPersonalExactCasDispatchStarted",
     "MainPersonalExactCasIntent",
     "MainPersonalExactCasPostStateObservation",
+    "MainPersonalExactCasReadOnlyPostState",
     "MainPersonalExactCasReceipt",
     "MainPersonalExactCasReconciliation",
     "MainPersonalExactCasResponseClassification",
