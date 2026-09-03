@@ -191,7 +191,13 @@ def test_symlinked_object_is_rejected_before_index_publication(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     journal, _reader_instance, intent, _marker = _configured(monkeypatch, tmp_path)
-    probe_reader = _app_reader(monkeypatch, _base_responses(commit="3" * 40, fence="3" * 40))
+    # Match the configured reader's tree so the symlink targets the exact
+    # object capture is about to publish.  A different tree would hash to a
+    # different object path and would test an unrelated missing-object case.
+    probe_reader = _app_reader(
+        monkeypatch,
+        _base_responses(commit="3" * 40, fence="3" * 40, tree="4" * 40),
+    )
     observation = probe_reader.observe(intent)
     object_path = journal.artifact_store.path_for_digest(canonical_digest(observation))
     object_path.parent.mkdir(parents=True, exist_ok=True)
