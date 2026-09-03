@@ -318,7 +318,7 @@ class GitHubMainBaseReader:
         if (
             type(token) is not str
             or not token.strip()
-            or value.get("permissions") != {"contents": "read"}
+            or value.get("permissions") != {"contents": "read", "metadata": "read"}
             or value.get("repository_selection") != "selected"
             or type(expires_at) is not str
             or type(repositories) is not list

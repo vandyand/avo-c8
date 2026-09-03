@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import copy
+import inspect
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -28,7 +29,7 @@ INSTALLATION_ID = 99
 REPOSITORY_ID = 1_354_880_741
 OWNER_ADMIN_TOKEN = "owner-admin-token-secret"
 APP_TOKEN = "app-jwt-secret"
-INSTALLATION_TOKEN = "installation-token-secret"
+MINTED_INSTALLATION_TOKEN = "minted-installation-token-secret"
 
 
 class FakeTransport:
@@ -100,6 +101,16 @@ def _installation() -> dict[str, JsonValue]:
         "events": [],
         "suspended_at": None,
         "suspended_by": None,
+    }
+
+
+def _minted_token() -> dict[str, JsonValue]:
+    return {
+        "token": MINTED_INSTALLATION_TOKEN,
+        "expires_at": "2026-09-02T12:30:00Z",
+        "permissions": {"contents": "read", "metadata": "read"},
+        "repository_selection": "selected",
+        "repositories": [_repository()],
     }
 
 
@@ -205,6 +216,7 @@ def _pass() -> list[tuple[int, JsonValue]]:
         (200, _repository()),
         (200, _app()),
         (200, [_installation()]),
+        (201, _minted_token()),
         (200, {"total_count": 1, "repositories": [_repository()]}),
         (
             200,
@@ -231,12 +243,11 @@ def _subject(
     finish: datetime | None = None,
 ) -> tuple[MainPersonalExactCasGitHubHostedConfigurationVerifier, FakeTransport]:
     transport = FakeTransport(_responses() if responses is None else responses)
-    times = iter((NOW, finish or NOW + timedelta(seconds=1)))
+    times = iter((NOW, NOW, NOW, finish or NOW + timedelta(seconds=1)))
     return (
         MainPersonalExactCasGitHubHostedConfigurationVerifier(
             owner_admin_token=OWNER_ADMIN_TOKEN,
             app_jwt=APP_TOKEN,
-            installation_token=INSTALLATION_TOKEN,
             trusted_clock=lambda: next(times),
             transport=transport,
         ),
@@ -372,12 +383,12 @@ def test_exact_configuration_returns_non_authoritative_diagnostic() -> None:
     assert result.is_authoritative is False
     assert result.readiness_authorized is False
     assert result.deploy_performed is False
-    assert len(transport.calls) == 20
-    assert all(call[0] == "GET" and call[2] is None for call in transport.calls)
+    assert len(transport.calls) == 22
     expected_pass = [
         "https://api.github.com/repos/vandyand/avo-c8",
         "https://api.github.com/app",
         "https://api.github.com/app/installations?per_page=100&page=1",
+        "https://api.github.com/app/installations/99/access_tokens",
         "https://api.github.com/installation/repositories?per_page=100&page=1",
         "https://api.github.com/repos/vandyand/avo-c8/rulesets?per_page=100&page=1",
         "https://api.github.com/repos/vandyand/avo-c8/rulesets/101",
@@ -392,50 +403,68 @@ def test_exact_configuration_returns_non_authoritative_diagnostic() -> None:
         "https://api.github.com/repos/vandyand/avo-c8/git/ref/heads/main",
     ]
     for call in transport.calls:
-        if call[1] == "https://api.github.com/app" or "/app/installations?" in call[1]:
+        if (
+            call[1] == "https://api.github.com/app"
+            or "/app/installations?" in call[1]
+            or call[1].endswith("/access_tokens")
+        ):
             expected_token = APP_TOKEN
         elif "/installation/repositories?" in call[1]:
-            expected_token = INSTALLATION_TOKEN
+            expected_token = MINTED_INSTALLATION_TOKEN
         else:
             expected_token = OWNER_ADMIN_TOKEN
         assert call[3]["Authorization"] == f"Bearer {expected_token}"
+    mint_calls = [call for call in transport.calls if call[1].endswith("/access_tokens")]
+    assert all(
+        call[0] == "POST"
+        and call[2]
+        == {"repository_ids": [REPOSITORY_ID], "permissions": {"contents": "read"}}
+        for call in mint_calls
+    )
+
+
+def test_documented_app_shape_without_optional_flags_is_accepted() -> None:
+    app = _app()
+    assert "public" not in app and "webhook_active" not in app
+    subject, _ = _subject()
+    assert subject.verify().verification_status == "matched"
 
 
 @pytest.mark.parametrize(
     ("indexes", "mutation"),
     [
-        ((1, 10), "private-repository"),
-        ((1, 10), "fork-repository"),
-        ((1, 10), "wrong-repository-id"),
-        ((1, 10), "organization-owner"),
-        ((2, 11), "extra-app-permission"),
-        ((2, 11), "app-event"),
-        ((2, 11), "wrong-app"),
-        ((3, 12), "wrong-installation-app"),
-        ((3, 12), "all-repositories"),
-        ((3, 12), "suspended-installation"),
-        ((4, 13), "wrong-selected-repository"),
-        ((5, 14), "summary-target"),
-        ((5, 14), "summary-active"),
-        ((5, 14), "summary-name-mismatch"),
-        ((5, 14), "summary-source-mismatch"),
-        ((6, 15), "non-always-bypass"),
-        ((6, 15), "missing-writer-bypass"),
-        ((6, 15), "update-fetch-and-merge"),
-        ((6, 15), "extra-update-parameter"),
-        ((7, 16), "safety-bypass"),
-        ((7, 16), "missing-safety-rule"),
-        ((8, 17), "missing-rollback-rule"),
-        ((8, 17), "rollback-broad-ref-condition"),
-        ((8, 17), "rollback-wrong-bypass"),
-        ((6, 15), "broad-ref-condition"),
-        ((6, 15), "detail-tag-target"),
-        ((6, 15), "detail-evaluate"),
-        ((9, 18), "admins-not-enforced"),
-        ((9, 18), "nonlinear-history"),
-        ((9, 18), "force-push"),
-        ((9, 18), "deletion"),
-        ((9, 18), "required-status"),
+        ((1, 11), "private-repository"),
+        ((1, 11), "fork-repository"),
+        ((1, 11), "wrong-repository-id"),
+        ((1, 11), "organization-owner"),
+        ((2, 12), "extra-app-permission"),
+        ((2, 12), "app-event"),
+        ((2, 12), "wrong-app"),
+        ((3, 13), "wrong-installation-app"),
+        ((3, 13), "all-repositories"),
+        ((3, 13), "suspended-installation"),
+        ((5, 15), "wrong-selected-repository"),
+        ((6, 16), "summary-target"),
+        ((6, 16), "summary-active"),
+        ((6, 16), "summary-name-mismatch"),
+        ((6, 16), "summary-source-mismatch"),
+        ((7, 17), "non-always-bypass"),
+        ((7, 17), "missing-writer-bypass"),
+        ((7, 17), "update-fetch-and-merge"),
+        ((7, 17), "extra-update-parameter"),
+        ((8, 18), "safety-bypass"),
+        ((8, 18), "missing-safety-rule"),
+        ((9, 19), "missing-rollback-rule"),
+        ((9, 19), "rollback-broad-ref-condition"),
+        ((9, 19), "rollback-wrong-bypass"),
+        ((7, 17), "broad-ref-condition"),
+        ((7, 17), "detail-tag-target"),
+        ((7, 17), "detail-evaluate"),
+        ((10, 20), "admins-not-enforced"),
+        ((10, 20), "nonlinear-history"),
+        ((10, 20), "force-push"),
+        ((10, 20), "deletion"),
+        ((10, 20), "required-status"),
     ],
     ids=[
         "private-repository",
@@ -497,7 +526,7 @@ def test_configuration_pass_drift_fails_closed() -> None:
 
 def test_explicit_false_update_parameter_is_also_accepted() -> None:
     responses = _responses()
-    for index in (6, 8, 15, 17):
+    for index in (7, 9, 17, 19):
         response = responses[index]
         assert not isinstance(response, BaseException)
         status, value = response
@@ -525,7 +554,7 @@ def test_documented_installation_and_repository_page_shapes_are_enforced() -> No
         subject.verify()
 
     bare_repositories = _responses()
-    bare_repositories[4] = (200, [_repository()])
+    bare_repositories[5] = (200, [_repository()])
     subject, _ = _subject(bare_repositories)
     with pytest.raises(MainPersonalExactCasHostedConfigurationUnverified):
         subject.verify()
@@ -533,7 +562,7 @@ def test_documented_installation_and_repository_page_shapes_are_enforced() -> No
 
 def test_absent_rulesets_and_stale_observation_fail_closed() -> None:
     absent = _responses()
-    absent[5] = (200, [])
+    absent[6] = (200, [])
     subject, _ = _subject(absent)
     with pytest.raises(MainPersonalExactCasHostedConfigurationUnverified):
         subject.verify()
@@ -576,13 +605,14 @@ def test_pagination_is_bounded_when_completion_is_ambiguous() -> None:
         (200, _repository()),
         (200, _app()),
         (200, [_installation()]),
+        (201, _minted_token()),
         (200, {"total_count": 1, "repositories": [_repository()]}),
         *[(200, full_page) for _ in range(10)],
     ]
     subject, transport = _subject(responses)
     with pytest.raises(MainPersonalExactCasHostedConfigurationUnverified):
         subject.verify()
-    assert len(transport.calls) == 15
+    assert len(transport.calls) == 16
     assert transport.calls[-1][1].endswith("rulesets?per_page=100&page=10")
 
 
@@ -604,3 +634,61 @@ def test_public_verifier_surface_is_read_only_and_non_authoritative() -> None:
     ).read_text(encoding="utf-8")
     assert "MainPersonalExactCasReceipt" not in source
     assert '"PATCH"' not in source and '"PUT"' not in source and '"DELETE"' not in source
+
+
+def test_installation_token_is_not_a_constructor_input() -> None:
+    assert "installation_token" not in inspect.signature(
+        MainPersonalExactCasGitHubHostedConfigurationVerifier
+    ).parameters
+
+
+@pytest.mark.parametrize(
+    "mutation", ["permissions", "missing-metadata", "selection", "repositories", "expiry"]
+)
+def test_minted_installation_token_scope_is_exact(mutation: str) -> None:
+    responses = _responses()
+    token = copy.deepcopy(_minted_token())
+    if mutation == "permissions":
+        token["permissions"] = {"contents": "write"}
+    elif mutation == "missing-metadata":
+        token["permissions"] = {"contents": "read"}
+    elif mutation == "selection":
+        token["repository_selection"] = "all"
+    elif mutation == "repositories":
+        token["repositories"] = [_repository(), _repository()]
+    else:
+        token["expires_at"] = "2026-09-02T13:30:01Z"
+    responses[4] = (201, token)
+    subject, _ = _subject(responses)
+    with pytest.raises(MainPersonalExactCasHostedConfigurationUnverified):
+        subject.verify()
+
+
+def test_minted_installation_token_status_or_shape_fails_closed() -> None:
+    for response in ((200, _minted_token()), (201, {}), (201, {"token": "foreign"})):
+        responses = _responses()
+        responses[4] = response
+        subject, _ = _subject(responses)
+        with pytest.raises(MainPersonalExactCasHostedConfigurationUnverified):
+            subject.verify()
+
+
+@pytest.mark.parametrize(
+    "expires_at",
+    [
+        "2026-09-02T12:30:00+00:00",
+        "2026-09-02T12:30:00.000Z",
+        "2026-09-02T12:30Z",
+        "2026-09-02T12:30:00+01:00",
+    ],
+)
+def test_minted_installation_token_requires_exact_utc_timestamp_format(
+    expires_at: str,
+) -> None:
+    responses = _responses()
+    token = copy.deepcopy(_minted_token())
+    token["expires_at"] = expires_at
+    responses[4] = (201, token)
+    subject, _ = _subject(responses)
+    with pytest.raises(MainPersonalExactCasHostedConfigurationUnverified):
+        subject.verify()
