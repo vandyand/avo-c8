@@ -228,6 +228,12 @@ from avo_correlate.contracts.main_personal_exact_cas import (
     personal_cas_claim_digest,
     personal_cas_operation_id,
 )
+from avo_correlate.contracts.main_personal_exact_cas_response_evidence import (
+    MainPersonalExactCasResponseEvidence,
+    MainPersonalExactCasResponseClassification,
+    SanitizedRequestId,
+    main_personal_exact_cas_request_digest,
+)
 from avo_correlate.contracts.policy import PolicyDecision
 from avo_correlate.contracts.prepublication import (
     RollbackOperationQuarantine,
@@ -430,6 +436,10 @@ __all__ = [
     "MainPersonalExactCasPostStateObservation",
     "MainPersonalExactCasReceipt",
     "MainPersonalExactCasReconciliation",
+    "MainPersonalExactCasResponseEvidence",
+    "MainPersonalExactCasResponseClassification",
+    "SanitizedRequestId",
+    "main_personal_exact_cas_request_digest",
     "MainPreparationAuthorization",
     "MainProtectionManifest",
     "MainProviderPostStateObservation",

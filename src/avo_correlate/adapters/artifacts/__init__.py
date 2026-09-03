@@ -46,6 +46,11 @@ from avo_correlate.adapters.artifacts.main_personal_exact_cas_journal import (
     MainPersonalExactCasJournalError,
     MainPersonalExactCasRecordConflictError,
 )
+from avo_correlate.adapters.artifacts.main_personal_exact_cas_response_evidence import (
+    MainPersonalExactCasResponseEvidenceConflictError,
+    MainPersonalExactCasResponseEvidenceJournal,
+    MainPersonalExactCasResponseEvidenceJournalError,
+)
 from avo_correlate.adapters.artifacts.rollback_bundle_authority import (
     RollbackBundleAuthorityJournal,
     RollbackPublicationAuthorizationJournal,
@@ -89,6 +94,9 @@ __all__ = [
     "MainPersonalExactCasJournal",
     "MainPersonalExactCasJournalError",
     "MainPersonalExactCasRecordConflictError",
+    "MainPersonalExactCasResponseEvidenceConflictError",
+    "MainPersonalExactCasResponseEvidenceJournal",
+    "MainPersonalExactCasResponseEvidenceJournalError",
     "MainPhaseAAuthorityVerifier",
     "MainRollbackAuthorityVerifier",
     "OfflineDrillAuthorityVerifier",

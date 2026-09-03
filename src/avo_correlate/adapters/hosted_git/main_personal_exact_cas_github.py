@@ -7,6 +7,7 @@ The caller cannot provide a URL, ref, method, force flag, or request body.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import re
@@ -95,6 +96,8 @@ class MainPersonalExactCasTransportObservation:
     classification: MainPersonalExactCasResponseClassification
     metadata: Mapping[str, str]
     observed_at: datetime
+    payload_bytes: bytes
+    payload_digest: str
     is_terminal: Literal[False] = False
     is_authoritative: Literal[False] = False
 
@@ -287,6 +290,7 @@ class MainPersonalExactCasGitHubTransport:
         if failure is not None:
             raise MainPersonalExactCasTransportError(failure)
         assert parsed is not None
+        payload_bytes = _canonical_payload_bytes(parsed.body)
         return MainPersonalExactCasTransportObservation(
             operation_id=intent.operation_id,
             repository_digest=intent.repository_digest,
@@ -301,6 +305,8 @@ class MainPersonalExactCasGitHubTransport:
             classification=parsed.classification,
             metadata=MappingProxyType(dict(parsed.metadata)),
             observed_at=self._now(),
+            payload_bytes=payload_bytes,
+            payload_digest=_payload_digest(payload_bytes),
         )
 
     @staticmethod
@@ -430,6 +436,16 @@ def _headers_for_parser(value: object) -> object:
     if isinstance(value, Message):
         return _MessageHeaders(value)  # pyright: ignore[reportUnknownArgumentType]
     return value
+
+
+def _canonical_payload_bytes(value: MainPersonalExactCasJsonValue) -> bytes:
+    return json.dumps(
+        value, ensure_ascii=True, allow_nan=False, separators=(",", ":"), sort_keys=True
+    ).encode("ascii")
+
+
+def _payload_digest(value: bytes) -> str:
+    return "sha256:" + hashlib.sha256(value).hexdigest()
 
 
 __all__ = [
