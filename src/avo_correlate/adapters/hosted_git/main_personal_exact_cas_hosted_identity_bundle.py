@@ -94,11 +94,14 @@ def _snapshot_payload(snapshot: MainBaseSnapshot) -> dict[str, object]:
 
     if type(snapshot) is not MainBaseSnapshot:
         raise TypeError("exact main base snapshot is required")
-    if set(vars(snapshot)) != {"repository_digest", "commit", "tree", "target_ref"}:
+    if set(vars(snapshot)) != {"repository_digest", "commit", "tree", "target_ref", "parents"}:
         raise ValueError("main base snapshot has reflective state")
     repository_digest = _digest(snapshot.repository_digest, "observer snapshot repository digest")
     commit = _object(snapshot.commit, "observer snapshot commit")
     tree = _object(snapshot.tree, "observer snapshot tree")
+    if type(snapshot.parents) is not tuple:
+        raise ValueError("observer snapshot parents are not immutable")
+    parents = tuple(_object(parent, "observer snapshot parent") for parent in snapshot.parents)
     if snapshot.target_ref != _TARGET_REF:
         raise ValueError("observer snapshot target ref is not exact main")
     return {
@@ -106,6 +109,7 @@ def _snapshot_payload(snapshot: MainBaseSnapshot) -> dict[str, object]:
         "commit": commit,
         "tree": tree,
         "target_ref": _TARGET_REF,
+        "parents": parents,
     }
 
 
@@ -119,6 +123,7 @@ def _revalidate_snapshot(snapshot: MainBaseSnapshot) -> tuple[MainBaseSnapshot, 
         commit=canonical["commit"],
         tree=canonical["tree"],
         target_ref=canonical["target_ref"],
+        parents=tuple(canonical["parents"]),
     )
     if rebuilt != snapshot:
         raise ValueError("observer snapshot changed during validation")
@@ -250,7 +255,7 @@ def _revalidate_observer(
     if provenance.initial_ref_digest != expected_ref or provenance.final_ref_digest != expected_ref:
         raise ValueError("observer ref fence does not bind snapshot")
     if provenance.commit_digest != canonical_digest(
-        {"commit": snapshot.commit, "tree": snapshot.tree}
+        {"commit": snapshot.commit, "tree": snapshot.tree, "parents": snapshot.parents}
     ):
         raise ValueError("observer commit evidence does not bind snapshot")
     validate_main_base_provenance(configuration, snapshot, provenance)
@@ -401,6 +406,16 @@ def validate_main_base_provenance(
     )
     if provenance.requests != expected:
         raise ValueError("main base provenance trace is not the exact seven-request trace")
+    expected_ref = canonical_digest(
+        {"ref": _TARGET_REF, "object": {"type": "commit", "sha": snapshot.commit}}
+    )
+    if provenance.initial_ref_digest != expected_ref or provenance.final_ref_digest != expected_ref:
+        raise ValueError("main base provenance ref fence does not bind snapshot")
+    expected_commit = canonical_digest(
+        {"commit": snapshot.commit, "tree": snapshot.tree, "parents": snapshot.parents}
+    )
+    if provenance.commit_digest != expected_commit:
+        raise ValueError("main base provenance commit evidence does not bind snapshot")
 
 
 @dataclass(frozen=True, slots=True)

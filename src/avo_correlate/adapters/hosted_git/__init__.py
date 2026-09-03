@@ -78,6 +78,7 @@ from .main_personal_exact_cas_hosted_identity_bundle import (
     validate_main_base_provenance,
 )
 from .main_personal_exact_cas_post_state import (
+    GitHubMainBasePostStateReader,
     MainPersonalExactCasGitHubPostStateReader,
     MainPersonalExactCasPostStateTransportError,
 )
@@ -120,6 +121,7 @@ __all__ = [
     "GitHubEvidenceSnapshot",
     "GitHubIntegrationProvider",
     "GitHubJsonTransport",
+    "GitHubMainBasePostStateReader",
     "GitHubMainBaseReader",
     "GitHubMainBaseReaderConfiguration",
     "GitHubMainBaseReaderCredentials",

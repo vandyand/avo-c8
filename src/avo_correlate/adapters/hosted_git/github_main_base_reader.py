@@ -263,7 +263,7 @@ class GitHubMainBaseReader:
                 f"/git/commits/{commit}",
                 installation_token,
             )
-            observed_commit, tree = _parse_commit(commit_body, commit)
+            observed_commit, tree, parents = _parse_commit(commit_body, commit)
             final_ref = self._get(
                 f"/repos/{self._configuration.owner}/{self._configuration.repo}"
                 "/git/ref/heads/main",
@@ -277,6 +277,7 @@ class GitHubMainBaseReader:
                 commit=commit,
                 tree=tree,
                 target_ref=_TARGET_REF,
+                parents=parents,
             )
         except (
             GitHubMainBaseReaderError,
@@ -365,7 +366,9 @@ class GitHubMainBaseReader:
             ),
             configuration_digest=self._configuration.configuration_digest,
             initial_ref_digest=canonical_digest(_safe_ref_projection(result.commit)),
-            commit_digest=canonical_digest(_safe_commit_facts(result.commit, result.tree)),
+            commit_digest=canonical_digest(
+                _safe_commit_facts(result.commit, result.tree, result.parents)
+            ),
             final_ref_digest=canonical_digest(_safe_ref_projection(result.commit)),
         )
         return GitHubReadWithProvenance(result=result, provenance=provenance)
@@ -543,7 +546,7 @@ def _parse_ref(body: JsonValue) -> str:
     return sha
 
 
-def _parse_commit(body: JsonValue, expected_sha: str) -> tuple[str, str]:
+def _parse_commit(body: JsonValue, expected_sha: str) -> tuple[str, str, tuple[str, ...]]:
     if type(body) is not dict:
         raise ValueError("malformed commit")
     value = cast(dict[str, JsonValue], body)
@@ -561,6 +564,7 @@ def _parse_commit(body: JsonValue, expected_sha: str) -> tuple[str, str]:
         or type(parents) is not list
     ):
         raise ValueError("malformed commit topology")
+    parsed_parents: list[str] = []
     for parent in cast(list[JsonValue], parents):
         typed_parent = cast(dict[str, JsonValue], parent) if type(parent) is dict else None
         parent_sha = typed_parent.get("sha") if typed_parent is not None else None
@@ -570,7 +574,8 @@ def _parse_commit(body: JsonValue, expected_sha: str) -> tuple[str, str]:
             or _OBJECT_PATTERN.fullmatch(parent_sha) is None
         ):
             raise ValueError("malformed parent topology")
-    return sha, tree_sha
+        parsed_parents.append(parent_sha)
+    return sha, tree_sha, tuple(parsed_parents)
 
 
 def _safe_app_facts(value: JsonValue) -> dict[str, JsonValue]:
@@ -611,8 +616,10 @@ def _safe_repository_facts(value: JsonValue) -> dict[str, JsonValue]:
     }
 
 
-def _safe_commit_facts(commit: str, tree: str) -> dict[str, str]:
-    return {"commit": commit, "tree": tree}
+def _safe_commit_facts(
+    commit: str, tree: str, parents: tuple[str, ...]
+) -> dict[str, object]:
+    return {"commit": commit, "tree": tree, "parents": parents}
 
 
 def _safe_ref_projection(sha: str) -> dict[str, object]:

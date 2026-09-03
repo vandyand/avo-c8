@@ -209,7 +209,7 @@ def _observer(
             ("repository", "sha256:" + "c" * 64),
         ),
         initial_ref_digest=ref_digest,
-        commit_digest=canonical_digest({"commit": COMMIT, "tree": TREE}),
+        commit_digest=canonical_digest({"commit": COMMIT, "tree": TREE, "parents": ()}),
         final_ref_digest=ref_digest,
         configuration_digest=configuration.configuration_digest,
         writer_app_id=writer_app_id,

@@ -24,7 +24,7 @@ from avo_correlate.adapters.artifacts.main_personal_exact_cas_journal import (
     MainPersonalExactCasJournal,
 )
 from avo_correlate.adapters.hosted_git.main_personal_exact_cas_post_state import (
-    MainPersonalExactCasGitHubPostStateReader,
+    GitHubMainBasePostStateReader,
 )
 from avo_correlate.contracts.base import ArtifactRef, StrictModel
 from avo_correlate.contracts.main_personal_exact_cas import (
@@ -76,13 +76,13 @@ class MainPersonalExactCasReadOnlyPostStateJournal:
         root: Path,
         *,
         authority_journal: MainPersonalExactCasJournal,
-        reader: MainPersonalExactCasGitHubPostStateReader,
+        reader: GitHubMainBasePostStateReader,
         artifact_store: FilesystemArtifactStore | None = None,
         max_record_bytes: int = 8 * 1024 * 1024,
     ) -> None:
         if type(authority_journal) is not MainPersonalExactCasJournal:
             raise ValueError("controller authority journal is required")
-        if type(reader) is not MainPersonalExactCasGitHubPostStateReader:
+        if type(reader) is not GitHubMainBasePostStateReader:
             raise ValueError("fixed post-state reader is required")
         if type(max_record_bytes) is not int or max_record_bytes <= 0:
             raise ValueError("max_record_bytes must be positive")
@@ -248,13 +248,19 @@ class MainPersonalExactCasReadOnlyPostStateJournal:
             checked = MainPersonalExactCasReadOnlyPostState.model_validate_json(data)
             if type(checked) is not MainPersonalExactCasReadOnlyPostState or checked != observation:
                 raise ValueError("observation canonicality")
+            configuration = getattr(self._reader, "_configuration", None)
             expected_owner = getattr(self._reader, "_owner", None)
             expected_repo = getattr(self._reader, "_repo", None)
+            expected_repository_digest = getattr(self._reader, "_repository_digest", None)
+            if configuration is not None:
+                expected_owner = configuration.owner
+                expected_repo = configuration.repo
+                expected_repository_digest = configuration.repository_digest
             if (
                 checked.operation_id != intent.operation_id
                 or checked.intent_digest != intent.intent_digest
                 or checked.repository_digest != intent.repository_digest
-                or checked.repository_digest != getattr(self._reader, "_repository_digest", None)
+                or checked.repository_digest != expected_repository_digest
                 or checked.owner != expected_owner
                 or checked.repository != expected_repo
                 or checked.target_ref != intent.target_ref

@@ -61,6 +61,7 @@ class MainBaseSnapshot:
     commit: str
     tree: str
     target_ref: str = "refs/heads/main"
+    parents: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

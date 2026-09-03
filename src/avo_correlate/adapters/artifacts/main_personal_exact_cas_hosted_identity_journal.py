@@ -58,6 +58,7 @@ _DIGEST_PREFIX = "sha256:"
 _O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 _O_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
 _FDINFO_MAX_BYTES = 4096
+_OBJECT_PATTERN = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
 
 _CHILD_SPECS: dict[str, tuple[str, str, type[Any]]] = {
     "writer_diagnostic_artifact": (
@@ -221,13 +222,19 @@ def _revalidate_configuration(value: object) -> GitHubMainBaseReaderConfiguratio
 def _snapshot_payload(value: MainBaseSnapshot) -> dict[str, object]:
     if type(value) is not MainBaseSnapshot:
         raise TypeError("exact main base snapshot is required")
-    if set(vars(value)) != {"repository_digest", "commit", "tree", "target_ref"}:
+    if set(vars(value)) != {"repository_digest", "commit", "tree", "target_ref", "parents"}:
         raise ValueError("snapshot has reflective state")
+    if type(value.parents) is not tuple or any(
+        type(parent) is not str or _OBJECT_PATTERN.fullmatch(parent) is None
+        for parent in value.parents
+    ):
+        raise ValueError("snapshot parents are not exact")
     return {
         "repository_digest": value.repository_digest,
         "commit": value.commit,
         "tree": value.tree,
         "target_ref": value.target_ref,
+        "parents": value.parents,
     }
 
 
@@ -740,6 +747,9 @@ class MainPersonalExactCasHostedIdentityJournal:
                 raise ValueError("child is not canonical")
             return _exact_model(value, MainPersonalExactCasHostedConfigurationDiagnostic)
         raw = _json_object(data)
+        if type(raw.get("parents")) is not list:
+            raise ValueError("snapshot parents are malformed")
+        raw["parents"] = tuple(cast(list[Any], raw["parents"]))
         value = MainBaseSnapshot(**raw)
         if canonical_bytes(_snapshot_payload(value)) != data:
             raise ValueError("snapshot is not canonical")

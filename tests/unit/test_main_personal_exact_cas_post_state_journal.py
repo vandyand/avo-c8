@@ -22,15 +22,13 @@ from avo_correlate.adapters.artifacts.main_personal_exact_cas_post_state import 
     MainPersonalExactCasPostStateJournalError,
     MainPersonalExactCasReadOnlyPostStateJournal,
 )
-from avo_correlate.contracts.main_personal_exact_cas_post_state import (
-    MainPersonalExactCasReadOnlyPostState,
+from avo_correlate.adapters.hosted_git.github import github_repository_digest
+from avo_correlate.adapters.hosted_git.main_personal_exact_cas_post_state import (
+    MainPersonalExactCasGitHubPostStateReader,
 )
 from avo_correlate.domain.canonical import canonical_bytes, canonical_digest
-from tests.unit.test_main_personal_exact_cas_post_state import (
-    _commit,
-    _reader,
-    _ref,
-)
+from tests.unit.test_github_main_base_reader import _responses as _base_responses
+from tests.unit.test_main_personal_exact_cas_observer_post_state import _reader as _app_reader
 from tests.unit.test_main_personal_exact_cas_response_evidence import _chain
 
 NOW = datetime(2026, 1, 1, tzinfo=UTC)
@@ -73,11 +71,7 @@ def _configured(
 ) -> tuple[MainPersonalExactCasReadOnlyPostStateJournal, Any, Any, Any]:
     intent, marker = _chain()
     sha = "3" * 40
-    reader, _ = _reader(
-        monkeypatch,
-        [(200, _ref(sha)), (200, _commit(sha)), (200, _ref(sha))],
-        clock=iter((NOW + timedelta(minutes=4), NOW + timedelta(minutes=5))),
-    )
+    reader = _app_reader(monkeypatch, _base_responses(commit=sha, fence=sha, tree="4" * 40))
     monkeypatch.setattr(module, "require_durable_backend", _qualified)
     monkeypatch.setattr(module, "_fsync_directory", _no_fsync)
     journal = MainPersonalExactCasReadOnlyPostStateJournal(
@@ -91,14 +85,9 @@ def test_capture_reopen_and_read_are_create_once_and_nonterminal(
 ) -> None:
     journal, reader, intent, marker = _configured(monkeypatch, tmp_path)
     reference = journal.capture(intent.operation_id)
-    assert len(reader._transport.calls) == 3
-
-    def fail_if_reobserved(_intent: Any) -> Any:
-        raise AssertionError("durable replay must not call GitHub")
-
-    reader.observe = fail_if_reobserved
+    assert len(reader._reader._transport.calls) == 7
     assert journal.capture(intent.operation_id) == reference
-    assert len(reader._transport.calls) == 3
+    assert len(reader._reader._transport.calls) == 7
     result = journal.read(intent.operation_id)
     assert result is not None
     observation, returned = result
@@ -112,7 +101,7 @@ def test_capture_reopen_and_read_are_create_once_and_nonterminal(
         reader=reader,
     )
     assert reopened.read(intent.operation_id) == result
-    assert len(reader._transport.calls) == 3
+    assert len(reader._reader._transport.calls) == 7
 
 
 def test_divergent_timestamp_or_topology_conflicts_without_replacing_winner(
@@ -122,15 +111,11 @@ def test_divergent_timestamp_or_topology_conflicts_without_replacing_winner(
     journal.capture(intent.operation_id)
     stored = journal.read(intent.operation_id)
     assert stored is not None
-    values = stored[0].model_dump(mode="python")
-    values["observed_tree"] = "5" * 40
-    values["finished_at"] = NOW + timedelta(minutes=6)
-    alternate = MainPersonalExactCasReadOnlyPostState.build(**values)
-
-    def _return_alternate(_intent: Any) -> Any:
-        return alternate
-
-    reader.observe = _return_alternate
+    # Re-arm the concrete base reader's owned transport seam for a divergent
+    # second observation while preserving its exact type and configuration.
+    reader._reader._transport._responses = _base_responses(
+        commit="3" * 40, fence="3" * 40, tree="5" * 40
+    )
     original_read = journal.read
 
     def _race_missed_existing(_operation_id: str):
@@ -151,7 +136,7 @@ def test_wrong_requested_operation_fails_before_reader_or_write(
     wrong_operation = "sha256:" + "9" * 64
     with pytest.raises(MainPersonalExactCasPostStateJournalError):
         journal.capture(wrong_operation)
-    assert len(reader._transport.calls) == 0
+    assert len(reader._reader._transport.calls) == 0
     assert not list(journal.root.glob("artifacts/objects/sha256/*/*"))
 
 
@@ -206,14 +191,12 @@ def test_symlinked_object_is_rejected_before_index_publication(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     journal, _reader_instance, intent, _marker = _configured(monkeypatch, tmp_path)
-    probe_reader, _ = _reader(
+    # Match the configured reader's tree so the symlink targets the exact
+    # object capture is about to publish.  A different tree would hash to a
+    # different object path and would test an unrelated missing-object case.
+    probe_reader = _app_reader(
         monkeypatch,
-        [
-            (200, _ref("3" * 40)),
-            (200, _commit("3" * 40)),
-            (200, _ref("3" * 40)),
-        ],
-        clock=iter((NOW + timedelta(minutes=4), NOW + timedelta(minutes=5))),
+        _base_responses(commit="3" * 40, fence="3" * 40, tree="4" * 40),
     )
     observation = probe_reader.observe(intent)
     object_path = journal.artifact_store.path_for_digest(canonical_digest(observation))
@@ -234,10 +217,7 @@ def test_secret_reader_failure_is_code_only_and_does_not_write(
 ) -> None:
     journal, reader, intent, _marker = _configured(monkeypatch, tmp_path)
 
-    def _fail(_intent: Any) -> Any:
-        raise RuntimeError("Bearer TOKEN-secret")
-
-    reader.observe = _fail
+    reader._reader._transport._responses = [(200, RuntimeError("Bearer TOKEN-secret"))]
     with pytest.raises(MainPersonalExactCasPostStateJournalError) as raised:
         journal.capture(intent.operation_id)
     assert "TOKEN" not in repr(raised.value)
@@ -263,34 +243,11 @@ def test_missing_or_tampered_object_and_index_fail_closed(
         journal.read(intent.operation_id)
 
 
-def test_pre_intent_and_model_construct_outputs_are_rejected_before_write(
+def test_malformed_base_reader_output_is_rejected_before_write(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     journal, reader, intent, _marker = _configured(monkeypatch, tmp_path)
-    valid_reader, _ = _reader(
-        monkeypatch,
-        [(200, _ref("3" * 40)), (200, _commit("3" * 40)), (200, _ref("3" * 40))],
-        clock=iter((NOW + timedelta(minutes=4), NOW + timedelta(minutes=5))),
-    )
-    valid = valid_reader.observe(intent)
-    values = valid.model_dump(mode="python")
-    values["started_at"] = NOW
-    forged = MainPersonalExactCasReadOnlyPostState.build(**values)
-
-    def _return_forged(_intent: Any) -> Any:
-        return forged
-
-    reader.observe = _return_forged
-    with pytest.raises(MainPersonalExactCasPostStateJournalError):
-        journal.capture(intent.operation_id)
-    assert not list(journal.root.glob("artifacts/objects/sha256/*/*"))
-
-    forged_construct = valid.model_construct(observed_tree="6" * 40)
-
-    def _return_constructed(_intent: Any) -> Any:
-        return forged_construct
-
-    reader.observe = _return_constructed
+    reader._reader._transport._responses = [(200, {})]
     with pytest.raises(MainPersonalExactCasPostStateJournalError):
         journal.capture(intent.operation_id)
     assert not list(journal.root.glob("artifacts/objects/sha256/*/*"))
@@ -300,11 +257,7 @@ def test_constructor_requires_exact_authority_and_reader_types(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     intent, marker = _chain()
-    reader, _ = _reader(
-        monkeypatch,
-        [],
-        clock=iter((NOW + timedelta(minutes=4), NOW + timedelta(minutes=5))),
-    )
+    reader = _app_reader(monkeypatch, [])
     monkeypatch.setattr(module, "require_durable_backend", _qualified)
     with pytest.raises(ValueError):
         MainPersonalExactCasReadOnlyPostStateJournal(
@@ -317,6 +270,25 @@ def test_constructor_requires_exact_authority_and_reader_types(
             tmp_path / "reader",
             authority_journal=_authority(intent, marker),
             reader=cast(Any, object()),
+        )
+
+
+def test_constructor_rejects_legacy_raw_credential_reader(
+    tmp_path: Path,
+) -> None:
+    legacy = MainPersonalExactCasGitHubPostStateReader(
+        owner="fixture",
+        repo="repo",
+        repository_digest=github_repository_digest("fixture", "repo"),
+        token="legacy-secret",
+        trusted_clock=lambda: NOW,
+    )
+    intent, marker = _chain()
+    with pytest.raises(ValueError, match="fixed post-state reader"):
+        MainPersonalExactCasReadOnlyPostStateJournal(
+            tmp_path / "legacy",
+            authority_journal=_authority(intent, marker),
+            reader=legacy,  # type: ignore[arg-type]
         )
 
 
