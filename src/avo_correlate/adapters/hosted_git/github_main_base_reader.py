@@ -25,6 +25,12 @@ from avo_correlate.adapters.hosted_git.github import (
 from avo_correlate.adapters.hosted_git.github_transport import GitHubJsonTransport
 from avo_correlate.domain.canonical import canonical_digest
 
+from .github_read_provenance import (
+    GitHubReadProvenance,
+    GitHubReadRequest,
+    GitHubReadWithProvenance,
+)
+
 _API_ORIGIN = "https://api.github.com"
 _API_VERSION = "2022-11-28"
 _TARGET_REF = "refs/heads/main"
@@ -37,6 +43,7 @@ _OWNER_PATTERN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38}[A-Za-z0-9])?\Z")
 _REPO_PATTERN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9._-]{0,98}[A-Za-z0-9])?\Z")
 _APP_PATTERN = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,98}[a-z0-9])?\Z")
 _OBJECT_PATTERN = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?\Z")
+_READER_IDENTITY = "github_main_base_reader"
 
 
 class GitHubMainBaseReaderError(RuntimeError):
@@ -197,8 +204,21 @@ class GitHubMainBaseReader:
     def fresh_main_base(self) -> MainBaseSnapshot:
         """Authenticate the observer, then return one ref-fenced main snapshot."""
 
+        return self.fresh_main_base_with_provenance().result
+
+    def fresh_main_base_with_provenance(
+        self,
+    ) -> GitHubReadWithProvenance[MainBaseSnapshot]:
+        """Return one authenticated base read and sanitized immutable provenance."""
+
         failure = False
         result: MainBaseSnapshot | None = None
+        app: JsonValue | None = None
+        installation: JsonValue | None = None
+        repository: JsonValue | None = None
+        initial_ref: JsonValue | None = None
+        commit_body: JsonValue | None = None
+        final_ref: JsonValue | None = None
         try:
             self._configuration.assert_valid()
             self._credentials.assert_valid()
@@ -217,24 +237,24 @@ class GitHubMainBaseReader:
                 installation_token,
             )
             self._verify_repository(repository)
-            ref = self._get(
+            initial_ref = self._get(
                 f"/repos/{self._configuration.owner}/{self._configuration.repo}"
                 "/git/ref/heads/main",
                 installation_token,
             )
-            commit = _parse_ref(ref)
+            commit = _parse_ref(initial_ref)
             commit_body = self._get(
                 f"/repos/{self._configuration.owner}/{self._configuration.repo}"
                 f"/git/commits/{commit}",
                 installation_token,
             )
             observed_commit, tree = _parse_commit(commit_body, commit)
-            fence = self._get(
+            final_ref = self._get(
                 f"/repos/{self._configuration.owner}/{self._configuration.repo}"
                 "/git/ref/heads/main",
                 installation_token,
             )
-            fenced_commit = _parse_ref(fence)
+            fenced_commit = _parse_ref(final_ref)
             if fenced_commit != commit or observed_commit != commit:
                 raise ValueError("main ref drifted during observation")
             result = MainBaseSnapshot(
@@ -256,7 +276,81 @@ class GitHubMainBaseReader:
             failure = True
         if failure or result is None:
             raise GitHubMainBaseReaderError()
-        return result
+        assert app is not None
+        assert installation is not None
+        assert repository is not None
+        assert initial_ref is not None
+        assert commit_body is not None
+        assert final_ref is not None
+        provenance = GitHubReadProvenance(
+            reader_identity=_READER_IDENTITY,
+            api_origin=_API_ORIGIN,
+            api_version=_API_VERSION,
+            owner=self._configuration.owner,
+            owner_id=self._configuration.owner_id,
+            repository=self._configuration.repo,
+            repository_id=self._configuration.repository_id,
+            repository_digest=self._configuration.repository_digest,
+            target_ref=_TARGET_REF,
+            app_slug=self._configuration.observer_identity,
+            app_id=self._configuration.observer_app_id,
+            installation_id=self._configuration.observer_installation_id,
+            requested_repository_id=self._configuration.repository_id,
+            requested_permissions=("contents:read",),
+            observed_permissions=("contents:read", "metadata:read"),
+            repository_selection="selected",
+            token_expiry_policy="now<expires_at<=now+65m",
+            requests=(
+                GitHubReadRequest("GET", "/app", "app_jwt"),
+                GitHubReadRequest(
+                    "GET",
+                    f"/app/installations/{self._configuration.observer_installation_id}",
+                    "app_jwt",
+                ),
+                GitHubReadRequest(
+                    "POST",
+                    f"/app/installations/{self._configuration.observer_installation_id}"
+                    "/access_tokens",
+                    "app_jwt",
+                ),
+                GitHubReadRequest(
+                    "GET",
+                    f"/repositories/{self._configuration.repository_id}",
+                    "installation_token",
+                ),
+                GitHubReadRequest(
+                    "GET",
+                    f"/repos/{self._configuration.owner}/{self._configuration.repo}"
+                    "/git/ref/heads/main",
+                    "installation_token",
+                ),
+                GitHubReadRequest(
+                    "GET",
+                    f"/repos/{self._configuration.owner}/{self._configuration.repo}"
+                    f"/git/commits/{result.commit}",
+                    "installation_token",
+                ),
+                GitHubReadRequest(
+                    "GET",
+                    f"/repos/{self._configuration.owner}/{self._configuration.repo}"
+                    "/git/ref/heads/main",
+                    "installation_token",
+                ),
+            ),
+            endpoint_observation_digests=tuple(
+                sorted(
+                    (
+                        ("app", canonical_digest(_safe_app_facts(app))),
+                        ("installation", canonical_digest(_safe_installation_facts(installation))),
+                        ("repository", canonical_digest(_safe_repository_facts(repository))),
+                    )
+                )
+            ),
+            initial_ref_digest=canonical_digest(_safe_ref_projection(result.commit)),
+            commit_digest=canonical_digest(_safe_commit_facts(result.commit, result.tree)),
+            final_ref_digest=canonical_digest(_safe_ref_projection(result.commit)),
+        )
+        return GitHubReadWithProvenance(result=result, provenance=provenance)
 
     def _get(self, path: str, token: str) -> JsonValue:
         return self._request("GET", path, None, token, expected_status=200)
@@ -458,9 +552,58 @@ def _parse_commit(body: JsonValue, expected_sha: str) -> tuple[str, str]:
     return sha, tree_sha
 
 
+def _safe_app_facts(value: JsonValue) -> dict[str, JsonValue]:
+    body = cast(dict[str, JsonValue], value)
+    return {
+        "id": body["id"],
+        "name": body["name"],
+        "owner": body["owner"],
+        "permissions": body["permissions"],
+        "slug": body["slug"],
+        "events": body["events"],
+    }
+
+
+def _safe_installation_facts(value: JsonValue) -> dict[str, JsonValue]:
+    body = cast(dict[str, JsonValue], value)
+    return {
+        "account": body["account"],
+        "app_id": body["app_id"],
+        "app_slug": body["app_slug"],
+        "events": body["events"],
+        "id": body["id"],
+        "permissions": body["permissions"],
+        "repository_selection": body["repository_selection"],
+        "suspended_at": body["suspended_at"],
+        "target_id": body["target_id"],
+        "target_type": body["target_type"],
+    }
+
+
+def _safe_repository_facts(value: JsonValue) -> dict[str, JsonValue]:
+    body = cast(dict[str, JsonValue], value)
+    return {
+        "full_name": body["full_name"],
+        "id": body["id"],
+        "name": body["name"],
+        "owner": body["owner"],
+    }
+
+
+def _safe_commit_facts(commit: str, tree: str) -> dict[str, str]:
+    return {"commit": commit, "tree": tree}
+
+
+def _safe_ref_projection(sha: str) -> dict[str, object]:
+    return {"ref": _TARGET_REF, "object": {"type": "commit", "sha": sha}}
+
+
 __all__ = [
     "GitHubMainBaseReader",
     "GitHubMainBaseReaderConfiguration",
     "GitHubMainBaseReaderCredentials",
     "GitHubMainBaseReaderError",
+    "GitHubReadProvenance",
+    "GitHubReadRequest",
+    "GitHubReadWithProvenance",
 ]

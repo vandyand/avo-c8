@@ -471,7 +471,12 @@ def test_reader_has_no_generic_or_mutating_public_surface(
 ) -> None:
     reader = _reader(monkeypatch, _responses())
     public = {name for name in dir(reader) if not name.startswith("_")}
-    assert public == {"configuration_digest", "fresh_main_base", "repository_digest"}
+    assert public == {
+        "configuration_digest",
+        "fresh_main_base",
+        "fresh_main_base_with_provenance",
+        "repository_digest",
+    }
     for name in ("post", "put", "patch", "delete", "exchange", "dispatch", "mutate"):
         assert not hasattr(reader, name)
     with pytest.raises(FrozenInstanceError):
@@ -487,6 +492,53 @@ def test_transient_token_rotation_does_not_change_stable_configuration_digest() 
     )
     assert rotated == credentials
     assert _configuration().configuration_digest == config.configuration_digest
+
+
+def test_authenticated_read_provenance_is_canonical_frozen_and_secret_free(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed = _reader(monkeypatch, _responses()).fresh_main_base_with_provenance()
+    provenance = observed.provenance
+    assert observed.result.commit == COMMIT
+    assert provenance.provenance_digest.startswith("sha256:")
+    assert provenance.requests[0].credential_role == "app_jwt"
+    assert provenance.requests[2].method == "POST"
+    assert provenance.requests[-1].path.endswith("/git/ref/heads/main")
+    text = repr(provenance)
+    assert "short-lived-app-jwt" not in text
+    assert "reader-minted-installation-token" not in text
+    assert "rotated-secret-canary" not in text
+
+    rotated = _responses()
+    token_body = rotated[2][1]
+    assert isinstance(token_body, dict)
+    token_body["token"] = "rotated-secret-canary"
+    rotated_observed = _reader(monkeypatch, rotated).fresh_main_base_with_provenance()
+    assert rotated_observed.provenance.provenance_digest == provenance.provenance_digest
+
+    assert (
+        replace(provenance, app_id=APP_ID + 1).provenance_digest
+        != provenance.provenance_digest
+    )
+    with pytest.raises(FrozenInstanceError):
+        provenance.app_id = APP_ID + 1  # type: ignore[misc]
+
+
+def test_ref_provenance_ignores_unvalidated_response_extra_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    baseline = _reader(monkeypatch, _responses()).fresh_main_base_with_provenance()
+    responses = _responses()
+    for index in (4, 6):
+        ref = responses[index][1]
+        assert isinstance(ref, dict)
+        ref["secret_canary"] = "admin-token-secret-canary"
+    changed = _reader(monkeypatch, responses).fresh_main_base_with_provenance()
+    assert changed.result == baseline.result
+    assert changed.provenance.initial_ref_digest == baseline.provenance.initial_ref_digest
+    assert changed.provenance.final_ref_digest == baseline.provenance.final_ref_digest
+    assert changed.provenance.provenance_digest == baseline.provenance.provenance_digest
+    assert "admin-token-secret-canary" not in repr(changed.provenance)
 
 
 def test_post_construction_configuration_tamper_fails_on_every_reader_boundary() -> None:

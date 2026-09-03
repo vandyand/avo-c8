@@ -52,6 +52,11 @@ from .github_main_base_reader import (
     GitHubMainBaseReaderCredentials,
     GitHubMainBaseReaderError,
 )
+from .github_read_provenance import (
+    GitHubReadProvenance,
+    GitHubReadRequest,
+    GitHubReadWithProvenance,
+)
 from .github_transport import GitHubJsonTransport
 from .main_exact_cas_github import (
     ExactCasTransport,
@@ -115,6 +120,9 @@ __all__ = [
     "GitHubPullRequestBinding",
     "GitHubPullRequestDiscovery",
     "GitHubRESTProvider",
+    "GitHubReadProvenance",
+    "GitHubReadRequest",
+    "GitHubReadWithProvenance",
     "GitHubRefObservation",
     "GitHubRollbackTopology",
     "MainExactCasDispatchVerifier",

@@ -6,13 +6,20 @@ from __future__ import annotations
 
 import copy
 import inspect
+import threading
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
 from avo_correlate.adapters.hosted_git.github import JsonBody, JsonObject, JsonValue
+from avo_correlate.adapters.hosted_git.github_read_provenance import (
+    GitHubReadRequest,
+    GitHubReadWithProvenance,
+)
 from avo_correlate.adapters.hosted_git.main_personal_exact_cas_hosted_configuration import (
     MainPersonalExactCasGitHubHostedConfigurationVerifier,
     MainPersonalExactCasHostedConfigurationUnverified,
@@ -421,6 +428,89 @@ def test_exact_configuration_returns_non_authoritative_diagnostic() -> None:
         == {"repository_ids": [REPOSITORY_ID], "permissions": {"contents": "read"}}
         for call in mint_calls
     )
+
+
+def test_authenticated_configuration_provenance_is_canonical_and_secret_free() -> None:
+    subject, _ = _subject()
+    observed = subject.verify_with_provenance()
+    provenance = observed.provenance
+    assert observed.result.main_commit == SHA
+    assert provenance.provenance_digest.startswith("sha256:")
+    assert len(provenance.configuration_pass_digests) == 2
+    assert provenance.configuration_pass_digests[0] == provenance.configuration_pass_digests[1]
+    assert provenance.requests[0] == GitHubReadRequest(
+        "GET", "/repos/vandyand/avo-c8/git/ref/heads/main", "owner_admin_token"
+    )
+    assert provenance.requests[4].method == "POST"
+    assert provenance.requests[4].credential_role == "app_jwt"
+    assert provenance.requests[-1].path.endswith("/git/ref/heads/main")
+    text = repr(provenance)
+    assert OWNER_ADMIN_TOKEN not in text
+    assert APP_TOKEN not in text
+    assert MINTED_INSTALLATION_TOKEN not in text
+
+    rotated = _responses()
+    for index, token in ((4, "rotated-first-secret"), (14, "rotated-second-secret")):
+        token_response = rotated[index]
+        assert not isinstance(token_response, BaseException)
+        token_body = token_response[1]
+        assert isinstance(token_body, dict)
+        token_body["token"] = token
+    rotated_subject, _ = _subject(rotated)
+    rotated_observed = rotated_subject.verify_with_provenance()
+    assert rotated_observed.provenance.provenance_digest == provenance.provenance_digest
+
+    assert (
+        replace(provenance, app_id=APP_ID + 1).provenance_digest
+        != provenance.provenance_digest
+    )
+
+
+def test_same_verifier_concurrent_reads_keep_operation_local_complete_traces() -> None:
+    class ConcurrentTransport:
+        def __init__(self) -> None:
+            self.local = threading.local()
+            self.barrier = threading.Barrier(2)
+
+        def __call__(
+            self, method: str, url: str, body: JsonBody | None, headers: Mapping[str, str]
+        ) -> tuple[int, JsonValue]:
+            del method, url, body, headers
+            responses = getattr(self.local, "responses", None)
+            if responses is None:
+                responses = _responses()
+                self.local.responses = responses
+            self.barrier.wait(timeout=5)
+            response = responses.pop(0)
+            assert not isinstance(response, BaseException)
+            return copy.deepcopy(response)
+
+    subject = MainPersonalExactCasGitHubHostedConfigurationVerifier(
+        owner_admin_token=OWNER_ADMIN_TOKEN,
+        app_jwt=APP_TOKEN,
+        trusted_clock=lambda: NOW,
+        transport=ConcurrentTransport(),
+    )
+
+    def verify_once(
+        _: int,
+    ) -> GitHubReadWithProvenance[
+        MainPersonalExactCasHostedConfigurationDiagnostic
+    ]:
+        return subject.verify_with_provenance()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(verify_once, (1, 2)))
+    assert len(results) == 2
+    first, second = results
+    assert first.result == second.result
+    assert first.provenance.provenance_digest == second.provenance.provenance_digest
+    assert len(first.provenance.requests) == len(second.provenance.requests) == 22
+    assert [item.credential_role for item in first.provenance.requests] == [
+        item.credential_role for item in second.provenance.requests
+    ]
+    assert first.provenance.requests[0].path.endswith("/git/ref/heads/main")
+    assert first.provenance.requests[-1].path.endswith("/git/ref/heads/main")
 
 
 def test_documented_app_shape_without_optional_flags_is_accepted() -> None:
