@@ -239,6 +239,7 @@ from avo_correlate.contracts.main_personal_exact_cas_candidate_observation impor
 from avo_correlate.contracts.main_personal_exact_cas_candidate_publication import (
     CandidatePublicationResponseClass,
     CandidatePublisherRequestTrace,
+    MainPersonalExactCasCandidatePublicationAuthorityRoot,
     MainPersonalExactCasCandidatePublicationDispatchStarted,
     MainPersonalExactCasCandidatePublicationIntent,
     MainPersonalExactCasCandidatePublicationReconciliation,
@@ -476,6 +477,7 @@ __all__ = [
     "MainPersonalExactCasCandidateObservation",
     "MainPersonalExactCasCandidateObservationRequest",
     "MainPersonalExactCasCandidatePolicyEvidence",
+    "MainPersonalExactCasCandidatePublicationAuthorityRoot",
     "MainPersonalExactCasCandidatePublicationDispatchStarted",
     "MainPersonalExactCasCandidatePublicationIntent",
     "MainPersonalExactCasCandidatePublicationReconciliation",

@@ -5,8 +5,15 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from avo_correlate.adapters.artifacts import MainPersonalExactCasCandidatePublicationJournal
+from avo_correlate.adapters.artifacts import (
+    MainPersonalExactCasCandidatePublicationAuthorityJournal,
+    MainPersonalExactCasCandidatePublicationAuthorityResolver,
+    MainPersonalExactCasCandidatePublicationJournal,
+)
 from avo_correlate.adapters.artifacts.durable_backend_gate import DurableBackendQualification
+from avo_correlate.adapters.artifacts.main_personal_exact_cas_candidate_publication_authority import (
+    CandidatePublicationAuthorityResolutionError,
+)
 from avo_correlate.adapters.hosted_git import (
     GitHubCandidatePublisherConfiguration,
     GitHubCandidatePublisherCredentials,
@@ -16,10 +23,13 @@ from avo_correlate.adapters.hosted_git.main_personal_exact_cas_candidate_publish
     _CandidateRefTransport,
 )
 from avo_correlate.contracts import (
+    ArtifactRef,
+    MainPersonalExactCasCandidatePublicationAuthorityRoot,
     MainPersonalExactCasCandidatePublicationDispatchStarted,
     MainPersonalExactCasCandidatePublicationIntent,
     candidate_publication_request_digest,
 )
+from avo_correlate.domain.canonical import canonical_bytes, canonical_digest
 from tests.unit.test_main_personal_exact_cas_controller_composition import _root
 
 
@@ -40,6 +50,78 @@ def _intent(configuration_digest: str = "sha256:" + "5" * 64):
         publisher_installation_id=88,
         publisher_identity="avo-c8-candidate-publisher-vandyand",
         intent_created_at=datetime.now(UTC),
+    )
+
+
+def _authority_root():
+    now = datetime.now(UTC) + timedelta(hours=1)
+
+    def ref(digest: str, role: str, media_type: str) -> ArtifactRef:
+        return ArtifactRef(
+            digest=digest,
+            size_bytes=1,
+            role=role,
+            media_type=media_type,
+            created_at=now,
+        )
+
+    composition = ref(
+        "sha256:" + "2" * 64,
+        "main-graduation-composition",
+        "application/vnd.avo.main-graduation-composition+json",
+    )
+    preparation = ref(
+        "sha256:" + "3" * 64,
+        "main-graduation-preparation-authorization",
+        "application/vnd.avo.main-graduation-preparation-authorization+json",
+    )
+    identity = ref(
+        "sha256:" + "4" * 64,
+        "main-personal-exact-cas-hosted-identity-root",
+        "application/vnd.avo.main-personal-exact-cas-hosted-identity-root+json",
+    )
+    policy = ref(
+        "sha256:" + "5" * 64,
+        "main-personal-exact-cas-hosted-configuration-diagnostic",
+        "application/vnd.avo.main-personal-exact-cas-hosted-configuration-diagnostic+json",
+    )
+    policy_digests = tuple("sha256:" + digit * 64 for digit in "bcdef")
+    policy_digest = canonical_digest(
+        {
+            "writer_ruleset": policy_digests[0],
+            "safety_ruleset": policy_digests[1],
+            "rollback_ruleset": policy_digests[2],
+            "candidate_creation_ruleset": policy_digests[3],
+            "candidate_immutable_ruleset": policy_digests[4],
+        }
+    )
+    return MainPersonalExactCasCandidatePublicationAuthorityRoot.build(
+        operation_id="sha256:" + "1" * 64,
+        repository_digest="sha256:" + "6" * 64,
+        candidate_ref="refs/heads/avo/candidate/" + "1" * 64,
+        base_commit="0" * 40,
+        base_tree="a" * 40,
+        candidate_commit="1" * 40,
+        candidate_tree="b" * 40,
+        candidate_parents=("0" * 40,),
+        lease_identity="lease-1",
+        lease_digest="sha256:" + "7" * 64,
+        lease_expires_at=now,
+        configuration_digest="sha256:" + "8" * 64,
+        publisher_app_id=77,
+        publisher_installation_id=88,
+        publisher_identity="avo-c8-candidate-publisher-vandyand",
+        owner_id=99,
+        composition_digest=composition.digest,
+        composition_artifact=composition,
+        preparation_authorization_digest=preparation.digest,
+        preparation_authorization_artifact=preparation,
+        hosted_identity_root_digest=identity.digest,
+        hosted_identity_root_artifact=identity,
+        hosted_identity_bundle_digest="sha256:" + "9" * 64,
+        candidate_policy_digest=policy_digest,
+        candidate_policy_artifact=policy,
+        candidate_policy_ruleset_digests=policy_digests,
     )
 
 
@@ -253,3 +335,76 @@ def test_controller_boundary_is_fail_closed_until_authority_root(
             credentials=GitHubCandidatePublisherCredentials("jwt-secret"),
             approved_composition=_root(),
         )
+
+
+def test_authority_root_binds_exact_refs_and_rejects_tampering() -> None:
+    root = _authority_root()
+    assert root.candidate_publication_authorized is True
+    assert root.is_authoritative is False
+    assert root.receipt_issued is False
+    assert root.mutation_performed is False
+    tampered = root.model_copy(update={"owner_id": root.owner_id + 1})
+    with pytest.raises(ValueError):
+        MainPersonalExactCasCandidatePublicationAuthorityRoot.model_validate_json(
+            canonical_bytes(tampered)
+        )
+
+
+def test_authority_resolver_rejects_protocol_or_dto_dependencies() -> None:
+    configuration = GitHubCandidatePublisherConfiguration(
+        app_id=77, installation_id=88, owner_id=99
+    )
+    with pytest.raises(TypeError):
+        MainPersonalExactCasCandidatePublicationAuthorityResolver(
+            composition_journal=object(),  # type: ignore[arg-type]
+            graduation_journal=object(),  # type: ignore[arg-type]
+            hosted_identity_journal=object(),  # type: ignore[arg-type]
+            configuration=configuration,
+        )
+
+
+def test_authority_journal_reopens_and_rejects_tampered_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    root = _authority_root()
+    resolver = object.__new__(MainPersonalExactCasCandidatePublicationAuthorityResolver)
+    current = [root]
+    monkeypatch.setattr(
+        MainPersonalExactCasCandidatePublicationAuthorityResolver,
+        "resolve",
+        lambda _self, _operation_id: current[0],
+    )
+    monkeypatch.setattr(
+        "avo_correlate.adapters.artifacts.main_personal_exact_cas_candidate_publication_authority.require_durable_backend",
+        lambda path: DurableBackendQualification(
+            root=path.resolve(),
+            qualified=True,
+            reason="test-qualified",
+            filesystem_type="ext4",
+            mount_id=1,
+            device="8:1",
+        ),
+    )
+    monkeypatch.setattr(
+        "avo_correlate.adapters.artifacts.main_personal_exact_cas_candidate_publication_authority._fsync_directory",
+        lambda _path: None,
+    )
+    journal = MainPersonalExactCasCandidatePublicationAuthorityJournal(
+        tmp_path, resolver=resolver
+    )
+    assert journal.bind(root.operation_id) == root
+    reopened = MainPersonalExactCasCandidatePublicationAuthorityJournal(
+        tmp_path, resolver=resolver
+    )
+    assert reopened.read(root.operation_id) == root
+    different = MainPersonalExactCasCandidatePublicationAuthorityRoot.build(
+        **(root.model_dump() | {"owner_id": root.owner_id + 1})
+    )
+    current[0] = different
+    with pytest.raises(CandidatePublicationAuthorityResolutionError):
+        reopened.read(root.operation_id)
+    current[0] = root
+    tampered = root.model_copy(update={"owner_id": root.owner_id + 1})
+    journal._path(root.operation_id).write_bytes(canonical_bytes(tampered))  # pyright: ignore[reportPrivateUsage]
+    with pytest.raises(CandidatePublicationAuthorityResolutionError):
+        reopened.read(root.operation_id)

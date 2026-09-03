@@ -197,6 +197,7 @@ from avo_correlate.contracts.main_personal_exact_cas_candidate_observation impor
 )
 from avo_correlate.contracts.main_personal_exact_cas_candidate_publication import (
     CandidatePublisherRequestTrace,
+    MainPersonalExactCasCandidatePublicationAuthorityRoot,
     MainPersonalExactCasCandidatePublicationDispatchStarted,
     MainPersonalExactCasCandidatePublicationIntent,
     MainPersonalExactCasCandidatePublicationReconciliation,
@@ -329,6 +330,7 @@ MODELS: tuple[type[StrictModel], ...] = (
     CandidatePublisherRequestTrace,
     MainPersonalExactCasCandidatePublicationIntent,
     MainPersonalExactCasCandidatePublicationDispatchStarted,
+    MainPersonalExactCasCandidatePublicationAuthorityRoot,
     MainPersonalExactCasCandidatePublicationResponseEvidence,
     MainPersonalExactCasCandidatePublicationReconciliation,
     SandboxExecutionSpec,

@@ -13,6 +13,7 @@ from typing import Any, Literal, Self, cast
 from pydantic import Field, StrictInt, field_validator, model_validator
 
 from avo_correlate.contracts.base import (
+    ArtifactRef,
     NonEmptyString,
     Sha256Digest,
     StrictModel,
@@ -299,9 +300,130 @@ class MainPersonalExactCasCandidatePublicationReconciliation(StrictModel):
         return cls.model_validate(payload, strict=True)
 
 
+class MainPersonalExactCasCandidatePublicationAuthorityRoot(StrictModel):
+    """Resolved, operation-specific authority for one candidate publication.
+
+    This root is only buildable by the resolver after it has reopened every
+    required journal.  It is intentionally separate from the generic
+    composition evidence and carries complete canonical references to each
+    preparation authorization and hosted policy identity leaves.
+    """
+
+    schema_version: Literal[1] = 1
+    operation_id: Sha256Digest
+    repository_digest: Sha256Digest
+    candidate_ref: NonEmptyString
+    base_commit: GitObject
+    base_tree: GitObject
+    candidate_commit: GitObject
+    candidate_tree: GitObject
+    candidate_parents: tuple[GitObject, ...]
+    lease_identity: NonEmptyString
+    lease_digest: Sha256Digest
+    lease_expires_at: datetime
+    configuration_digest: Sha256Digest
+    publisher_app_id: StrictInt = Field(gt=0)
+    publisher_installation_id: StrictInt = Field(gt=0)
+    publisher_identity: Literal["avo-c8-candidate-publisher-vandyand"]
+    owner_id: StrictInt = Field(gt=0)
+    composition_digest: Sha256Digest
+    composition_artifact: ArtifactRef
+    preparation_authorization_digest: Sha256Digest
+    preparation_authorization_artifact: ArtifactRef
+    hosted_identity_root_digest: Sha256Digest
+    hosted_identity_root_artifact: ArtifactRef
+    hosted_identity_bundle_digest: Sha256Digest
+    candidate_policy_digest: Sha256Digest
+    candidate_policy_artifact: ArtifactRef
+    candidate_policy_ruleset_digests: tuple[Sha256Digest, ...]
+    candidate_publication_authorized: Literal[True] = True
+    is_authoritative: Literal[False] = False
+    readiness_authorized: Literal[False] = False
+    is_terminal: Literal[False] = False
+    receipt_issued: Literal[False] = False
+    completion_claimed: Literal[False] = False
+    mutation_performed: Literal[False] = False
+    deploy_performed: Literal[False] = False
+    root_digest: Sha256Digest
+
+    _aware_lease_expires_at = field_validator("lease_expires_at")(require_aware_datetime)
+
+    @model_validator(mode="after")
+    def validate_root(self) -> Self:
+        expected_refs = (
+            (
+                self.composition_artifact,
+                "main-graduation-composition",
+                "application/vnd.avo.main-graduation-composition+json",
+            ),
+            (
+                self.preparation_authorization_artifact,
+                "main-graduation-preparation-authorization",
+                "application/vnd.avo.main-graduation-preparation-authorization+json",
+            ),
+            (
+                self.hosted_identity_root_artifact,
+                "main-personal-exact-cas-hosted-identity-root",
+                "application/vnd.avo.main-personal-exact-cas-hosted-identity-root+json",
+            ),
+            (
+                self.candidate_policy_artifact,
+                "main-personal-exact-cas-hosted-configuration-diagnostic",
+                "application/vnd.avo.main-personal-exact-cas-hosted-configuration-diagnostic+json",
+            ),
+        )
+        for reference, role, media_type in expected_refs:
+            if (
+                type(reference) is not ArtifactRef
+                or reference.role != role
+                or reference.media_type != media_type
+                or reference.size_bytes <= 0
+            ):
+                raise ValueError("authority root artifact reference is not exact")
+        if self.composition_artifact.digest != self.composition_digest:
+            raise ValueError("authority root composition artifact digest differs")
+        if self.preparation_authorization_artifact.digest != self.preparation_authorization_digest:
+            raise ValueError("authority root preparation artifact digest differs")
+        if self.hosted_identity_root_artifact.digest != self.hosted_identity_root_digest:
+            raise ValueError("authority root identity artifact digest differs")
+        if self.candidate_ref != candidate_ref_for_operation(self.operation_id):
+            raise ValueError("authority root candidate ref is not operation-derived")
+        if self.candidate_parents != (self.base_commit,):
+            raise ValueError("authority root candidate topology differs")
+        if len(self.candidate_policy_ruleset_digests) != 5 or len(
+            set(self.candidate_policy_ruleset_digests)
+        ) != 5:
+            raise ValueError("authority root requires five distinct policy rulesets")
+        if self.candidate_policy_digest != canonical_digest(
+            {
+                "writer_ruleset": self.candidate_policy_ruleset_digests[0],
+                "safety_ruleset": self.candidate_policy_ruleset_digests[1],
+                "rollback_ruleset": self.candidate_policy_ruleset_digests[2],
+                "candidate_creation_ruleset": self.candidate_policy_ruleset_digests[3],
+                "candidate_immutable_ruleset": self.candidate_policy_ruleset_digests[4],
+            }
+        ):
+            raise ValueError("authority root policy digest differs")
+        if self.root_digest != canonical_digest(
+            self.model_dump(exclude={"root_digest"}, mode="json")
+        ):
+            raise ValueError("authority root digest mismatch")
+        return self
+
+    @classmethod
+    def build(cls, **values: object) -> MainPersonalExactCasCandidatePublicationAuthorityRoot:
+        payload = dict(values, root_digest=_ZERO)
+        probe = cast(Any, cls).model_construct(**payload)
+        payload["root_digest"] = canonical_digest(
+            cast(StrictModel, probe).model_dump(exclude={"root_digest"}, mode="json")
+        )
+        return cls.model_validate(payload, strict=True)
+
+
 __all__ = [
     "CandidatePublicationResponseClass",
     "CandidatePublisherRequestTrace",
+    "MainPersonalExactCasCandidatePublicationAuthorityRoot",
     "MainPersonalExactCasCandidatePublicationDispatchStarted",
     "MainPersonalExactCasCandidatePublicationIntent",
     "MainPersonalExactCasCandidatePublicationReconciliation",
