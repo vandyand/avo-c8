@@ -45,6 +45,7 @@ class MainPersonalExactCasControllerComposition(StrictModel):
     source_plan_artifact: ArtifactRef
     source_package_digest: Sha256Digest
     source_package_artifact: ArtifactRef
+    source_package_binding_artifact: ArtifactRef
     source_composition_digest: Sha256Digest
     source_composition_artifact: ArtifactRef
     source_composition_proof_artifact: ArtifactRef
@@ -85,12 +86,51 @@ class MainPersonalExactCasControllerComposition(StrictModel):
     def validate_root(self) -> MainPersonalExactCasControllerComposition:
         if self.target_ref != "refs/heads/main" or self.operation_kind != "forward":
             raise ValueError("composition root target is not exact forward main")
-        if self.hosted_identity_root_artifact.role != (
-            "main-personal-exact-cas-hosted-identity-root"
-        ) or self.hosted_identity_root_artifact.media_type != (
-            "application/vnd.avo.main-personal-exact-cas-hosted-identity-root+json"
-        ):
-            raise ValueError("hosted identity root artifact is not exact")
+        references = (
+            (
+                self.hosted_identity_root_artifact,
+                "main-personal-exact-cas-hosted-identity-root",
+                "application/vnd.avo.main-personal-exact-cas-hosted-identity-root+json",
+            ),
+            (
+                self.activation_artifact,
+                "main-personal-exact-cas-activation",
+                "application/vnd.avo.main-personal-exact-cas-activation+json",
+            ),
+            (
+                self.source_plan_artifact,
+                "main-graduation-plan",
+                "application/vnd.avo.main-graduation-plan+json",
+            ),
+            (
+                self.source_package_artifact,
+                "integration-campaign-package",
+                "application/vnd.avo.integration-campaign+json",
+            ),
+            (
+                self.source_package_binding_artifact,
+                "main-graduation-source-package",
+                "application/vnd.avo.main-graduation-source-package+json",
+            ),
+            (
+                self.source_composition_artifact,
+                "main-graduation-composition",
+                "application/vnd.avo.main-graduation-composition+json",
+            ),
+            (
+                self.source_composition_proof_artifact,
+                "main-graduation-composition-proof",
+                "application/vnd.avo.main-graduation-composition-proof+json",
+            ),
+            (
+                self.lease_artifact,
+                "main-graduation-lease-evidence-record",
+                "application/vnd.avo.main-graduation-lease-evidence-record+json",
+            ),
+        )
+        for reference, role, media in references:
+            if reference.role != role or reference.media_type != media or reference.size_bytes <= 0:
+                raise ValueError("composition root child artifact is not exact")
         if not self.candidate_ref.startswith("refs/heads/avo/candidate/"):
             raise ValueError("composition root candidate ref is not forward-only")
         if self.candidate_parents != (self.base_commit,):

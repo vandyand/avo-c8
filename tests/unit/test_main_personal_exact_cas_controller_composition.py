@@ -65,6 +65,10 @@ def _root() -> MainPersonalExactCasControllerComposition:
         "source_package_artifact": _ref(
             "integration-campaign-package", "application/vnd.avo.integration-campaign+json"
         ),
+        "source_package_binding_artifact": _ref(
+            "main-graduation-source-package",
+            "application/vnd.avo.main-graduation-source-package+json",
+        ),
         "source_composition_digest": _DIGEST,
         "source_composition_artifact": _ref(
             "main-graduation-composition",
@@ -231,8 +235,9 @@ def test_journal_create_once_reuse_conflict_and_reuse_fsync_failure(
     journal = module.MainPersonalExactCasControllerCompositionJournal(tmp_path / "journal")
     root = _root()
     assert journal._publish(root.operation_id, root) == root
-    assert journal.read(root.operation_id) == root
-    with pytest.raises(module.MainPersonalExactCasControllerCompositionConflictError):
+    with pytest.raises(ValueError, match="operation identity"):
+        journal._publish("../escape", root)
+    with pytest.raises(ValueError, match="composition root"):
         forged_values = root.model_dump()
         forged_values["protocol_digest"] = "sha256:" + "f" * 64
         forged = MainPersonalExactCasControllerComposition.model_construct(**forged_values)

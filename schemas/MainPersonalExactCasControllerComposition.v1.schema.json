@@ -246,6 +246,9 @@
     "source_package_artifact": {
       "$ref": "#/$defs/ArtifactRef"
     },
+    "source_package_binding_artifact": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
     "source_package_digest": {
       "pattern": "^sha256:[0-9a-f]{64}$",
       "title": "Source Package Digest",
@@ -296,6 +299,7 @@
     "source_plan_artifact",
     "source_package_digest",
     "source_package_artifact",
+    "source_package_binding_artifact",
     "source_composition_digest",
     "source_composition_artifact",
     "source_composition_proof_artifact",

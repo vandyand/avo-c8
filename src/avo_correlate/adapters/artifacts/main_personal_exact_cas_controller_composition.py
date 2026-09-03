@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import stat
@@ -107,6 +108,8 @@ class MainPersonalExactCasControllerCompositionJournal:
         self._descriptor_mode = False
         self._root_fd: int | None = None
         self._index_fd: int | None = None
+        self._objects_parent_fd: int | None = None
+        self._objects_fd: int | None = None
         try:
             self._qualification = require_durable_backend(root)
             self._root = self._qualification.root
@@ -116,12 +119,23 @@ class MainPersonalExactCasControllerCompositionJournal:
             self._indexes = self._root / _INDEX_DIR
             self._indexes.mkdir(parents=True, exist_ok=True)
             self._qualify(self._indexes)
+            self._objects = self._root / "objects" / "sha256"
+            self._objects.mkdir(parents=True, exist_ok=True)
+            self._qualify(self._objects)
             self._descriptor_mode = self._supports_descriptors()
             if self._descriptor_mode:
                 self._root_fd = _open_directory(self._root)
                 self._index_fd = _open_dir_at(self._root_fd, _INDEX_DIR, create=False)
+                objects_parent = _open_dir_at(self._root_fd, "objects", create=False)
+                try:
+                    self._objects_parent_fd = os.dup(objects_parent)
+                    self._objects_fd = _open_dir_at(objects_parent, "sha256", create=False)
+                finally:
+                    os.close(objects_parent)
                 self._check_descriptor(self._root_fd)
                 self._check_descriptor(self._index_fd)
+                self._check_descriptor(self._objects_fd)
+                os.fsync(self._objects_parent_fd)
             _fsync_directory(self._root)
             self._max = max_record_bytes
         except BaseException:
@@ -144,7 +158,9 @@ class MainPersonalExactCasControllerCompositionJournal:
         if self._closed:
             return
         self._closed = True
-        values = (self._index_fd, self._root_fd)
+        values = (self._objects_fd, self._objects_parent_fd, self._index_fd, self._root_fd)
+        self._objects_fd = None
+        self._objects_parent_fd = None
         self._index_fd = None
         self._root_fd = None
         for descriptor in values:
@@ -266,6 +282,12 @@ class MainPersonalExactCasControllerCompositionJournal:
                 "application/vnd.avo.main-graduation-source-package+json",
                 len(canonical_bytes(stored_package)),
             )
+            package_binding_ref = self._record_reference(
+                stored_package,
+                "main-graduation-source-package",
+                "application/vnd.avo.main-graduation-source-package+json",
+                stored_package_ref.created_at,
+            )
             composition_result = source_journal.read_composition(activation.source_operation_id)
             proof_result = source_journal.read_composition_proof(activation.source_operation_id)
             if composition_result is None or proof_result is None:
@@ -295,6 +317,21 @@ class MainPersonalExactCasControllerCompositionJournal:
                 "application/vnd.avo.main-graduation-composition-proof+json",
                 len(canonical_bytes(proof)),
             )
+            for reference, record in (
+                (
+                    self._identity_ref(
+                        identity_root, identity_root.writer_diagnostic_artifact.created_at
+                    ),
+                    identity_root,
+                ),
+                (activation_ref, activation),
+                (plan_ref, plan),
+                (package_binding_ref, package),
+                (composition_ref, composition),
+                (proof_ref, proof),
+                (lease_ref, lease),
+            ):
+                self._persist_child(reference, canonical_bytes(record))
             if (
                 activation.source_operation_id != plan.operation_id
                 or activation.source_plan_digest != canonical_digest(plan)
@@ -335,6 +372,7 @@ class MainPersonalExactCasControllerCompositionJournal:
                 source_plan_artifact=plan_ref,
                 source_package_digest=activation.source_package_digest,
                 source_package_artifact=package_ref,
+                source_package_binding_artifact=package_binding_ref,
                 source_composition_digest=activation.source_composition_digest,
                 source_composition_artifact=composition_ref,
                 source_composition_proof_artifact=proof_ref,
@@ -416,6 +454,7 @@ class MainPersonalExactCasControllerCompositionJournal:
                 raise ValueError("root is not canonical")
             if value.operation_id != operation_id:
                 raise ValueError("root operation differs")
+            self._validate_child_closure(value)
             self._verify_directories()
             return value
         except FileNotFoundError:
@@ -428,6 +467,13 @@ class MainPersonalExactCasControllerCompositionJournal:
     def _publish(
         self, operation_id: str, root: MainPersonalExactCasControllerComposition
     ) -> MainPersonalExactCasControllerComposition:
+        if not _DIGEST.fullmatch(operation_id or "") or root.operation_id != operation_id:
+            raise ValueError("composition operation identity differs")
+        data = canonical_bytes(root)
+        checked = MainPersonalExactCasControllerComposition.model_validate_json(data)
+        if type(checked) is not MainPersonalExactCasControllerComposition or checked != root:
+            raise ValueError("composition root is not an exact canonical model")
+        root = checked
         data = canonical_bytes(root)
         if len(data) > min(self._max, _MAX_INDEX):
             raise ValueError("composition root is too large")
@@ -501,6 +547,143 @@ class MainPersonalExactCasControllerCompositionJournal:
         )
 
     @staticmethod
+    def _record_reference(record: Any, role: str, media: str, created_at: datetime) -> ArtifactRef:
+        data = canonical_bytes(record)
+        return ArtifactRef(
+            digest=canonical_digest(record),
+            size_bytes=len(data),
+            media_type=media,
+            role=role,
+            created_at=created_at,
+        )
+
+    def _persist_child(self, reference: ArtifactRef, data: bytes) -> None:
+        if (
+            hashlib.sha256(data).hexdigest() != reference.digest.removeprefix("sha256:")
+            or len(data) != reference.size_bytes
+        ):
+            raise ValueError("child bytes do not match artifact reference")
+        hex_digest = reference.digest.removeprefix("sha256:")
+        if self._descriptor_mode:
+            if self._objects_fd is None:
+                raise ValueError("objects descriptor unavailable")
+            fanout = _open_dir_at(self._objects_fd, hex_digest[:2], create=True)
+            try:
+                self._check_descriptor(fanout)
+                try:
+                    descriptor = os.open(
+                        hex_digest[2:],
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW,
+                        mode=0o600,
+                        dir_fd=fanout,
+                    )
+                    try:
+                        self._check_descriptor(descriptor, directory=False)
+                        _write_all(descriptor, data)
+                        os.fsync(descriptor)
+                    finally:
+                        os.close(descriptor)
+                except FileExistsError:
+                    existing = _read_bounded_fd_at(fanout, hex_digest[2:], self._max, sync=True)
+                    if existing != data:
+                        raise ValueError("child object conflicts") from None
+                os.fsync(fanout)
+                os.fsync(self._objects_fd)
+                if self._objects_parent_fd is None:
+                    raise ValueError("objects parent descriptor unavailable")
+                os.fsync(self._objects_parent_fd)
+            finally:
+                os.close(fanout)
+        else:
+            fanout = self._objects / hex_digest[:2]
+            fanout.mkdir(parents=True, exist_ok=True)
+            self._qualify(fanout)
+            path = fanout / hex_digest[2:]
+            try:
+                descriptor = os.open(
+                    path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW, mode=0o600
+                )
+                try:
+                    _write_all(descriptor, data)
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
+            except FileExistsError:
+                if _read_path(path, self._max, sync=True) != data:
+                    raise ValueError("child object conflicts") from None
+            _fsync_directory(fanout)
+            _fsync_directory(self._root / "objects")
+            _fsync_directory(self._root)
+
+    def _child_bytes(self, reference: ArtifactRef) -> bytes:
+        hex_digest = reference.digest.removeprefix("sha256:")
+        if self._descriptor_mode:
+            if self._objects_fd is None:
+                raise ValueError("objects descriptor unavailable")
+            fanout = _open_dir_at(self._objects_fd, hex_digest[:2], create=False)
+            try:
+                self._check_descriptor(fanout)
+                return _read_bounded_fd_at(fanout, hex_digest[2:], self._max)
+            finally:
+                os.close(fanout)
+        return _read_path(self._objects / hex_digest[:2] / hex_digest[2:], self._max)
+
+    def _validate_child_closure(self, root: MainPersonalExactCasControllerComposition) -> None:
+        records = (
+            (root.hosted_identity_root_artifact, MainPersonalExactCasHostedIdentityEvidenceRoot),
+            (root.activation_artifact, MainPersonalExactCasActivation),
+            (root.source_plan_artifact, MainGraduationPlan),
+            (root.source_package_binding_artifact, MainSourcePackageBinding),
+            (root.source_composition_artifact, MainCompositionArtifact),
+            (root.source_composition_proof_artifact, MainCompositionProof),
+            (root.lease_artifact, MainLeaseEvidenceRecord),
+        )
+        values: list[Any] = []
+        for reference, expected in records:
+            data = self._child_bytes(reference)
+            if len(data) != reference.size_bytes or hashlib.sha256(
+                data
+            ).hexdigest() != reference.digest.removeprefix("sha256:"):
+                raise ValueError("child object digest or size differs")
+            value = _exact(expected.model_validate_json(data), expected)
+            if canonical_bytes(value) != data:
+                raise ValueError("child object is not canonical")
+            values.append(value)
+        identity, activation, plan, package, composition, proof, lease = values
+        if (
+            hashlib.sha256(canonical_bytes(identity)).hexdigest()
+            != root.hosted_identity_root_artifact.digest.removeprefix("sha256:")
+            or identity.bundle_digest != root.hosted_identity_bundle_digest
+            or activation.activation_digest != root.activation_digest
+            or plan.operation_id != root.source_operation_id
+            or hashlib.sha256(canonical_bytes(plan)).hexdigest()
+            != root.source_plan_digest.removeprefix("sha256:")
+            or package.package_digest != root.source_package_digest
+            or composition.composition_digest != root.source_composition_digest
+            or plan.package != package
+            or proof.operation_id != composition.operation_id
+            or proof.source_operation_id != package.source_operation_id
+            or proof.package_digest != composition.package_digest
+            or proof.composition_digest != composition.composition_digest
+            or proof.base_commit != composition.base_commit
+            or proof.base_tree != composition.base_tree
+            or proof.candidate_commit != composition.candidate_commit
+            or proof.candidate_tree != composition.candidate_tree
+            or proof.candidate_parent_commit != composition.candidate_parent_commit
+            or proof.candidate_ref != composition.candidate_ref
+            or lease.lease_digest != root.lease_digest
+            or activation.base_commit != root.base_commit
+            or activation.base_tree != root.base_tree
+            or activation.candidate_commit != root.candidate_commit
+            or activation.candidate_tree != root.candidate_tree
+            or activation.candidate_ref != root.candidate_ref
+            or activation.candidate_parents != root.candidate_parents
+            or lease.owner != root.lease_identity
+            or lease.expires_at != root.lease_expires_at
+        ):
+            raise ValueError("child closure differs from composition root")
+
+    @staticmethod
     def _check_ref(ref: ArtifactRef, digest: str, role: str, media: str, size: int) -> None:
         if (
             ref.digest != digest
@@ -552,8 +735,14 @@ class MainPersonalExactCasControllerCompositionJournal:
         if not self._descriptor_mode:
             self._qualify(self._root)
             self._qualify(self._indexes)
+            self._qualify(self._objects)
             return
-        if self._root_fd is None or self._index_fd is None:
+        if (
+            self._root_fd is None
+            or self._index_fd is None
+            or self._objects_parent_fd is None
+            or self._objects_fd is None
+        ):
             raise ValueError("retained descriptors unavailable")
         current = _open_directory(self._root)
         current_index: int | None = None
@@ -568,6 +757,30 @@ class MainPersonalExactCasControllerCompositionJournal:
             self._check_descriptor(current)
             current_index = _open_dir_at(current, _INDEX_DIR, create=False)
             self._check_descriptor(current_index)
+            current_objects_parent = _open_dir_at(current, "objects", create=False)
+            try:
+                self._check_descriptor(current_objects_parent)
+                current_stat = os.fstat(current_objects_parent)
+                retained_stat = os.fstat(self._objects_parent_fd)
+                if (current_stat.st_dev, current_stat.st_ino) != (
+                    retained_stat.st_dev,
+                    retained_stat.st_ino,
+                ):
+                    raise ValueError("objects directory was recreated")
+                current_objects = _open_dir_at(current_objects_parent, "sha256", create=False)
+            finally:
+                os.close(current_objects_parent)
+            try:
+                self._check_descriptor(current_objects)
+                current_stat = os.fstat(current_objects)
+                retained_stat = os.fstat(self._objects_fd)
+                if (current_stat.st_dev, current_stat.st_ino) != (
+                    retained_stat.st_dev,
+                    retained_stat.st_ino,
+                ):
+                    raise ValueError("objects fanout was recreated")
+            finally:
+                os.close(current_objects)
             current_stat = os.fstat(current_index)
             retained_stat = os.fstat(self._index_fd)
             if (current_stat.st_dev, current_stat.st_ino) != (
