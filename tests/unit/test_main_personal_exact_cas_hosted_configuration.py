@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import copy
 import inspect
+import re
 import threading
 from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
@@ -1173,6 +1174,7 @@ def test_verifier_rejects_installation_and_selection_cardinality() -> None:
         else:
             payload = _as_object(value)
             payload["repositories"] = []
+            payload["total_count"] = 0
             responses[indexes[0]] = (status, payload)
         subject, _ = _subject(responses)
         with pytest.raises(MainPersonalExactCasHostedConfigurationUnverified):
@@ -1245,3 +1247,98 @@ def test_verifier_rejects_malformed_branch_protection_flag() -> None:
     subject, _ = _subject(responses)
     with pytest.raises(MainPersonalExactCasHostedConfigurationUnverified):
         subject.verify()
+
+
+def test_coverage_floor_uses_exact_two_decimal_precision() -> None:
+    project = Path("pyproject.toml").read_text(encoding="utf-8")
+    match = re.search(r"(?m)^precision\s*=\s*(\d+)\s*$", project)
+    assert match is not None and int(match.group(1)) >= 2
+
+
+def test_remaining_policy_classifier_rejections_are_exercised_directly() -> None:
+    subject, _ = _subject([])
+    cases: tuple[dict[str, JsonValue], ...] = ()
+    bad_rule = _writer()
+    bad_rule["rules"] = [{"type": 4}]
+    bad_safety_rule = _safety()
+    bad_safety_rule["rules"] = [
+        {"type": "deletion", "unexpected": False},
+        {"type": "non_fast_forward"},
+        {"type": "required_linear_history"},
+    ]
+    cases += (bad_rule, bad_safety_rule)
+    for detail_factory, field in (
+        (_writer, "name"),
+        (_safety, "name"),
+        (_rollback, "name"),
+        (_candidate_creation, "name"),
+        (_candidate_immutable, "name"),
+    ):
+        detail = detail_factory()
+        detail[field] = "wrong"
+        cases += (detail,)
+    for detail in cases:
+        with pytest.raises(ValueError):
+            subject._classify_rulesets([detail], APP_ID)
+    overlap = [
+        _writer(),
+        _safety(),
+        _rollback(),
+        _candidate_creation(),
+        _candidate_immutable(),
+    ]
+    overlap[-1]["id"] = overlap[0]["id"]
+    with pytest.raises(ValueError, match="overlap"):
+        subject._classify_rulesets(overlap, APP_ID)
+
+
+def test_candidate_identity_and_pagination_shape_guards_are_fail_closed() -> None:
+    for index, value in ((6, {**_candidate_app(), "id": CANDIDATE_APP_ID + 1}),):
+        responses = _responses()
+        responses[index] = (200, value)
+        subject, _ = _subject(responses)
+        with pytest.raises(MainPersonalExactCasHostedConfigurationUnverified):
+            subject.verify()
+    responses = _responses()
+    responses[7] = (200, {**_candidate_installation(), "id": CANDIDATE_INSTALLATION_ID + 1})
+    subject, _ = _subject(responses)
+    with pytest.raises(MainPersonalExactCasHostedConfigurationUnverified):
+        subject.verify()
+    responses = _responses()
+    responses[9] = (200, {"total_count": 0, "repositories": []})
+    subject, _ = _subject(responses)
+    with pytest.raises(MainPersonalExactCasHostedConfigurationUnverified):
+        subject.verify()
+
+
+def test_object_page_reader_rejects_malformed_page_and_bound() -> None:
+    subject, _ = _subject([(200, {"total_count": 1, "repositories": None})])
+    with pytest.raises(ValueError, match="malformed"):
+        subject._read_object_pages("/probe", "repositories", "token", [])
+    page: JsonValue = cast(
+        JsonValue, {"total_count": 1001, "repositories": [_repository()] * 100}
+    )
+    pages: list[tuple[int, JsonValue] | BaseException] = [(200, page) for _ in range(10)]
+    subject, _ = _subject(pages)
+    with pytest.raises(ValueError, match="bound"):
+        subject._read_object_pages("/probe", "repositories", "token", [])
+
+
+def test_summary_and_clock_guards_reject_untrusted_values() -> None:
+    subject, _ = _subject([])
+    detail = _writer()
+    detail["conditions"] = {"ref_name": {"include": ["refs/heads/main"], "exclude": []}}
+    detail["conditions"]["extra"] = []  # type: ignore[index]
+    with pytest.raises(ValueError, match="conditions"):
+        subject._verify_summary_detail(_summary(101, "AVO C8 main writer"), detail)
+    invalid_clock = MainPersonalExactCasGitHubHostedConfigurationVerifier(
+        owner_admin_token=OWNER_ADMIN_TOKEN,
+        app_jwt=APP_TOKEN,
+        candidate_publisher_app_jwt=CANDIDATE_APP_TOKEN,
+        candidate_publisher_app_id=CANDIDATE_APP_ID,
+        candidate_publisher_installation_id=CANDIDATE_INSTALLATION_ID,
+        trusted_clock=lambda: "untrusted",  # type: ignore[return-value]
+        transport=FakeTransport([]),
+    )
+    with pytest.raises(ValueError, match="trusted time"):
+        invalid_clock._now()

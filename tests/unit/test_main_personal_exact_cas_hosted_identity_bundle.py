@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import copy
+from collections.abc import Callable
 from dataclasses import FrozenInstanceError, fields, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
@@ -700,3 +701,189 @@ def test_identity_bundle_scalar_invariants_fail_closed(field: str) -> None:
     values["bundle_digest"] = "sha256:" + "0" * 64
     with pytest.raises(ValueError):
         identity_module.MainPersonalExactCasHostedIdentityEvidenceBundle(**values)
+
+
+def test_revalidation_rejects_reflective_writer_and_snapshot_state() -> None:
+    writer = _writer()
+    object.__setattr__(writer, "result", object())
+    with pytest.raises(TypeError, match="diagnostic"):
+        identity_module._revalidate_writer(writer)
+    writer = _writer()
+    object.__setattr__(writer.result, "unexpected", True)
+    with pytest.raises(ValueError, match="reflective"):
+        identity_module._revalidate_writer(writer)
+    writer = _writer()
+    object.__setattr__(writer.result, "__pydantic_extra__", {"unexpected": True})
+    with pytest.raises(ValueError, match="reflective"):
+        identity_module._revalidate_writer(writer)
+    writer = _writer()
+    object.__setattr__(writer.result, "writer_app_id", WRITER_APP_ID + 1)
+    with pytest.raises(ValueError, match="not valid"):
+        identity_module._revalidate_writer(writer)
+    observer, _ = _observer()
+    object.__setattr__(observer.result, "unexpected", True)
+    with pytest.raises(ValueError, match="reflective"):
+        identity_module._snapshot_payload(observer.result)
+
+
+def test_revalidation_rejects_malformed_canonical_provenance_payloads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observer, _ = _observer()
+    original: Callable[[object], dict[str, Any]] = identity_module._canonical_json
+
+    def non_list_requests(_value: object) -> dict[str, Any]:
+        return {"requests": "bad"}
+
+    monkeypatch.setattr(identity_module, "_canonical_json", non_list_requests)
+    with pytest.raises(ValueError, match="trace"):
+        identity_module._revalidate_provenance(observer.provenance)
+    def malformed_request(value: object) -> dict[str, Any]:
+        return {**original(value), "requests": [1]}
+
+    monkeypatch.setattr(identity_module, "_canonical_json", malformed_request)
+    with pytest.raises(ValueError, match="request"):
+        identity_module._revalidate_provenance(observer.provenance)
+    def non_list_endpoint(value: object) -> dict[str, Any]:
+        return {**original(value), "endpoint_observation_digests": "bad"}
+
+    monkeypatch.setattr(identity_module, "_canonical_json", non_list_endpoint)
+    with pytest.raises(ValueError, match="endpoint"):
+        identity_module._revalidate_provenance(observer.provenance)
+    def malformed_endpoint(value: object) -> dict[str, Any]:
+        return {**original(value), "endpoint_observation_digests": [["only"]]}
+
+    monkeypatch.setattr(identity_module, "_canonical_json", malformed_endpoint)
+    with pytest.raises(ValueError, match="endpoint"):
+        identity_module._revalidate_provenance(observer.provenance)
+
+
+def test_revalidation_requires_concrete_provenance_objects() -> None:
+    with pytest.raises(TypeError, match="provenance"):
+        identity_module._revalidate_provenance(object())  # type: ignore[arg-type]
+
+
+def test_revalidation_rejects_observer_configuration_and_identity_bindings() -> None:
+    observer, configuration = _observer()
+    with pytest.raises(TypeError):
+        identity_module._revalidate_observer(object(), configuration)  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        identity_module._revalidate_observer(observer, object())  # type: ignore[arg-type]
+    invalid_configuration = configuration
+    object.__setattr__(invalid_configuration, "configuration_digest", "sha256:" + "f" * 64)
+    with pytest.raises(ValueError, match="configuration"):
+        identity_module._revalidate_observer(observer, invalid_configuration)
+    observer, configuration = _observer()
+    mismatched = replace(observer.provenance, configuration_digest="sha256:" + "f" * 64)
+    with pytest.raises(ValueError, match="configuration differs"):
+        identity_module._revalidate_observer(
+            GitHubReadWithProvenance(observer.result, mismatched), configuration
+        )
+    observer, configuration = _observer()
+    mismatched = replace(
+        observer.provenance,
+        repository_digest="sha256:" + "f" * 64,
+    )
+    with pytest.raises(ValueError, match="repository"):
+        identity_module._revalidate_observer(
+            GitHubReadWithProvenance(observer.result, mismatched), configuration
+        )
+    observer, configuration = _observer()
+    mismatched = replace(observer.provenance, target_ref="refs/heads/main")
+    object.__setattr__(mismatched, "target_ref", "refs/heads/dev")
+    object.__setattr__(mismatched, "provenance_digest", canonical_digest(mismatched._payload()))
+    with pytest.raises(ValueError, match="target ref"):
+        identity_module._revalidate_observer(
+            GitHubReadWithProvenance(observer.result, mismatched), configuration
+        )
+    observer, configuration = _observer()
+    mismatched = replace(observer.provenance, commit_digest="sha256:" + "f" * 64)
+    with pytest.raises(ValueError, match="commit"):
+        identity_module._revalidate_observer(
+            GitHubReadWithProvenance(observer.result, mismatched), configuration
+        )
+
+
+def test_provenance_validators_cover_reader_trace_and_scope_bindings() -> None:
+    writer = _writer()
+    bad_reader = replace(writer.provenance, reader_identity="foreign-reader")
+    with pytest.raises(ValueError, match="reader identity"):
+        validate_hosted_configuration_provenance(writer.result, bad_reader)
+    short_trace = replace(writer.provenance, requests=writer.provenance.requests[:1])
+    with pytest.raises(ValueError, match="34-request"):
+        validate_hosted_configuration_provenance(writer.result, short_trace)
+    observer, configuration = _observer()
+    bad_reader = replace(observer.provenance, reader_identity="foreign-reader")
+    with pytest.raises(ValueError, match="reader identity"):
+        identity_module.validate_main_base_provenance(configuration, observer.result, bad_reader)
+    bad_ref = replace(observer.provenance, initial_ref_digest="sha256:" + "f" * 64)
+    with pytest.raises(ValueError, match="ref fence"):
+        identity_module.validate_main_base_provenance(configuration, observer.result, bad_ref)
+    bad_commit = replace(observer.provenance, commit_digest="sha256:" + "f" * 64)
+    with pytest.raises(ValueError, match="commit evidence"):
+        identity_module.validate_main_base_provenance(configuration, observer.result, bad_commit)
+    for field in ("requested_permissions", "observed_permissions"):
+        observer, configuration = _observer()
+        bad = observer.provenance
+        object.__setattr__(bad, field, ("contents:write",))
+        object.__setattr__(bad, "provenance_digest", canonical_digest(bad._payload()))
+        with pytest.raises(ValueError, match="permissions"):
+            MainPersonalExactCasHostedIdentityEvidenceBundle.build(
+                _writer(), GitHubReadWithProvenance(observer.result, bad), configuration
+            )
+
+
+def test_bundle_rechecks_writer_identity_and_observer_scope_after_revalidation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    writer = _writer()
+    observer, configuration = _observer()
+    original_revalidate = identity_module._revalidate_observer
+
+    def run_with(provenance: GitHubReadProvenance) -> None:
+        def fake_revalidate(
+            _value: object, _configuration: object
+        ) -> tuple[Any, GitHubReadProvenance, str, str]:
+            return (
+                observer.result,
+                provenance,
+                "sha256:" + "a" * 64,
+                configuration.configuration_digest,
+            )
+
+        monkeypatch.setattr(identity_module, "_revalidate_observer", fake_revalidate)
+        with pytest.raises(ValueError):
+            MainPersonalExactCasHostedIdentityEvidenceBundle.build(
+                writer, observer, configuration
+            )
+        monkeypatch.setattr(identity_module, "_revalidate_observer", original_revalidate)
+
+    bad_writer_identity = replace(observer.provenance, writer_app_id=WRITER_APP_ID + 1)
+    run_with(bad_writer_identity)
+    bad_requested = observer.provenance
+    object.__setattr__(bad_requested, "requested_permissions", ("contents:write",))
+    run_with(bad_requested)
+    bad_observed = observer.provenance
+    object.__setattr__(bad_observed, "observed_permissions", ("contents:write",))
+    run_with(bad_observed)
+
+
+def test_identity_bundle_distinctness_and_authority_flags_are_enforced() -> None:
+    bundle = _bundle()
+    for field in (
+        "writer_app_id",
+        "writer_installation_id",
+        "is_authoritative",
+        "is_terminal",
+        "readiness_authorized",
+        "deploy_performed",
+        "mutation_performed",
+        "receipt_issued",
+        "completion_claimed",
+    ):
+        object.__setattr__(bundle, field, bundle.observer_app_id if field == "writer_app_id" else (
+            bundle.observer_installation_id if field == "writer_installation_id" else True
+        ))
+        with pytest.raises(ValueError):
+            bundle.assert_valid()
+        object.__setattr__(bundle, field, getattr(_bundle(), field))
