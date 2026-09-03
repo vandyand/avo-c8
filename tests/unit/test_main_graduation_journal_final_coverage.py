@@ -27,7 +27,6 @@ from avo_correlate.adapters.artifacts.main_graduation_journal import (
     MainGraduationJournal,
     MainGraduationJournalError,
     MainGraduationRecordConflictError,
-    MainTargetSlotReadinessPolicy,
     _check_digest,
     _strict_pairs,
     _write_exclusive_durable,
@@ -103,23 +102,6 @@ def _target_fence_fixture(
         max_bytes=journal._max,  # pyright: ignore[reportPrivateUsage]
     )
     return fence, reference
-
-
-@pytest.mark.parametrize("attempts", [True, False, 0, -1, 1.5, "2"])
-def test_target_slot_readiness_policy_rejects_non_exact_attempts(attempts: Any) -> None:
-    with pytest.raises(ValueError, match="exact positive integer"):
-        MainTargetSlotReadinessPolicy(max_attempts=attempts)
-
-
-@pytest.mark.parametrize("delay", [True, False, -1, float("nan"), float("inf"), "0"])
-def test_target_slot_readiness_policy_rejects_nonfinite_delays(delay: Any) -> None:
-    with pytest.raises(ValueError, match="finite nonnegative"):
-        MainTargetSlotReadinessPolicy(delay_seconds=delay)
-
-
-def test_target_slot_readiness_policy_normalizes_integer_delay() -> None:
-    policy = MainTargetSlotReadinessPolicy(max_attempts=1, delay_seconds=1)
-    assert policy.delay_seconds == 1.0
 
 
 def test_exclusive_durable_handles_long_identity_path_without_replacing_winner(
@@ -937,7 +919,7 @@ def test_target_fence_open_claim_is_atomic_under_competing_writers(
             return
         original_writer(path, payload)
 
-    def release_after_empty_slot_observation(_delay: float) -> None:
+    def release_after_empty_slot_observation() -> None:
         if not first_writer_entered.wait(timeout=10):
             raise AssertionError("first target-fence writer did not enter publication")
         release_first_writer.set()
@@ -947,6 +929,11 @@ def test_target_fence_open_claim_is_atomic_under_competing_writers(
     monkeypatch.setattr(
         journal_module, "_write_exclusive_durable", ordered_exclusive_writer
     )
+    monkeypatch.setattr(
+        journal_module,
+        "_sleep_for_target_slot_readiness",
+        release_after_empty_slot_observation,
+    )
 
     for iteration in range(20):
         with writer_lock:
@@ -954,14 +941,7 @@ def test_target_fence_open_claim_is_atomic_under_competing_writers(
         first_writer_entered.clear()
         release_first_writer.clear()
         first_published.clear()
-        journal = MainGraduationJournal(
-            tmp_path / str(iteration),
-            target_slot_readiness_policy=MainTargetSlotReadinessPolicy(
-                max_attempts=3,
-                delay_seconds=0,
-                sleeper=release_after_empty_slot_observation,
-            ),
-        )
+        journal = MainGraduationJournal(tmp_path / str(iteration))
         fences = [make_fence(D), make_fence(D2)]
         references = [
             journal._store.put_bytes(  # pyright: ignore[reportPrivateUsage]
@@ -993,13 +973,11 @@ def test_target_fence_open_claim_is_atomic_under_competing_writers(
         assert sorted(outcomes) == ["claimed", "conflict"]
 
 
-def test_target_fence_empty_slot_times_out_fail_closed(tmp_path: Path) -> None:
-    journal = MainGraduationJournal(
-        tmp_path,
-        target_slot_readiness_policy=MainTargetSlotReadinessPolicy(
-            max_attempts=2, delay_seconds=0, sleeper=lambda _delay: None
-        ),
-    )
+def test_target_fence_empty_slot_times_out_fail_closed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(journal_module, "_sleep_for_target_slot_readiness", lambda: None)
+    journal = MainGraduationJournal(tmp_path)
     fence, reference = _target_fence_fixture(journal)
     journal._target_fence_path(fence).mkdir(parents=True)  # pyright: ignore[reportPrivateUsage]
 

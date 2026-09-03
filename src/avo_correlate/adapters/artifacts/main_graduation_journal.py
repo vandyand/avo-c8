@@ -6,13 +6,11 @@ import asyncio
 import errno
 import hashlib
 import json
-import math
 import os
 import re
 import stat
 import tempfile
 import time
-from collections.abc import Callable
 from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -104,34 +102,13 @@ class MainGraduationRecordConflictError(MainGraduationJournalError):
     """A create-once key was already bound to different canonical bytes."""
 
 
-@dataclass(frozen=True)
-class MainTargetSlotReadinessPolicy:
-    """Bounded policy for waiting on an in-flight target-slot publication."""
+_TARGET_SLOT_READINESS_ATTEMPTS = 8
+_TARGET_SLOT_READINESS_DELAY_SECONDS = 0.005
 
-    max_attempts: int = 8
-    delay_seconds: float = 0.005
-    sleeper: Callable[[float], None] = time.sleep
 
-    def __post_init__(self) -> None:
-        if type(self.max_attempts) is not int or self.max_attempts <= 0:
-            raise ValueError(
-                "target slot readiness max_attempts must be an exact positive integer"
-            )
-        if type(self.delay_seconds) not in (int, float):
-            raise ValueError(
-                "target slot readiness delay_seconds must be a finite nonnegative number"
-            )
-        normalized_delay = float(self.delay_seconds)
-        if not math.isfinite(normalized_delay) or normalized_delay < 0:
-            raise ValueError(
-                "target slot readiness delay_seconds must be a finite nonnegative number"
-            )
-        object.__setattr__(self, "delay_seconds", normalized_delay)
-
-    def wait(self, path: Path, attempt: int) -> None:
-        """Wait once before the next bounded readiness observation."""
-        del path, attempt
-        self.sleeper(self.delay_seconds)
+def _sleep_for_target_slot_readiness() -> None:
+    """Sleep one fixed, short interval before a readiness re-read."""
+    time.sleep(_TARGET_SLOT_READINESS_DELAY_SECONDS)
 
 
 _ExecutionOwner = tuple[int, int | None]
@@ -509,7 +486,6 @@ class MainGraduationJournal:
         base_reader: _MainBaseReader | None = None,
         phase_a_authority_verifier: MainPhaseAAuthorityVerifier | None = None,
         rollback_authority_verifier: MainRollbackAuthorityVerifier | None = None,
-        target_slot_readiness_policy: MainTargetSlotReadinessPolicy | None = None,
         max_record_bytes: int = 32 * 1024 * 1024,
     ) -> None:
         if max_record_bytes <= 0:
@@ -543,9 +519,6 @@ class MainGraduationJournal:
         self._composition_base_reader = base_reader
         self._phase_a_authority_verifier = phase_a_authority_verifier
         self._rollback_authority_verifier = rollback_authority_verifier
-        self._target_slot_readiness_policy = (
-            target_slot_readiness_policy or MainTargetSlotReadinessPolicy()
-        )
         # Cache validated models only for the current read traversal. A
         # ContextVar keeps independent threads/tasks from sharing a cache,
         # while nested reads in one traversal still share it.
@@ -1491,10 +1464,9 @@ class MainGraduationJournal:
 
         An empty directory is not evidence of a valid fence.  It is only
         given a bounded opportunity to acquire its readiness marker; after the
-        policy expires, the slot remains fail-closed as malformed.
+        fixed wait expires, the slot remains fail-closed as malformed.
         """
-        policy = self._target_slot_readiness_policy
-        for attempt in range(policy.max_attempts):
+        for attempt in range(_TARGET_SLOT_READINESS_ATTEMPTS):
             if self._target_slot_is_reparse(path):
                 raise MainGraduationJournalError(
                     "target mutation slot is a symlink or reparse point"
@@ -1520,11 +1492,11 @@ class MainGraduationJournal:
                 raise MainGraduationJournalError(
                     "target mutation slot cannot be inspected safely"
                 ) from exc
-            if attempt + 1 == policy.max_attempts:
+            if attempt + 1 == _TARGET_SLOT_READINESS_ATTEMPTS:
                 raise MainGraduationJournalError(
                     "target mutation slot readiness timed out"
                 )
-            policy.wait(path, attempt + 1)
+            _sleep_for_target_slot_readiness()
 
     def _cas_target_fence(
         self, record: MainUnresolvedMutationFence, reference: ArtifactRef
@@ -6342,5 +6314,4 @@ __all__ = [
     "MainGraduationRecordConflictError",
     "MainPhaseAAuthorityVerifier",
     "MainRollbackAuthorityVerifier",
-    "MainTargetSlotReadinessPolicy",
 ]

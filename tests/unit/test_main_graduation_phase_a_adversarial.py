@@ -24,7 +24,6 @@ from avo_correlate.adapters.artifacts.main_graduation_journal import (
     MainGraduationJournal,
     MainGraduationJournalError,
     MainGraduationRecordConflictError,
-    MainTargetSlotReadinessPolicy,
 )
 from avo_correlate.contracts import (
     MainClaimedReleaseTransitionReceipt,
@@ -577,16 +576,14 @@ def test_fence_and_reservation_empty_slot_race_never_reuses_slot(
                 return
         original_writer(path, payload)
 
-    def release_after_readiness(_delay: float) -> None:
+    def release_after_readiness() -> None:
         readiness_observed.set()
         release_publication.set()
         if not publication_finished.wait(timeout=10):
             raise AssertionError("target publication did not finish")
 
-    journal._target_slot_readiness_policy = MainTargetSlotReadinessPolicy(  # type: ignore[assignment]
-        max_attempts=3,
-        delay_seconds=0,
-        sleeper=release_after_readiness,
+    monkeypatch.setattr(
+        journal_module, "_sleep_for_target_slot_readiness", release_after_readiness
     )
     monkeypatch.setattr(journal_module, "_write_exclusive_durable", blocking_writer)
 
