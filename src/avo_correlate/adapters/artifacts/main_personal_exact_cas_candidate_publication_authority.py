@@ -423,11 +423,15 @@ class MainPersonalExactCasCandidatePublicationAuthorityJournal:
                 os.close(operation_descriptor)
                 raise
             flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL if write else os.O_RDONLY
+            descriptor = -1
             try:
                 descriptor = os.open(
                     "root.json", flags | _NOFOLLOW, 0o600, dir_fd=operation_descriptor
                 )
+                _compare_leaf_mount(operation_descriptor, descriptor)
             except BaseException:
+                if descriptor >= 0:
+                    os.close(descriptor)
                 os.close(operation_descriptor)
                 raise
             return descriptor, operation_descriptor, path
@@ -550,6 +554,10 @@ def _compare_directory_mount(expected: int, current: int) -> None:
         raise CandidatePublicationAuthorityResolutionError()
     if _fd_mount_id(expected) != _fd_mount_id(current):
         raise CandidatePublicationAuthorityResolutionError()
+
+
+def _compare_leaf_mount(operation_directory: int, leaf: int) -> None:
+    _compare_directory_mount(operation_directory, leaf)
 
 
 def _fd_mount_id(descriptor: int) -> int:

@@ -474,7 +474,7 @@ def test_authority_journal_reopens_and_rejects_tampered_root(
         reopened.read(root.operation_id)
 
 
-def test_operation_directory_mount_and_device_fence(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_operation_and_leaf_mount_device_fences(monkeypatch: pytest.MonkeyPatch) -> None:
     from avo_correlate.adapters.artifacts import (
         main_personal_exact_cas_candidate_publication_authority as authority_module,
     )
@@ -495,3 +495,11 @@ def test_operation_directory_mount_and_device_fence(monkeypatch: pytest.MonkeyPa
     mounts[2] = 12
     with pytest.raises(CandidatePublicationAuthorityResolutionError):
         authority_module._compare_directory_mount(1, 2)
+    mounts[2] = 11
+    devices[2] = Stat(8)
+    with pytest.raises(CandidatePublicationAuthorityResolutionError):
+        authority_module._compare_leaf_mount(1, 2)
+    devices[2] = Stat(7)
+    mounts[2] = 12
+    with pytest.raises(CandidatePublicationAuthorityResolutionError):
+        authority_module._compare_leaf_mount(1, 2)
