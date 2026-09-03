@@ -34,10 +34,14 @@ SHA = "a" * 40
 OWNER_ID = 77
 APP_ID = 88
 INSTALLATION_ID = 99
+CANDIDATE_APP_ID = 100
+CANDIDATE_INSTALLATION_ID = 111
 REPOSITORY_ID = 1_354_880_741
 OWNER_ADMIN_TOKEN = "owner-admin-token-secret"
 APP_TOKEN = "app-jwt-secret"
+CANDIDATE_APP_TOKEN = "candidate-app-jwt-secret"
 MINTED_INSTALLATION_TOKEN = "minted-installation-token-secret"
+CANDIDATE_MINTED_INSTALLATION_TOKEN = "candidate-minted-installation-token-secret"
 
 
 class FakeTransport:
@@ -96,6 +100,20 @@ def _app() -> dict[str, JsonValue]:
     }
 
 
+def _candidate_app() -> dict[str, JsonValue]:
+    value = _app()
+    value.update(
+        {
+            "id": CANDIDATE_APP_ID,
+            "slug": "avo-c8-candidate-publisher-vandyand",
+            "name": "avo-c8-candidate-publisher-vandyand",
+            "public": False,
+            "webhook_active": False,
+        }
+    )
+    return value
+
+
 def _installation() -> dict[str, JsonValue]:
     return {
         "id": INSTALLATION_ID,
@@ -112,6 +130,18 @@ def _installation() -> dict[str, JsonValue]:
     }
 
 
+def _candidate_installation() -> dict[str, JsonValue]:
+    value = _installation()
+    value.update(
+        {
+            "id": CANDIDATE_INSTALLATION_ID,
+            "app_id": CANDIDATE_APP_ID,
+            "app_slug": "avo-c8-candidate-publisher-vandyand",
+        }
+    )
+    return value
+
+
 def _minted_token() -> dict[str, JsonValue]:
     return {
         "token": MINTED_INSTALLATION_TOKEN,
@@ -122,14 +152,19 @@ def _minted_token() -> dict[str, JsonValue]:
     }
 
 
+def _candidate_minted_token() -> dict[str, JsonValue]:
+    value = _minted_token()
+    value["token"] = CANDIDATE_MINTED_INSTALLATION_TOKEN
+    return value
+
+
 def _summary(ident: int, name: str) -> dict[str, JsonValue]:
     return {
         "id": ident,
         "name": name,
-        "target": "branch",
         "source_type": "Repository",
         "source": "vandyand/avo-c8",
-        "enforcement": "active",
+        "enforcement": "enabled",
         "node_id": f"RRS_{ident}",
         "_links": {
             "self": {"href": f"https://api.github.com/repos/vandyand/avo-c8/rulesets/{ident}"},
@@ -210,6 +245,26 @@ def _rollback() -> dict[str, JsonValue]:
     )
 
 
+def _candidate_creation() -> dict[str, JsonValue]:
+    return _detail(
+        404,
+        "AVO C8 candidate creation",
+        ["creation"],
+        [{"actor_id": CANDIDATE_APP_ID, "actor_type": "Integration", "bypass_mode": "always"}],
+        target_ref="refs/heads/avo/candidate/*",
+    )
+
+
+def _candidate_immutable() -> dict[str, JsonValue]:
+    return _detail(
+        505,
+        "AVO C8 candidate immutable",
+        ["update", "deletion", "non_fast_forward"],
+        [],
+        target_ref="refs/heads/avo/candidate/*",
+    )
+
+
 def _protection() -> dict[str, JsonValue]:
     return {
         "enforce_admins": {"enabled": True},
@@ -226,17 +281,25 @@ def _pass() -> list[tuple[int, JsonValue]]:
         (200, [_installation()]),
         (201, _minted_token()),
         (200, {"total_count": 1, "repositories": [_repository()]}),
+        (200, _candidate_app()),
+        (200, _candidate_installation()),
+        (201, _candidate_minted_token()),
+        (200, {"total_count": 1, "repositories": [_repository()]}),
         (
             200,
             [
                 _summary(101, "AVO C8 main writer"),
                 _summary(202, "AVO C8 main safety"),
                 _summary(303, "AVO C8 rollback namespace"),
+                _summary(404, "AVO C8 candidate creation"),
+                _summary(505, "AVO C8 candidate immutable"),
             ],
         ),
         (200, _writer()),
         (200, _safety()),
         (200, _rollback()),
+        (200, _candidate_creation()),
+        (200, _candidate_immutable()),
         (200, _protection()),
     ]
 
@@ -251,11 +314,14 @@ def _subject(
     finish: datetime | None = None,
 ) -> tuple[MainPersonalExactCasGitHubHostedConfigurationVerifier, FakeTransport]:
     transport = FakeTransport(_responses() if responses is None else responses)
-    times = iter((NOW, NOW, NOW, finish or NOW + timedelta(seconds=1)))
+    times = iter((NOW, NOW, NOW, NOW, NOW, finish or NOW + timedelta(seconds=1)))
     return (
         MainPersonalExactCasGitHubHostedConfigurationVerifier(
             owner_admin_token=OWNER_ADMIN_TOKEN,
             app_jwt=APP_TOKEN,
+            candidate_publisher_app_jwt=CANDIDATE_APP_TOKEN,
+            candidate_publisher_app_id=CANDIDATE_APP_ID,
+            candidate_publisher_installation_id=CANDIDATE_INSTALLATION_ID,
             trusted_clock=lambda: next(times),
             transport=transport,
         ),
@@ -305,7 +371,7 @@ def _mutate(value: JsonValue, kind: str) -> None:
         if kind == "summary-target":
             summary["target"] = "tag"
         elif kind == "summary-active":
-            summary["enforcement"] = "enabled"
+            summary["enforcement"] = "disabled"
         elif kind == "summary-name-mismatch":
             summary["name"] = "renamed only in summary"
         else:
@@ -326,6 +392,17 @@ def _mutate(value: JsonValue, kind: str) -> None:
         obj["events"] = ["push"]
     elif kind == "wrong-app":
         obj["slug"] = "foreign-app"
+    elif kind == "candidate-private":
+        obj["public"] = True
+    elif kind == "candidate-webhook":
+        obj["webhook_active"] = True
+    elif kind == "candidate-optional-absent":
+        obj.pop("public", None)
+        obj.pop("webhook_active", None)
+    elif kind == "candidate-install-wrong-app":
+        obj["app_id"] = CANDIDATE_APP_ID + 1
+    elif kind == "candidate-install-all-repositories":
+        obj["repository_selection"] = "all"
     elif kind == "wrong-selected-repository":
         repository = _as_object(_as_list(obj["repositories"])[0])
         repository["id"] = 123
@@ -358,6 +435,20 @@ def _mutate(value: JsonValue, kind: str) -> None:
     elif kind == "rollback-wrong-bypass":
         actor = _as_object(_as_list(obj["bypass_actors"])[0])
         actor["actor_id"] = APP_ID + 1
+    elif kind == "candidate-creation-wrong-bypass":
+        actor = _as_object(_as_list(obj["bypass_actors"])[0])
+        actor["actor_id"] = CANDIDATE_APP_ID + 1
+    elif kind == "candidate-creation-missing-bypass":
+        obj["bypass_actors"] = None
+    elif kind == "candidate-immutable-bypass":
+        obj["bypass_actors"] = [
+            {"actor_id": CANDIDATE_APP_ID, "actor_type": "Integration", "bypass_mode": "always"}
+        ]
+    elif kind == "candidate-immutable-missing-bypass":
+        obj.pop("bypass_actors", None)
+    elif kind == "candidate-broad-ref-condition":
+        conditions = _as_object(obj["conditions"])
+        _as_object(conditions["ref_name"])["include"] = ["refs/heads/avo/*"]
     elif kind == "broad-ref-condition":
         conditions = _as_object(obj["conditions"])
         _as_object(conditions["ref_name"])["include"] = ["refs/heads/*"]
@@ -388,12 +479,18 @@ def test_exact_configuration_returns_non_authoritative_diagnostic() -> None:
     assert result.writer_installation_id == INSTALLATION_ID
     assert result.rollback_ruleset_id == 303
     assert result.rollback_ruleset_name == "AVO C8 rollback namespace"
+    assert result.candidate_creation_ruleset_id == 404
+    assert result.candidate_immutable_ruleset_id == 505
+    assert result.candidate_publisher_app_id == CANDIDATE_APP_ID
+    assert result.candidate_publisher_installation_id == CANDIDATE_INSTALLATION_ID
     assert result.rollback_ruleset_digest.startswith("sha256:")
     assert result.protection_ruleset_digest == canonical_digest(
         {
             "writer_ruleset": result.writer_ruleset_digest,
             "safety_ruleset": result.safety_ruleset_digest,
             "rollback_ruleset": result.rollback_ruleset_digest,
+            "candidate_creation_ruleset": result.candidate_creation_ruleset_digest,
+            "candidate_immutable_ruleset": result.candidate_immutable_ruleset_digest,
         }
     )
     assert result.selected_repository_ids == (REPOSITORY_ID,)
@@ -401,17 +498,23 @@ def test_exact_configuration_returns_non_authoritative_diagnostic() -> None:
     assert result.is_authoritative is False
     assert result.readiness_authorized is False
     assert result.deploy_performed is False
-    assert len(transport.calls) == 22
+    assert len(transport.calls) == 34
     expected_pass = [
         "https://api.github.com/repos/vandyand/avo-c8",
         "https://api.github.com/app",
         "https://api.github.com/app/installations?per_page=100&page=1",
         "https://api.github.com/app/installations/99/access_tokens",
         "https://api.github.com/installation/repositories?per_page=100&page=1",
+        "https://api.github.com/app",
+        "https://api.github.com/app/installations/111",
+        "https://api.github.com/app/installations/111/access_tokens",
+        "https://api.github.com/installation/repositories?per_page=100&page=1",
         "https://api.github.com/repos/vandyand/avo-c8/rulesets?per_page=100&page=1",
         "https://api.github.com/repos/vandyand/avo-c8/rulesets/101",
         "https://api.github.com/repos/vandyand/avo-c8/rulesets/202",
         "https://api.github.com/repos/vandyand/avo-c8/rulesets/303",
+        "https://api.github.com/repos/vandyand/avo-c8/rulesets/404",
+        "https://api.github.com/repos/vandyand/avo-c8/rulesets/505",
         "https://api.github.com/repos/vandyand/avo-c8/branches/main/protection",
     ]
     assert [call[1] for call in transport.calls] == [
@@ -420,15 +523,24 @@ def test_exact_configuration_returns_non_authoritative_diagnostic() -> None:
         *expected_pass,
         "https://api.github.com/repos/vandyand/avo-c8/git/ref/heads/main",
     ]
-    for call in transport.calls:
+    for call_index, call in enumerate(transport.calls):
         if (
             call[1] == "https://api.github.com/app"
             or "/app/installations?" in call[1]
+            or "/app/installations/" in call[1]
             or call[1].endswith("/access_tokens")
         ):
-            expected_token = APP_TOKEN
+            expected_token = (
+                CANDIDATE_APP_TOKEN
+                    if 5 <= (call_index - 1) % 16 <= 7
+                else APP_TOKEN
+            )
         elif "/installation/repositories?" in call[1]:
-            expected_token = MINTED_INSTALLATION_TOKEN
+            expected_token = (
+                CANDIDATE_MINTED_INSTALLATION_TOKEN
+                if (call_index - 1) % 16 == 8
+                else MINTED_INSTALLATION_TOKEN
+            )
         else:
             expected_token = OWNER_ADMIN_TOKEN
         assert call[3]["Authorization"] == f"Bearer {expected_token}"
@@ -461,7 +573,7 @@ def test_authenticated_configuration_provenance_is_canonical_and_secret_free() -
     assert MINTED_INSTALLATION_TOKEN not in text
 
     rotated = _responses()
-    for index, token in ((4, "rotated-first-secret"), (14, "rotated-second-secret")):
+    for index, token in ((4, "rotated-first-secret"), (20, "rotated-second-secret")):
         token_response = rotated[index]
         assert not isinstance(token_response, BaseException)
         token_body = token_response[1]
@@ -499,6 +611,9 @@ def test_same_verifier_concurrent_reads_keep_operation_local_complete_traces() -
     subject = MainPersonalExactCasGitHubHostedConfigurationVerifier(
         owner_admin_token=OWNER_ADMIN_TOKEN,
         app_jwt=APP_TOKEN,
+        candidate_publisher_app_jwt=CANDIDATE_APP_TOKEN,
+        candidate_publisher_app_id=CANDIDATE_APP_ID,
+        candidate_publisher_installation_id=CANDIDATE_INSTALLATION_ID,
         trusted_clock=lambda: NOW,
         transport=ConcurrentTransport(),
     )
@@ -516,7 +631,7 @@ def test_same_verifier_concurrent_reads_keep_operation_local_complete_traces() -
     first, second = results
     assert first.result == second.result
     assert first.provenance.provenance_digest == second.provenance.provenance_digest
-    assert len(first.provenance.requests) == len(second.provenance.requests) == 22
+    assert len(first.provenance.requests) == len(second.provenance.requests) == 34
     assert [item.credential_role for item in first.provenance.requests] == [
         item.credential_role for item in second.provenance.requests
     ]
@@ -531,41 +646,71 @@ def test_documented_app_shape_without_optional_flags_is_accepted() -> None:
     assert subject.verify().verification_status == "matched"
 
 
+def test_live_ruleset_summary_shape_with_branch_and_active_is_accepted() -> None:
+    responses = _responses()
+    for index in (10, 26):
+        response = responses[index]
+        assert not isinstance(response, BaseException)
+        status, value = response
+        summaries = _as_list(value)
+        for item in summaries:
+            summary = _as_object(item)
+            summary["target"] = "branch"
+            summary["enforcement"] = "active"
+        responses[index] = (status, value)
+    subject, _ = _subject(responses)
+    assert subject.verify().verification_status == "matched"
+
+
+def test_candidate_app_optional_privacy_fields_may_be_absent() -> None:
+    subject, _ = _subject(_mutated((6, 22), "candidate-optional-absent"))
+    assert subject.verify().verification_status == "matched"
+
+
 @pytest.mark.parametrize(
     ("indexes", "mutation"),
     [
-        ((1, 11), "private-repository"),
-        ((1, 11), "fork-repository"),
-        ((1, 11), "wrong-repository-id"),
-        ((1, 11), "organization-owner"),
-        ((2, 12), "extra-app-permission"),
-        ((2, 12), "app-event"),
-        ((2, 12), "wrong-app"),
-        ((3, 13), "wrong-installation-app"),
-        ((3, 13), "all-repositories"),
-        ((3, 13), "suspended-installation"),
-        ((5, 15), "wrong-selected-repository"),
-        ((6, 16), "summary-target"),
-        ((6, 16), "summary-active"),
-        ((6, 16), "summary-name-mismatch"),
-        ((6, 16), "summary-source-mismatch"),
-        ((7, 17), "non-always-bypass"),
-        ((7, 17), "missing-writer-bypass"),
-        ((7, 17), "update-fetch-and-merge"),
-        ((7, 17), "extra-update-parameter"),
-        ((8, 18), "safety-bypass"),
-        ((8, 18), "missing-safety-rule"),
-        ((9, 19), "missing-rollback-rule"),
-        ((9, 19), "rollback-broad-ref-condition"),
-        ((9, 19), "rollback-wrong-bypass"),
-        ((7, 17), "broad-ref-condition"),
-        ((7, 17), "detail-tag-target"),
-        ((7, 17), "detail-evaluate"),
-        ((10, 20), "admins-not-enforced"),
-        ((10, 20), "nonlinear-history"),
-        ((10, 20), "force-push"),
-        ((10, 20), "deletion"),
-        ((10, 20), "required-status"),
+        ((1, 17), "private-repository"),
+        ((1, 17), "fork-repository"),
+        ((1, 17), "wrong-repository-id"),
+        ((1, 17), "organization-owner"),
+        ((2, 18), "extra-app-permission"),
+        ((2, 18), "app-event"),
+        ((2, 18), "wrong-app"),
+        ((3, 19), "wrong-installation-app"),
+        ((3, 19), "all-repositories"),
+        ((3, 19), "suspended-installation"),
+        ((5, 21), "wrong-selected-repository"),
+        ((10, 26), "summary-target"),
+        ((10, 26), "summary-active"),
+        ((10, 26), "summary-name-mismatch"),
+        ((10, 26), "summary-source-mismatch"),
+        ((11, 27), "non-always-bypass"),
+        ((11, 27), "missing-writer-bypass"),
+        ((11, 27), "update-fetch-and-merge"),
+        ((11, 27), "extra-update-parameter"),
+        ((12, 28), "safety-bypass"),
+        ((12, 28), "missing-safety-rule"),
+        ((13, 29), "missing-rollback-rule"),
+        ((13, 29), "rollback-broad-ref-condition"),
+        ((13, 29), "rollback-wrong-bypass"),
+        ((14, 30), "candidate-creation-wrong-bypass"),
+        ((14, 30), "candidate-creation-missing-bypass"),
+        ((15, 31), "candidate-immutable-bypass"),
+        ((15, 31), "candidate-immutable-missing-bypass"),
+        ((14, 30), "candidate-broad-ref-condition"),
+        ((11, 27), "broad-ref-condition"),
+        ((11, 27), "detail-tag-target"),
+        ((11, 27), "detail-evaluate"),
+        ((16, 32), "admins-not-enforced"),
+        ((16, 32), "nonlinear-history"),
+        ((16, 32), "force-push"),
+        ((16, 32), "deletion"),
+        ((16, 32), "required-status"),
+        ((6, 22), "candidate-private"),
+        ((6, 22), "candidate-webhook"),
+        ((7, 23), "candidate-install-wrong-app"),
+        ((7, 23), "candidate-install-all-repositories"),
     ],
     ids=[
         "private-repository",
@@ -592,6 +737,11 @@ def test_documented_app_shape_without_optional_flags_is_accepted() -> None:
         "missing-rollback-rule",
         "rollback-broad-ref-condition",
         "rollback-wrong-bypass",
+        "candidate-creation-wrong-bypass",
+        "candidate-creation-missing-bypass",
+        "candidate-immutable-bypass",
+        "candidate-immutable-missing-bypass",
+        "candidate-broad-ref-condition",
         "broad-ref-condition",
         "detail-tag-target",
         "detail-evaluate",
@@ -600,6 +750,10 @@ def test_documented_app_shape_without_optional_flags_is_accepted() -> None:
         "force-push",
         "deletion",
         "required-status",
+        "candidate-private",
+        "candidate-webhook",
+        "candidate-install-wrong-app",
+        "candidate-install-all-repositories",
     ],
 )
 def test_malformed_or_unsafe_configuration_fails_closed(
@@ -627,7 +781,7 @@ def test_configuration_pass_drift_fails_closed() -> None:
 
 def test_explicit_false_update_parameter_is_also_accepted() -> None:
     responses = _responses()
-    for index in (7, 9, 17, 19):
+    for index in (11, 13, 27, 29):
         response = responses[index]
         assert not isinstance(response, BaseException)
         status, value = response
@@ -663,7 +817,7 @@ def test_documented_installation_and_repository_page_shapes_are_enforced() -> No
 
 def test_absent_rulesets_and_stale_observation_fail_closed() -> None:
     absent = _responses()
-    absent[6] = (200, [])
+    absent[10] = (200, [])
     subject, _ = _subject(absent)
     with pytest.raises(MainPersonalExactCasHostedConfigurationUnverified):
         subject.verify()
@@ -707,13 +861,17 @@ def test_pagination_is_bounded_when_completion_is_ambiguous() -> None:
         (200, _app()),
         (200, [_installation()]),
         (201, _minted_token()),
-        (200, {"total_count": 1, "repositories": [_repository()]}),
+            (200, {"total_count": 1, "repositories": [_repository()]}),
+            (200, _candidate_app()),
+            (200, _candidate_installation()),
+            (201, _candidate_minted_token()),
+            (200, {"total_count": 1, "repositories": [_repository()]}),
         *[(200, full_page) for _ in range(10)],
     ]
     subject, transport = _subject(responses)
     with pytest.raises(MainPersonalExactCasHostedConfigurationUnverified):
         subject.verify()
-    assert len(transport.calls) == 16
+    assert len(transport.calls) == 20
     assert transport.calls[-1][1].endswith("rulesets?per_page=100&page=10")
 
 
@@ -721,6 +879,23 @@ def test_observation_contract_rejects_identity_forgery() -> None:
     subject, _ = _subject()
     result = subject.verify()
     forged = result.model_copy(update={"writer_app_id": APP_ID + 1})
+    with pytest.raises(ValueError):
+        MainPersonalExactCasHostedConfigurationDiagnostic.model_validate(
+            forged.model_dump(mode="json")
+        )
+
+
+@pytest.mark.parametrize(
+    "field", [
+        "candidate_publisher_app_slug",
+        "candidate_publisher_app_name",
+        "candidate_publisher_app_homepage",
+    ],
+)
+def test_candidate_publisher_identity_literals_reject_dto_tampering(field: str) -> None:
+    subject, _ = _subject()
+    result = subject.verify()
+    forged = result.model_copy(update={field: "foreign-candidate-publisher"})
     with pytest.raises(ValueError):
         MainPersonalExactCasHostedConfigurationDiagnostic.model_validate(
             forged.model_dump(mode="json")
@@ -748,9 +923,11 @@ def test_public_verifier_surface_is_read_only_and_non_authoritative() -> None:
 
 
 def test_installation_token_is_not_a_constructor_input() -> None:
-    assert "installation_token" not in inspect.signature(
-        MainPersonalExactCasGitHubHostedConfigurationVerifier
-    ).parameters
+    parameters = inspect.signature(MainPersonalExactCasGitHubHostedConfigurationVerifier).parameters
+    assert "installation_token" not in parameters
+    assert "candidate_publisher_app_slug" not in parameters
+    assert "candidate_publisher_app_name" not in parameters
+    assert "candidate_publisher_app_homepage" not in parameters
 
 
 @pytest.mark.parametrize(

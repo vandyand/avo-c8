@@ -43,6 +43,10 @@ class MainPersonalExactCasHostedConfigurationDiagnostic(StrictModel):
     safety_ruleset_name: NonEmptyString
     rollback_ruleset_id: StrictInt = Field(gt=0)
     rollback_ruleset_name: NonEmptyString
+    candidate_creation_ruleset_id: StrictInt = Field(gt=0)
+    candidate_creation_ruleset_name: NonEmptyString
+    candidate_immutable_ruleset_id: StrictInt = Field(gt=0)
+    candidate_immutable_ruleset_name: NonEmptyString
     writer_app_id: StrictInt = Field(gt=0)
     writer_app_slug: Literal["avo-c8-main-writer-vandyand"] = _APP_SLUG
     writer_app_name: Literal["avo-c8-main-writer-vandyand"] = _APP_SLUG
@@ -50,6 +54,11 @@ class MainPersonalExactCasHostedConfigurationDiagnostic(StrictModel):
         "https://github.com/vandyand/avo-c8"
     )
     writer_installation_id: StrictInt = Field(gt=0)
+    candidate_publisher_app_id: StrictInt = Field(gt=0)
+    candidate_publisher_app_slug: Literal["avo-c8-candidate-publisher-vandyand"]
+    candidate_publisher_app_name: Literal["avo-c8-candidate-publisher-vandyand"]
+    candidate_publisher_app_homepage: Literal["https://github.com/vandyand/avo-c8"]
+    candidate_publisher_installation_id: StrictInt = Field(gt=0)
     repository_selection: Literal["selected"] = "selected"
     selected_repository_ids: tuple[StrictInt, ...]
     contents_permission: Literal["write"] = "write"
@@ -58,6 +67,13 @@ class MainPersonalExactCasHostedConfigurationDiagnostic(StrictModel):
     writer_ruleset_digest: Sha256Digest
     safety_ruleset_digest: Sha256Digest
     rollback_ruleset_digest: Sha256Digest
+    candidate_creation_ruleset_digest: Sha256Digest
+    candidate_immutable_ruleset_digest: Sha256Digest
+    candidate_publisher_identity_digest: Sha256Digest
+    candidate_publisher_installation_digest: Sha256Digest
+    candidate_publisher_app_configuration_digest: Sha256Digest
+    candidate_publisher_installation_configuration_digest: Sha256Digest
+    candidate_publisher_selected_repositories_digest: Sha256Digest
     branch_protection_digest: Sha256Digest
     app_configuration_digest: Sha256Digest
     installation_configuration_digest: Sha256Digest
@@ -92,9 +108,31 @@ class MainPersonalExactCasHostedConfigurationDiagnostic(StrictModel):
                 self.writer_ruleset_id,
                 self.safety_ruleset_id,
                 self.rollback_ruleset_id,
+                self.candidate_creation_ruleset_id,
+                self.candidate_immutable_ruleset_id,
             }
-        ) != 3:
+        ) != 5:
             raise ValueError("hosted configuration ruleset identities overlap")
+        if self.writer_app_id == self.candidate_publisher_app_id:
+            raise ValueError("hosted configuration publisher and writer Apps overlap")
+        if self.writer_installation_id == self.candidate_publisher_installation_id:
+            raise ValueError("hosted configuration publisher and writer installations overlap")
+        if self.candidate_publisher_identity_digest != canonical_digest(
+            {
+                "app_id": self.candidate_publisher_app_id,
+                "slug": self.candidate_publisher_app_slug,
+                "name": self.candidate_publisher_app_name,
+                "homepage": self.candidate_publisher_app_homepage,
+            }
+        ):
+            raise ValueError("hosted configuration publisher identity digest mismatch")
+        if self.candidate_publisher_installation_digest != canonical_digest(
+            {
+                "app_id": self.candidate_publisher_app_id,
+                "installation_id": self.candidate_publisher_installation_id,
+            }
+        ):
+            raise ValueError("hosted configuration publisher installation digest mismatch")
         if self.selected_repository_ids != (self.repository_id,):
             raise ValueError("hosted configuration selected repository is not exact")
         if self.subscribed_events:
@@ -106,6 +144,8 @@ class MainPersonalExactCasHostedConfigurationDiagnostic(StrictModel):
                 "writer_ruleset": self.writer_ruleset_digest,
                 "safety_ruleset": self.safety_ruleset_digest,
                 "rollback_ruleset": self.rollback_ruleset_digest,
+                "candidate_creation_ruleset": self.candidate_creation_ruleset_digest,
+                "candidate_immutable_ruleset": self.candidate_immutable_ruleset_digest,
             }
         )
         if self.protection_ruleset_digest != expected_protection:
@@ -122,9 +162,31 @@ class MainPersonalExactCasHostedConfigurationDiagnostic(StrictModel):
                 "safety_ruleset_name": self.safety_ruleset_name,
                 "rollback_ruleset_id": self.rollback_ruleset_id,
                 "rollback_ruleset_name": self.rollback_ruleset_name,
+                "candidate_creation_ruleset_id": self.candidate_creation_ruleset_id,
+                "candidate_creation_ruleset_name": self.candidate_creation_ruleset_name,
+                "candidate_immutable_ruleset_id": self.candidate_immutable_ruleset_id,
+                "candidate_immutable_ruleset_name": self.candidate_immutable_ruleset_name,
                 "writer_app_id": self.writer_app_id,
                 "writer_installation_id": self.writer_installation_id,
                 "writer_app_homepage": self.writer_app_homepage,
+                "candidate_publisher_app_id": self.candidate_publisher_app_id,
+                "candidate_publisher_app_slug": self.candidate_publisher_app_slug,
+                "candidate_publisher_app_name": self.candidate_publisher_app_name,
+                "candidate_publisher_app_homepage": self.candidate_publisher_app_homepage,
+                "candidate_publisher_installation_id": self.candidate_publisher_installation_id,
+                "candidate_publisher_identity_digest": self.candidate_publisher_identity_digest,
+                "candidate_publisher_installation_digest": (
+                    self.candidate_publisher_installation_digest
+                ),
+                "candidate_publisher_app_configuration_digest": (
+                    self.candidate_publisher_app_configuration_digest
+                ),
+                "candidate_publisher_installation_configuration_digest": (
+                    self.candidate_publisher_installation_configuration_digest
+                ),
+                "candidate_publisher_selected_repositories_digest": (
+                    self.candidate_publisher_selected_repositories_digest
+                ),
                 "protection_ruleset_digest": self.protection_ruleset_digest,
                 "branch_protection_digest": self.branch_protection_digest,
                 "app_configuration_digest": self.app_configuration_digest,
@@ -158,6 +220,8 @@ class MainPersonalExactCasHostedConfigurationDiagnostic(StrictModel):
                 "writer_ruleset": values["writer_ruleset_digest"],
                 "safety_ruleset": values["safety_ruleset_digest"],
                 "rollback_ruleset": values["rollback_ruleset_digest"],
+                "candidate_creation_ruleset": values["candidate_creation_ruleset_digest"],
+                "candidate_immutable_ruleset": values["candidate_immutable_ruleset_digest"],
             }
         )
         values["configuration_digest"] = canonical_digest(
@@ -172,11 +236,37 @@ class MainPersonalExactCasHostedConfigurationDiagnostic(StrictModel):
                 "safety_ruleset_name": values["safety_ruleset_name"],
                 "rollback_ruleset_id": values["rollback_ruleset_id"],
                 "rollback_ruleset_name": values["rollback_ruleset_name"],
+                "candidate_creation_ruleset_id": values["candidate_creation_ruleset_id"],
+                "candidate_creation_ruleset_name": values["candidate_creation_ruleset_name"],
+                "candidate_immutable_ruleset_id": values["candidate_immutable_ruleset_id"],
+                "candidate_immutable_ruleset_name": values["candidate_immutable_ruleset_name"],
                 "writer_app_id": values["writer_app_id"],
                 "writer_installation_id": values["writer_installation_id"],
                 "writer_app_homepage": values.get(
                     "writer_app_homepage", "https://github.com/vandyand/avo-c8"
                 ),
+                "candidate_publisher_app_id": values["candidate_publisher_app_id"],
+                "candidate_publisher_app_slug": values["candidate_publisher_app_slug"],
+                "candidate_publisher_app_name": values["candidate_publisher_app_name"],
+                "candidate_publisher_app_homepage": values["candidate_publisher_app_homepage"],
+                "candidate_publisher_installation_id": values[
+                    "candidate_publisher_installation_id"
+                ],
+                "candidate_publisher_identity_digest": values[
+                    "candidate_publisher_identity_digest"
+                ],
+                "candidate_publisher_installation_digest": values[
+                    "candidate_publisher_installation_digest"
+                ],
+                "candidate_publisher_app_configuration_digest": values[
+                    "candidate_publisher_app_configuration_digest"
+                ],
+                "candidate_publisher_installation_configuration_digest": values[
+                    "candidate_publisher_installation_configuration_digest"
+                ],
+                "candidate_publisher_selected_repositories_digest": values[
+                    "candidate_publisher_selected_repositories_digest"
+                ],
                 "protection_ruleset_digest": values["protection_ruleset_digest"],
                 "branch_protection_digest": values["branch_protection_digest"],
                 "app_configuration_digest": values["app_configuration_digest"],

@@ -273,20 +273,17 @@ def validate_hosted_configuration_provenance(
     diagnostic: MainPersonalExactCasHostedConfigurationDiagnostic,
     provenance: GitHubReadProvenance,
 ) -> None:
-    """Validate the verifier's complete, parameterized 22-request read trace."""
+    """Validate the verifier's complete, parameterized 34-request read trace."""
 
     if provenance.reader_identity != HOSTED_CONFIGURATION_READER_IDENTITY:
         raise ValueError("hosted writer provenance reader identity differs")
     typed_diagnostic = cast(Any, diagnostic)
     base = "/repos/vandyand/avo-c8"
-    writer = typed_diagnostic.writer_ruleset_id
-    safety = typed_diagnostic.safety_ruleset_id
-    rollback = typed_diagnostic.rollback_ruleset_id
     requests = provenance.requests
-    if type(requests) is not tuple or len(requests) != 22:
-        raise ValueError("hosted writer provenance trace is not the exact 22-request trace")
+    if type(requests) is not tuple or len(requests) != 34:
+        raise ValueError("hosted writer provenance trace is not the exact 34-request trace")
 
-    def expected_pass() -> tuple[GitHubReadRequest, ...]:
+    def expected_pass(ruleset_paths: tuple[str, ...]) -> tuple[GitHubReadRequest, ...]:
         return (
             GitHubReadRequest("GET", base, "owner_admin_token"),
             GitHubReadRequest("GET", "/app", "app_jwt"),
@@ -301,30 +298,55 @@ def validate_hosted_configuration_provenance(
             GitHubReadRequest(
                 "GET", "/installation/repositories?per_page=100&page=1", "installation_token"
             ),
+            GitHubReadRequest("GET", "/app", "app_jwt"),
+            GitHubReadRequest(
+                "GET",
+                f"/app/installations/{typed_diagnostic.candidate_publisher_installation_id}",
+                "app_jwt",
+            ),
+            GitHubReadRequest(
+                "POST",
+                f"/app/installations/{typed_diagnostic.candidate_publisher_installation_id}/access_tokens",
+                "app_jwt",
+            ),
+            GitHubReadRequest(
+                "GET", "/installation/repositories?per_page=100&page=1", "installation_token"
+            ),
             GitHubReadRequest("GET", base + "/rulesets?per_page=100&page=1", "owner_admin_token"),
-            GitHubReadRequest("GET", base + f"/rulesets/{writer}", "owner_admin_token"),
-            GitHubReadRequest("GET", base + f"/rulesets/{safety}", "owner_admin_token"),
-            GitHubReadRequest("GET", base + f"/rulesets/{rollback}", "owner_admin_token"),
+            *(GitHubReadRequest("GET", path, "owner_admin_token") for path in ruleset_paths),
             GitHubReadRequest("GET", base + "/branches/main/protection", "owner_admin_token"),
         )
 
     expected_ruleset_paths = {
-        base + f"/rulesets/{ident}" for ident in (writer, safety, rollback)
+        base + f"/rulesets/{ident}"
+        for ident in (
+            typed_diagnostic.writer_ruleset_id,
+            typed_diagnostic.safety_ruleset_id,
+            typed_diagnostic.rollback_ruleset_id,
+            typed_diagnostic.candidate_creation_ruleset_id,
+            typed_diagnostic.candidate_immutable_ruleset_id,
+        )
     }
+    if len(expected_ruleset_paths) != 5:
+        raise ValueError("hosted writer diagnostic ruleset identities are not exact")
     observed_rule_slots: list[tuple[GitHubReadRequest, ...]] = []
-    for offset in (1, 11):
-        observed = requests[offset : offset + 10]
-        expected = expected_pass()
-        if observed[:6] != expected[:6] or observed[9:] != expected[9:]:
+    first_paths: tuple[str, ...] | None = None
+    for offset in (1, 17):
+        observed = requests[offset : offset + 16]
+        ruleset_slots = observed[10:15]
+        paths = tuple(item.path for item in ruleset_slots)
+        if first_paths is None:
+            first_paths = paths
+        expected = expected_pass(first_paths)
+        if observed[:10] != expected[:10] or observed[15:] != expected[15:]:
             raise ValueError("hosted writer provenance trace shape differs")
-        ruleset_slots = observed[6:9]
         if any(
             item.method != "GET" or item.credential_role != "owner_admin_token"
             for item in ruleset_slots
         ):
             raise ValueError("hosted writer provenance ruleset request differs")
         paths = tuple(item.path for item in ruleset_slots)
-        if len(set(paths)) != 3 or set(paths) != expected_ruleset_paths:
+        if len(set(paths)) != 5 or set(paths) != expected_ruleset_paths:
             raise ValueError("hosted writer provenance ruleset identities are not exact")
         observed_rule_slots.append(ruleset_slots)
     if observed_rule_slots[0] != observed_rule_slots[1]:
@@ -353,6 +375,19 @@ def validate_hosted_configuration_provenance(
     expected_endpoints = {
         "app": typed_diagnostic.app_configuration_digest,
         "installation": typed_diagnostic.installation_configuration_digest,
+        "candidate_publisher_identity": typed_diagnostic.candidate_publisher_identity_digest,
+        "candidate_publisher_installation": (
+            typed_diagnostic.candidate_publisher_installation_digest
+        ),
+        "candidate_publisher_app": (
+            typed_diagnostic.candidate_publisher_app_configuration_digest
+        ),
+        "candidate_publisher_installation_observation": (
+            typed_diagnostic.candidate_publisher_installation_configuration_digest
+        ),
+        "candidate_publisher_selected_repositories": (
+            typed_diagnostic.candidate_publisher_selected_repositories_digest
+        ),
         "repository": typed_diagnostic.repository_digest,
         "selected_repositories": typed_diagnostic.selected_repositories_digest,
     }

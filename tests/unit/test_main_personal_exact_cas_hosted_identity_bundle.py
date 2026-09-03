@@ -22,6 +22,7 @@ from avo_correlate.adapters.hosted_git.github_read_provenance import (
 )
 from avo_correlate.adapters.hosted_git.main_personal_exact_cas_hosted_identity_bundle import (
     MainPersonalExactCasHostedIdentityEvidenceBundle,
+    validate_hosted_configuration_provenance,
 )
 from avo_correlate.contracts.main_personal_exact_cas_hosted_configuration import (
     MainPersonalExactCasHostedConfigurationDiagnostic,
@@ -65,12 +66,37 @@ def _writer(
         "safety_ruleset_name": "C8 main safety",
         "rollback_ruleset_id": 303,
         "rollback_ruleset_name": "C8 rollback namespace",
+        "candidate_creation_ruleset_id": 404,
+        "candidate_creation_ruleset_name": "C8 candidate creation",
+        "candidate_immutable_ruleset_id": 505,
+        "candidate_immutable_ruleset_name": "C8 candidate immutable",
         "writer_app_id": WRITER_APP_ID,
         "writer_installation_id": WRITER_INSTALLATION_ID,
+        "candidate_publisher_app_id": 100,
+        "candidate_publisher_app_slug": "avo-c8-candidate-publisher-vandyand",
+        "candidate_publisher_app_name": "avo-c8-candidate-publisher-vandyand",
+        "candidate_publisher_app_homepage": "https://github.com/vandyand/avo-c8",
+        "candidate_publisher_installation_id": 111,
         "selected_repository_ids": (REPOSITORY_ID,),
         "writer_ruleset_digest": D,
         "safety_ruleset_digest": "sha256:" + "2" * 64,
         "rollback_ruleset_digest": "sha256:" + "a" * 64,
+        "candidate_creation_ruleset_digest": "sha256:" + "b" * 64,
+        "candidate_immutable_ruleset_digest": "sha256:" + "c" * 64,
+        "candidate_publisher_identity_digest": canonical_digest(
+            {
+                "app_id": 100,
+                "slug": "avo-c8-candidate-publisher-vandyand",
+                "name": "avo-c8-candidate-publisher-vandyand",
+                "homepage": "https://github.com/vandyand/avo-c8",
+            }
+        ),
+        "candidate_publisher_installation_digest": canonical_digest(
+            {"app_id": 100, "installation_id": 111}
+        ),
+        "candidate_publisher_app_configuration_digest": "sha256:" + "f" * 64,
+        "candidate_publisher_installation_configuration_digest": "sha256:" + "0" * 64,
+        "candidate_publisher_selected_repositories_digest": "sha256:" + "4" * 64,
         "branch_protection_digest": "sha256:" + "3" * 64,
         "app_configuration_digest": "sha256:" + "4" * 64,
         "installation_configuration_digest": "sha256:" + "5" * 64,
@@ -95,10 +121,18 @@ def _writer(
         GitHubReadRequest(
             "GET", "/installation/repositories?per_page=100&page=1", "installation_token"
         ),
+        GitHubReadRequest("GET", "/app", "app_jwt"),
+        GitHubReadRequest("GET", "/app/installations/111", "app_jwt"),
+        GitHubReadRequest("POST", "/app/installations/111/access_tokens", "app_jwt"),
+        GitHubReadRequest(
+            "GET", "/installation/repositories?per_page=100&page=1", "installation_token"
+        ),
         GitHubReadRequest("GET", base + "/rulesets?per_page=100&page=1", "owner_admin_token"),
         GitHubReadRequest("GET", base + "/rulesets/101", "owner_admin_token"),
         GitHubReadRequest("GET", base + "/rulesets/202", "owner_admin_token"),
         GitHubReadRequest("GET", base + "/rulesets/303", "owner_admin_token"),
+        GitHubReadRequest("GET", base + "/rulesets/404", "owner_admin_token"),
+        GitHubReadRequest("GET", base + "/rulesets/505", "owner_admin_token"),
         GitHubReadRequest("GET", base + "/branches/main/protection", "owner_admin_token"),
     )
     ref = GitHubReadRequest("GET", base + "/git/ref/heads/main", "owner_admin_token")
@@ -123,6 +157,20 @@ def _writer(
         requests=(ref, *pass_trace, *pass_trace, ref),
         endpoint_observation_digests=(
             ("app", diagnostic.app_configuration_digest),
+            ("candidate_publisher_app", diagnostic.candidate_publisher_app_configuration_digest),
+            ("candidate_publisher_identity", diagnostic.candidate_publisher_identity_digest),
+            (
+                "candidate_publisher_installation",
+                diagnostic.candidate_publisher_installation_digest,
+            ),
+            (
+                "candidate_publisher_installation_observation",
+                diagnostic.candidate_publisher_installation_configuration_digest,
+            ),
+            (
+                "candidate_publisher_selected_repositories",
+                diagnostic.candidate_publisher_selected_repositories_digest,
+            ),
             ("installation", diagnostic.installation_configuration_digest),
             ("repository", diagnostic.repository_digest),
             ("selected_repositories", diagnostic.selected_repositories_digest),
@@ -226,10 +274,10 @@ def _bundle() -> MainPersonalExactCasHostedIdentityEvidenceBundle:
 
 
 def _verified_writer_with_summary_order(
-    order: tuple[int, int, int],
+    order: tuple[int, int, int, int, int],
 ) -> GitHubReadWithProvenance[MainPersonalExactCasHostedConfigurationDiagnostic]:
     responses: Any = hosted_configuration_fixtures._responses()
-    for summary_index in (6, 16):
+    for summary_index in (10, 26):
         status, raw_summaries_value = responses[summary_index]
         raw_summaries: Any = raw_summaries_value
         if type(status) is not int or type(raw_summaries) is not list:
@@ -245,14 +293,14 @@ def _verified_writer_with_summary_order(
         responses[summary_index] = (status, [copy.deepcopy(summaries[ident]) for ident in order])
         detail_index = summary_index + 1
         details: dict[int, dict[str, JsonValue]] = {}
-        for offset in range(3):
+        for offset in range(5):
             response: Any = responses[detail_index + offset]
             detail: dict[str, JsonValue] = response[1]
             ident = detail.get("id")
             if type(ident) is not int:
                 raise AssertionError("detail fixture is malformed")
             details[ident] = detail
-        responses[detail_index : detail_index + 3] = [
+        responses[detail_index : detail_index + 5] = [
             (200, copy.deepcopy(details[ident])) for ident in order
         ]
     subject, _ = hosted_configuration_fixtures._subject(responses)
@@ -278,7 +326,7 @@ def test_builder_requires_authenticated_writer_wrapper_and_exact_observer_trace(
 def test_writer_safety_ruleset_request_cannot_be_skipped() -> None:
     writer = _writer()
     requests = list(writer.provenance.requests)
-    requests[8] = requests[7]
+    requests[11] = requests[12]
     tampered = replace(writer.provenance, requests=tuple(requests))
     observer, configuration = _observer()
     # The changed provenance has a fresh digest but fails the exact safety slot.
@@ -311,7 +359,7 @@ def test_writer_rollback_identity_tamper_is_revalidated(
 def test_writer_rollback_request_must_bind_to_diagnostic_id() -> None:
     writer = _writer()
     requests = list(writer.provenance.requests)
-    requests[8] = GitHubReadRequest(
+    requests[13] = GitHubReadRequest(
         "GET", "/repos/vandyand/avo-c8/rulesets/304", "owner_admin_token"
     )
     tampered = GitHubReadWithProvenance(
@@ -324,7 +372,7 @@ def test_writer_rollback_request_must_bind_to_diagnostic_id() -> None:
 
 
 def test_verifier_to_bundle_accepts_summary_order_permutation() -> None:
-    writer = _verified_writer_with_summary_order((202, 101, 303))
+    writer = _verified_writer_with_summary_order((202, 101, 303, 404, 505))
     observer, configuration = _observer(
         owner_id=77,
         writer_app_id=88,
@@ -337,9 +385,9 @@ def test_verifier_to_bundle_accepts_summary_order_permutation() -> None:
 
 
 def test_verifier_to_bundle_rejects_pass_ruleset_order_drift() -> None:
-    writer = _verified_writer_with_summary_order((202, 101, 303))
+    writer = _verified_writer_with_summary_order((202, 101, 303, 404, 505))
     requests = list(writer.provenance.requests)
-    requests[17:20] = [requests[18], requests[17], requests[19]]
+    requests[27:30] = [requests[28], requests[27], requests[29]]
     tampered = GitHubReadWithProvenance(
         writer.result,
         replace(writer.provenance, requests=tuple(requests)),
@@ -352,6 +400,60 @@ def test_verifier_to_bundle_rejects_pass_ruleset_order_drift() -> None:
     with pytest.raises(ValueError, match="order drifted"):
         MainPersonalExactCasHostedIdentityEvidenceBundle.build(
             tampered, observer, configuration
+        )
+
+
+@pytest.mark.parametrize(
+    ("mutation", "message"),
+    [
+        ("duplicate-diagnostic-ruleset", "ruleset identities"),
+        ("trace-shape", "trace shape"),
+        ("wrong-ruleset-credential", "ruleset request"),
+        ("duplicate-ruleset-path", "ruleset identities"),
+        ("missing-ref-fence", "main fence"),
+        ("endpoint-digest", "endpoint binding"),
+    ],
+)
+def test_hosted_provenance_rejects_candidate_trace_and_identity_tampering(
+    mutation: str, message: str
+) -> None:
+    writer = _writer()
+    observer, configuration = _observer()
+    if mutation == "duplicate-diagnostic-ruleset":
+        diagnostic = writer.result.model_copy(
+            update={"candidate_immutable_ruleset_id": writer.result.candidate_creation_ruleset_id}
+        )
+        with pytest.raises(ValueError, match=message):
+            validate_hosted_configuration_provenance(diagnostic, writer.provenance)
+        return
+    else:
+        requests = list(writer.provenance.requests)
+        if mutation == "trace-shape":
+            requests[1] = GitHubReadRequest("GET", "/wrong", "owner_admin_token")
+        elif mutation == "wrong-ruleset-credential":
+            requests[11] = GitHubReadRequest(
+                "GET", requests[11].path, "installation_token"
+            )
+        elif mutation == "duplicate-ruleset-path":
+            requests[14] = requests[13]
+        elif mutation == "missing-ref-fence":
+            requests[0] = GitHubReadRequest("GET", "/wrong", "owner_admin_token")
+        else:
+            endpoints = list(writer.provenance.endpoint_observation_digests)
+            endpoints[0] = (endpoints[0][0], "sha256:" + "f" * 64)
+            tampered = replace(
+                writer.provenance, endpoint_observation_digests=tuple(endpoints)
+            )
+            with pytest.raises(ValueError, match=message):
+                MainPersonalExactCasHostedIdentityEvidenceBundle.build(
+                    GitHubReadWithProvenance(writer.result, tampered), observer, configuration
+                )
+            return
+        tampered = replace(writer.provenance, requests=tuple(requests))
+        writer_value = GitHubReadWithProvenance(writer.result, tampered)
+    with pytest.raises(ValueError, match=message):
+        MainPersonalExactCasHostedIdentityEvidenceBundle.build(
+            writer_value, observer, configuration
         )
 
 
