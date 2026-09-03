@@ -107,9 +107,10 @@ def _summary(ident: int, name: str) -> dict[str, JsonValue]:
     return {
         "id": ident,
         "name": name,
+        "target": "branch",
         "source_type": "Repository",
         "source": "vandyand/avo-c8",
-        "enforcement": "enabled",
+        "enforcement": "active",
         "node_id": f"RRS_{ident}",
         "_links": {
             "self": {"href": f"https://api.github.com/repos/vandyand/avo-c8/rulesets/{ident}"},
@@ -125,9 +126,16 @@ def _detail(
     name: str,
     rules: list[str],
     bypass: list[dict[str, JsonValue]],
+    *,
+    target_ref: str = "refs/heads/main",
+    include_update_parameters: bool = False,
 ) -> dict[str, JsonValue]:
     rule_values: list[JsonValue] = [
-        {"type": rule, "parameters": {"update_allows_fetch_and_merge": False}}
+        (
+            {"type": rule, "parameters": {"update_allows_fetch_and_merge": False}}
+            if include_update_parameters
+            else {"type": rule}
+        )
         if rule == "update"
         else {"type": rule}
         for rule in rules
@@ -141,7 +149,7 @@ def _detail(
         "source": "vandyand/avo-c8",
         "enforcement": "active",
         "conditions": {
-            "ref_name": {"include": ["refs/heads/main"], "exclude": []},
+            "ref_name": {"include": [target_ref], "exclude": []},
         },
         "rules": rule_values,
         "bypass_actors": bypass_values,
@@ -173,15 +181,22 @@ def _safety() -> dict[str, JsonValue]:
     )
 
 
+def _rollback() -> dict[str, JsonValue]:
+    return _detail(
+        303,
+        "AVO C8 rollback namespace",
+        ["creation", "update", "deletion", "non_fast_forward"],
+        [{"actor_id": APP_ID, "actor_type": "Integration", "bypass_mode": "always"}],
+        target_ref="refs/heads/avo/main-rollback/*",
+    )
+
+
 def _protection() -> dict[str, JsonValue]:
     return {
         "enforce_admins": {"enabled": True},
         "required_linear_history": {"enabled": True},
         "allow_force_pushes": {"enabled": False},
         "allow_deletions": {"enabled": False},
-        "required_status_checks": None,
-        "required_pull_request_reviews": None,
-        "restrictions": None,
     }
 
 
@@ -191,9 +206,17 @@ def _pass() -> list[tuple[int, JsonValue]]:
         (200, _app()),
         (200, [_installation()]),
         (200, {"total_count": 1, "repositories": [_repository()]}),
-        (200, [_summary(101, "AVO C8 main writer"), _summary(202, "AVO C8 main safety")]),
+        (
+            200,
+            [
+                _summary(101, "AVO C8 main writer"),
+                _summary(202, "AVO C8 main safety"),
+                _summary(303, "AVO C8 rollback namespace"),
+            ],
+        ),
         (200, _writer()),
         (200, _safety()),
+        (200, _rollback()),
         (200, _protection()),
     ]
 
@@ -261,9 +284,9 @@ def _mutate(value: JsonValue, kind: str) -> None:
     }:
         summary = _as_object(_as_list(value)[0])
         if kind == "summary-target":
-            summary["target"] = "branch"
+            summary["target"] = "tag"
         elif kind == "summary-active":
-            summary["enforcement"] = "active"
+            summary["enforcement"] = "enabled"
         elif kind == "summary-name-mismatch":
             summary["name"] = "renamed only in summary"
         else:
@@ -272,6 +295,8 @@ def _mutate(value: JsonValue, kind: str) -> None:
     obj = _as_object(value)
     if kind == "private-repository":
         obj["private"] = True
+    elif kind == "fork-repository":
+        obj["fork"] = True
     elif kind == "wrong-repository-id":
         obj["id"] = 123
     elif kind == "organization-owner":
@@ -292,18 +317,28 @@ def _mutate(value: JsonValue, kind: str) -> None:
         obj["bypass_actors"] = []
     elif kind == "update-fetch-and-merge":
         update = _as_object(_as_list(obj["rules"])[0])
-        _as_object(update["parameters"])["update_allows_fetch_and_merge"] = True
-    elif kind == "missing-update-parameters":
-        _as_object(_as_list(obj["rules"])[0]).pop("parameters")
+        update["parameters"] = {"update_allows_fetch_and_merge": True}
+    elif kind == "explicit-safe-update-parameters":
+        update = _as_object(_as_list(obj["rules"])[0])
+        update["parameters"] = {"update_allows_fetch_and_merge": False}
     elif kind == "extra-update-parameter":
         update = _as_object(_as_list(obj["rules"])[0])
-        _as_object(update["parameters"])["unexpected"] = False
+        update["parameters"] = {
+            "update_allows_fetch_and_merge": False,
+            "unexpected": False,
+        }
     elif kind == "safety-bypass":
         _as_list(obj["bypass_actors"]).append(
             {"actor_id": APP_ID, "actor_type": "Integration", "bypass_mode": "always"}
         )
-    elif kind == "missing-safety-rule":
+    elif kind in {"missing-safety-rule", "missing-rollback-rule"}:
         _as_list(obj["rules"]).pop()
+    elif kind == "rollback-broad-ref-condition":
+        conditions = _as_object(obj["conditions"])
+        _as_object(conditions["ref_name"])["include"] = ["refs/heads/avo/*"]
+    elif kind == "rollback-wrong-bypass":
+        actor = _as_object(_as_list(obj["bypass_actors"])[0])
+        actor["actor_id"] = APP_ID + 1
     elif kind == "broad-ref-condition":
         conditions = _as_object(obj["conditions"])
         _as_object(conditions["ref_name"])["include"] = ["refs/heads/*"]
@@ -337,7 +372,7 @@ def test_exact_configuration_returns_non_authoritative_diagnostic() -> None:
     assert result.is_authoritative is False
     assert result.readiness_authorized is False
     assert result.deploy_performed is False
-    assert len(transport.calls) == 18
+    assert len(transport.calls) == 20
     assert all(call[0] == "GET" and call[2] is None for call in transport.calls)
     expected_pass = [
         "https://api.github.com/repos/vandyand/avo-c8",
@@ -347,6 +382,7 @@ def test_exact_configuration_returns_non_authoritative_diagnostic() -> None:
         "https://api.github.com/repos/vandyand/avo-c8/rulesets?per_page=100&page=1",
         "https://api.github.com/repos/vandyand/avo-c8/rulesets/101",
         "https://api.github.com/repos/vandyand/avo-c8/rulesets/202",
+        "https://api.github.com/repos/vandyand/avo-c8/rulesets/303",
         "https://api.github.com/repos/vandyand/avo-c8/branches/main/protection",
     ]
     assert [call[1] for call in transport.calls] == [
@@ -368,38 +404,42 @@ def test_exact_configuration_returns_non_authoritative_diagnostic() -> None:
 @pytest.mark.parametrize(
     ("indexes", "mutation"),
     [
-        ((1, 9), "private-repository"),
-        ((1, 9), "wrong-repository-id"),
-        ((1, 9), "organization-owner"),
-        ((2, 10), "extra-app-permission"),
-        ((2, 10), "app-event"),
-        ((2, 10), "wrong-app"),
-        ((3, 11), "wrong-installation-app"),
-        ((3, 11), "all-repositories"),
-        ((3, 11), "suspended-installation"),
-        ((4, 12), "wrong-selected-repository"),
-        ((5, 13), "summary-target"),
-        ((5, 13), "summary-active"),
-        ((5, 13), "summary-name-mismatch"),
-        ((5, 13), "summary-source-mismatch"),
-        ((6, 14), "non-always-bypass"),
-        ((6, 14), "missing-writer-bypass"),
-        ((6, 14), "update-fetch-and-merge"),
-        ((6, 14), "missing-update-parameters"),
-        ((6, 14), "extra-update-parameter"),
-        ((7, 15), "safety-bypass"),
-        ((7, 15), "missing-safety-rule"),
-        ((6, 14), "broad-ref-condition"),
-        ((6, 14), "detail-tag-target"),
-        ((6, 14), "detail-evaluate"),
-        ((8, 16), "admins-not-enforced"),
-        ((8, 16), "nonlinear-history"),
-        ((8, 16), "force-push"),
-        ((8, 16), "deletion"),
-        ((8, 16), "required-status"),
+        ((1, 10), "private-repository"),
+        ((1, 10), "fork-repository"),
+        ((1, 10), "wrong-repository-id"),
+        ((1, 10), "organization-owner"),
+        ((2, 11), "extra-app-permission"),
+        ((2, 11), "app-event"),
+        ((2, 11), "wrong-app"),
+        ((3, 12), "wrong-installation-app"),
+        ((3, 12), "all-repositories"),
+        ((3, 12), "suspended-installation"),
+        ((4, 13), "wrong-selected-repository"),
+        ((5, 14), "summary-target"),
+        ((5, 14), "summary-active"),
+        ((5, 14), "summary-name-mismatch"),
+        ((5, 14), "summary-source-mismatch"),
+        ((6, 15), "non-always-bypass"),
+        ((6, 15), "missing-writer-bypass"),
+        ((6, 15), "update-fetch-and-merge"),
+        ((6, 15), "extra-update-parameter"),
+        ((7, 16), "safety-bypass"),
+        ((7, 16), "missing-safety-rule"),
+        ((8, 17), "missing-rollback-rule"),
+        ((8, 17), "rollback-broad-ref-condition"),
+        ((8, 17), "rollback-wrong-bypass"),
+        ((6, 15), "broad-ref-condition"),
+        ((6, 15), "detail-tag-target"),
+        ((6, 15), "detail-evaluate"),
+        ((9, 18), "admins-not-enforced"),
+        ((9, 18), "nonlinear-history"),
+        ((9, 18), "force-push"),
+        ((9, 18), "deletion"),
+        ((9, 18), "required-status"),
     ],
     ids=[
         "private-repository",
+        "fork-repository",
         "wrong-repository-id",
         "organization-owner",
         "extra-app-permission",
@@ -409,17 +449,19 @@ def test_exact_configuration_returns_non_authoritative_diagnostic() -> None:
         "all-repositories",
         "suspended-installation",
         "wrong-selected-repository",
-        "summary-invented-target",
-        "summary-wrong-enforcement-vocabulary",
+        "summary-wrong-target",
+        "summary-wrong-enforcement",
         "summary-name-mismatch",
         "summary-source-mismatch",
         "non-always-bypass",
         "missing-writer-bypass",
         "fetch-and-merge-update",
-        "missing-update-parameters",
         "extra-update-parameter",
         "safety-bypass",
         "missing-safety-rule",
+        "missing-rollback-rule",
+        "rollback-broad-ref-condition",
+        "rollback-wrong-bypass",
         "broad-ref-condition",
         "detail-tag-target",
         "detail-evaluate",
@@ -451,6 +493,25 @@ def test_configuration_pass_drift_fails_closed() -> None:
     subject, _ = _subject(responses)
     with pytest.raises(MainPersonalExactCasHostedConfigurationUnverified):
         subject.verify()
+
+
+def test_explicit_false_update_parameter_is_also_accepted() -> None:
+    responses = _responses()
+    for index in (6, 8, 15, 17):
+        response = responses[index]
+        assert not isinstance(response, BaseException)
+        status, value = response
+        copied = copy.deepcopy(value)
+        obj = _as_object(copied)
+        update = next(
+            _as_object(rule)
+            for rule in _as_list(obj["rules"])
+            if _as_object(rule).get("type") == "update"
+        )
+        update["parameters"] = {"update_allows_fetch_and_merge": False}
+        responses[index] = (status, copied)
+    subject, _ = _subject(responses)
+    assert subject.verify().verification_status == "matched"
 
 
 def test_documented_installation_and_repository_page_shapes_are_enforced() -> None:
