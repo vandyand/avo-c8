@@ -228,6 +228,9 @@ from avo_correlate.contracts.main_personal_exact_cas import (
     personal_cas_claim_digest,
     personal_cas_operation_id,
 )
+from avo_correlate.contracts.main_personal_exact_cas_controller_composition import (
+    MainPersonalExactCasControllerComposition,
+)
 from avo_correlate.contracts.main_personal_exact_cas_hosted_configuration import (
     MainPersonalExactCasHostedConfigurationDiagnostic,
 )
@@ -452,6 +455,7 @@ __all__ = [
     "MainPersonalExactCasActivation",
     "MainPersonalExactCasAuthorization",
     "MainPersonalExactCasCompletion",
+    "MainPersonalExactCasControllerComposition",
     "MainPersonalExactCasDispatchStarted",
     "MainPersonalExactCasHostedConfigurationDiagnostic",
     "MainPersonalExactCasHostedIdentityEvidenceBundleRoot",
