@@ -71,6 +71,12 @@ class MainPersonalExactCasCandidatePolicyEvidence(StrictModel):
             raise ValueError("verified policy requires ruleset evidence")
         if self.status == "unverifiable" and self.missing_prerequisite is None:
             raise ValueError("unverifiable policy requires missing prerequisite")
+        if self.status == "unverifiable" and (
+            self.deletion_coverage != "unverifiable"
+            or self.force_update_coverage != "unverifiable"
+            or self.ruleset_digest is not None
+        ):
+            raise ValueError("unverifiable policy cannot claim partial coverage")
         if self.status == "verified" and self.missing_prerequisite is not None:
             raise ValueError("verified policy cannot have a missing prerequisite")
         expected = canonical_digest(self.model_dump(exclude={"evidence_digest"}, mode="json"))
@@ -143,6 +149,8 @@ class MainPersonalExactCasCandidateObservation(StrictModel):
         )
         if self.commit_digest != expected_commit:
             raise ValueError("candidate commit evidence digest mismatch")
+        if self.initial_ref_digest != self.final_ref_digest:
+            raise ValueError("candidate ref fence digests differ")
         if self.observation_digest != canonical_digest(
             self.model_dump(exclude={"observation_digest"}, mode="json")
         ):

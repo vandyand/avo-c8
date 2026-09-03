@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import FrozenInstanceError
+from dataclasses import FrozenInstanceError, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, ClassVar
 
 import pytest
 
 from avo_correlate.adapters.hosted_git import (
+    GitHubCandidateReadWithProvenance,
     GitHubCandidateRefObserver,
     MainPersonalExactCasCandidateObservationError,
 )
@@ -21,7 +22,9 @@ from avo_correlate.adapters.hosted_git.github_main_base_reader import (
     GitHubMainBaseReaderCredentials,
 )
 from avo_correlate.contracts.main_personal_exact_cas_candidate_observation import (
+    MainPersonalExactCasCandidateObservation,
     MainPersonalExactCasCandidateObservationRequest,
+    MainPersonalExactCasCandidatePolicyEvidence,
     candidate_ref_for_operation,
 )
 
@@ -109,6 +112,7 @@ def _responses(*, fence: str = COMMIT) -> list[tuple[int, object]]:
                 "expires_at": (NOW + timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 "permissions": {"contents": "read", "metadata": "read"},
                 "repository_selection": "selected",
+                "hostile": "mint-secret",
                 "repositories": [
                     {
                         "id": REPOSITORY_ID,
@@ -204,6 +208,133 @@ def test_candidate_observation_is_fenced_and_secret_free(monkeypatch: pytest.Mon
     )
     assert all("policy" not in item.path for item in observed.provenance.requests)
     assert "jwt-secret" not in repr(observed)
+
+
+def test_mint_token_rotation_does_not_change_safe_provenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    baseline = _reader(monkeypatch, _responses()).observe_with_provenance(_request())
+    rotated = _responses()
+    token = rotated[2][1]
+    assert isinstance(token, dict)
+    token["token"] = "rotated-installation-token-secret"
+    changed = _reader(monkeypatch, rotated).observe_with_provenance(_request())
+    assert changed.result == baseline.result
+    assert changed.provenance.mint_digest == baseline.provenance.mint_digest
+    assert changed.provenance.provenance_digest == baseline.provenance.provenance_digest
+    assert "installation-token-secret" not in repr(changed)
+
+
+def test_app_optional_public_and_webhook_state_is_presence_aware(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    baseline = _reader(monkeypatch, _responses()).observe_with_provenance(_request())
+    responses = _responses()
+    app = responses[0][1]
+    assert isinstance(app, dict)
+    app["public"] = False
+    app["webhook_active"] = False
+    explicit_false = _reader(monkeypatch, responses).observe_with_provenance(_request())
+    assert explicit_false.result == baseline.result
+    assert explicit_false.provenance.provenance_digest != baseline.provenance.provenance_digest
+
+    responses = _responses()
+    app = responses[0][1]
+    assert isinstance(app, dict)
+    app["public"] = True
+    reader = _reader(monkeypatch, responses)
+    with pytest.raises(MainPersonalExactCasCandidateObservationError):
+        reader.observe(_request())
+    assert len(FakeTransport.instances[0].calls) == 1
+
+
+def test_app_optional_webhook_state_must_not_be_true(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    responses = _responses()
+    app = responses[0][1]
+    assert isinstance(app, dict)
+    app["webhook_active"] = True
+    reader = _reader(monkeypatch, responses)
+    with pytest.raises(MainPersonalExactCasCandidateObservationError):
+        reader.observe(_request())
+    assert len(FakeTransport.instances[0].calls) == 1
+
+
+def test_direct_policy_contract_rejects_partial_unverifiable_coverage() -> None:
+    with pytest.raises(ValueError, match="partial coverage"):
+        MainPersonalExactCasCandidatePolicyEvidence(
+            namespace="refs/heads/avo/candidate/*",
+            deletion_coverage="covered",
+            force_update_coverage="unverifiable",
+            status="unverifiable",
+            missing_prerequisite="separate-owner-admin-ruleset-read-credential",
+            evidence_digest="sha256:" + "0" * 64,
+        )
+
+
+def test_direct_observation_contract_rejects_ref_fence_tampering(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed = _reader(monkeypatch, _responses()).observe(_request())
+    tampered = observed.model_copy(
+        update={
+            "final_ref_digest": "sha256:" + "1" * 64,
+            "observation_digest": "sha256:" + "0" * 64,
+        }
+    )
+    with pytest.raises(ValueError, match="ref fence"):
+        MainPersonalExactCasCandidateObservation.model_validate(
+            tampered.model_dump(mode="python"), strict=True
+        )
+
+
+def test_direct_provenance_rejects_duplicate_or_mismatched_endpoint_labels(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed = _reader(monkeypatch, _responses()).observe_with_provenance(_request())
+    with pytest.raises(ValueError, match="endpoint"):
+        replace(
+            observed.provenance,
+            endpoint_observation_digests=(
+                *observed.provenance.endpoint_observation_digests,
+                ("mint", observed.provenance.mint_digest),
+            ),
+        )
+    with pytest.raises(ValueError, match="endpoint"):
+        replace(
+            observed.provenance,
+            endpoint_observation_digests=tuple(
+                (label, "sha256:" + "0" * 64)
+                for label, _ in observed.provenance.endpoint_observation_digests
+            ),
+        )
+
+
+def test_provenance_wrapper_cross_binds_repository_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    observed = _reader(monkeypatch, _responses()).observe_with_provenance(_request())
+    forged = observed.provenance
+    object.__setattr__(forged, "repository", "other")
+    with pytest.raises(ValueError, match=r"provenance|not bound"):
+        GitHubCandidateReadWithProvenance(observed.result, forged)
+
+
+def test_reflected_transport_swap_and_invalid_credentials_fail_before_network(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reader = _reader(monkeypatch, _responses())
+    object.__setattr__(reader, "_transport", lambda *_: (200, {}))
+    with pytest.raises(MainPersonalExactCasCandidateObservationError):
+        reader.observe(_request())
+    assert FakeTransport.instances[0].calls == []
+
+    reader = _reader(monkeypatch, _responses())
+    object.__setattr__(reader._credentials, "app_jwt", "")
+    with pytest.raises(MainPersonalExactCasCandidateObservationError):
+        reader.observe(_request())
+    assert FakeTransport.instances[0].calls == []
 
 
 def test_candidate_ref_drift_fails_closed_without_exception_context(

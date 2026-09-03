@@ -38,6 +38,8 @@ _API_VERSION = "2022-11-28"
 _MAX_RESPONSE_BYTES = 4 * 1024 * 1024
 _OBJECT = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+_IDENTITY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
+_OPERATION = re.compile(r"^sha256:[0-9a-f]{64}$")
 _CANDIDATE = re.compile(r"^refs/heads/avo/candidate/[0-9a-f]{64}$")
 _READER_IDENTITY = "github_candidate_ref_observer"
 
@@ -72,6 +74,7 @@ class GitHubCandidateReadProvenance:
     installation_id: int
     requests: tuple[GitHubReadRequest, ...]
     endpoint_observation_digests: tuple[tuple[str, str], ...]
+    mint_digest: str
     configuration_digest: str
     initial_ref_digest: str
     commit_digest: str
@@ -106,6 +109,7 @@ class GitHubCandidateReadProvenance:
                 for item in self.requests
             ),
             "endpoint_observation_digests": self.endpoint_observation_digests,
+            "mint_digest": self.mint_digest,
             "configuration_digest": self.configuration_digest,
             "initial_ref_digest": self.initial_ref_digest,
             "commit_digest": self.commit_digest,
@@ -126,6 +130,20 @@ class GitHubCandidateReadProvenance:
             raise ValueError("candidate provenance operation binding is invalid")
         if _OBJECT.fullmatch(self.candidate_commit) is None:
             raise ValueError("candidate provenance commit is invalid")
+        if _OPERATION.fullmatch(self.operation_id) is None:
+            raise ValueError("candidate provenance operation ID is invalid")
+        if (
+            type(self.owner) is not str
+            or _IDENTITY.fullmatch(self.owner) is None
+            or type(self.repository) is not str
+            or _IDENTITY.fullmatch(self.repository) is None
+            or type(self.app_slug) is not str
+            or _IDENTITY.fullmatch(self.app_slug) is None
+        ):
+            raise ValueError("candidate provenance identity is invalid")
+        for value in (self.owner_id, self.repository_id, self.app_id, self.installation_id):
+            if type(value) is not int or value <= 0:
+                raise ValueError("candidate provenance numeric identity is invalid")
         if self.started_at.tzinfo is None or self.started_at.utcoffset() is None:
             raise ValueError("candidate provenance start time is invalid")
         if self.finished_at.tzinfo is None or self.finished_at.utcoffset() is None:
@@ -143,6 +161,7 @@ class GitHubCandidateReadProvenance:
                 self.commit_digest,
                 self.final_ref_digest,
                 self.policy_digest,
+                self.mint_digest,
             )
         ):
             raise ValueError("candidate provenance digest is invalid")
@@ -173,12 +192,46 @@ class GitHubCandidateReadProvenance:
             raise ValueError("candidate provenance request trace is not exact")
         if type(self.endpoint_observation_digests) is not tuple:
             raise ValueError("candidate provenance endpoint observations are malformed")
+        if any(
+            type(item) is not tuple
+            or len(item) != 2
+            or type(item[0]) is not str
+            or type(item[1]) is not str
+            for item in self.endpoint_observation_digests
+        ):
+            raise ValueError("candidate provenance endpoint observations are malformed")
         labels = tuple(label for label, _ in self.endpoint_observation_digests)
         if labels != tuple(sorted(labels)) or len(set(labels)) != len(labels):
             raise ValueError("candidate provenance endpoint labels are not canonical")
-        required = {"app", "installation", "repository", "initial_ref", "commit", "final_ref"}
-        if not required.issubset(labels):
-            raise ValueError("candidate provenance endpoint identities are incomplete")
+        required = {
+            "app",
+            "installation",
+            "mint",
+            "repository",
+            "initial_ref",
+            "commit",
+            "final_ref",
+            "policy",
+        }
+        if set(labels) != required:
+            raise ValueError("candidate provenance endpoint identities are not exact")
+        endpoint_map = dict(self.endpoint_observation_digests)
+        expected_endpoint = {
+            "app": endpoint_map["app"],
+            "installation": endpoint_map["installation"],
+            "mint": self.mint_digest,
+            "repository": endpoint_map["repository"],
+            "initial_ref": self.initial_ref_digest,
+            "commit": self.commit_digest,
+            "final_ref": self.final_ref_digest,
+            "policy": self.policy_digest,
+        }
+        if endpoint_map != expected_endpoint or any(
+            _DIGEST.fullmatch(value) is None for value in endpoint_map.values()
+        ):
+            raise ValueError("candidate provenance endpoint mapping is not exact")
+        if self.initial_ref_digest != self.final_ref_digest:
+            raise ValueError("candidate provenance ref fence digests differ")
         if include_digest and self.provenance_digest != canonical_digest(self._payload()):
             raise ValueError("candidate provenance digest does not match semantic state")
 
@@ -198,6 +251,10 @@ class GitHubCandidateReadWithProvenance:
         if (
             self.result.operation_id != self.provenance.operation_id
             or self.result.repository_digest != self.provenance.repository_digest
+            or self.result.owner != self.provenance.owner
+            or self.result.owner_id != self.provenance.owner_id
+            or self.result.repository != self.provenance.repository
+            or self.result.repository_id != self.provenance.repository_id
             or self.result.candidate_ref != self.provenance.candidate_ref
             or self.result.candidate_commit != self.provenance.candidate_commit
             or self.result.initial_ref_digest != self.provenance.initial_ref_digest
@@ -264,6 +321,27 @@ class GitHubCandidateRefObserver:
         try:
             checked = _revalidate_request(request, self._configuration)
             self._configuration.assert_valid()
+            self._credentials.assert_valid()
+            if type(self._transport) is not GitHubJsonTransport:
+                raise TypeError("exact GitHub candidate transport is required")
+            transport_origin = getattr(self._transport, "_origin", None)
+            transport_timeout = getattr(self._transport, "_timeout", None)
+            transport_max_response = getattr(self._transport, "_max_response", None)
+            if (
+                (
+                    transport_origin is not None
+                    and transport_origin != ("https", "api.github.com", None)
+                )
+                or (
+                    transport_timeout is not None
+                    and transport_timeout != float(self._configuration.timeout_seconds)
+                )
+                or (
+                    transport_max_response is not None
+                    and transport_max_response != self._configuration.max_response_bytes
+                )
+            ):
+                raise ValueError("candidate transport binding is not exact")
             started = _utc_now()
             trace: list[GitHubReadRequest] = []
             app = self._get("/app", self._credentials.app_jwt, trace)
@@ -272,7 +350,7 @@ class GitHubCandidateRefObserver:
             installation = self._get(installation_path, self._credentials.app_jwt, trace)
             self._verify_installation(installation)
             repository_path = f"/repositories/{self._configuration.repository_id}"
-            installation_token = self._mint_installation_token(trace)
+            installation_token, mint_digest = self._mint_installation_token(trace)
             repository = self._get(repository_path, installation_token, trace)
             self._verify_repository(repository)
             candidate_path = (
@@ -297,6 +375,8 @@ class GitHubCandidateRefObserver:
             finished = _utc_now()
             initial_digest = canonical_digest(_safe_ref(commit[0], checked.candidate_ref))
             final_digest = canonical_digest(_safe_ref(final_commit[0], checked.candidate_ref))
+            if initial_digest != final_digest:
+                raise ValueError("candidate ref fence digests differ")
             result = MainPersonalExactCasCandidateObservation.build(
                 operation_id=checked.operation_id,
                 repository_digest=checked.repository_digest,
@@ -328,10 +408,12 @@ class GitHubCandidateRefObserver:
                     (
                         ("app", canonical_digest(_safe_app(app))),
                         ("installation", canonical_digest(_safe_installation(installation))),
+                        ("mint", mint_digest),
                         ("repository", canonical_digest(_safe_repository(repository))),
                         ("initial_ref", initial_digest),
                         ("commit", result.commit_digest),
                         ("final_ref", final_digest),
+                        ("policy", policy_digest),
                     )
                 )
             )
@@ -356,6 +438,7 @@ class GitHubCandidateRefObserver:
                 commit_digest=result.commit_digest,
                 final_ref_digest=final_digest,
                 policy_digest=policy_digest,
+                mint_digest=mint_digest,
                 started_at=started,
                 finished_at=finished,
                 candidate_commit=commit[0],
@@ -414,7 +497,7 @@ class GitHubCandidateRefObserver:
             raise ValueError("GitHub candidate response status differs")
         return status, body
 
-    def _mint_installation_token(self, trace: list[GitHubReadRequest]) -> str:
+    def _mint_installation_token(self, trace: list[GitHubReadRequest]) -> tuple[str, str]:
         path = f"/app/installations/{self._configuration.observer_installation_id}/access_tokens"
         body: JsonBody = {
             "repository_ids": [self._configuration.repository_id],
@@ -449,7 +532,7 @@ class GitHubCandidateRefObserver:
         now = _utc_now()
         if expires <= now or expires > now + timedelta(minutes=65):
             raise ValueError("installation token expiry differs")
-        return token
+        return token, canonical_digest(_safe_mint(value))
 
     def _verify_app(self, body: JsonValue) -> None:
         value = _object(body)
@@ -460,8 +543,8 @@ class GitHubCandidateRefObserver:
             or value.get("name") != self._configuration.observer_app_name
             or value.get("permissions") != {"contents": "read", "metadata": "read"}
             or value.get("events") != []
-            or value.get("public", False) is not False
-            or value.get("webhook_active", False) is not False
+            or not _optional_false_state(value, "public")
+            or not _optional_false_state(value, "webhook_active")
             or owner.get("login") != self._configuration.owner
             or owner.get("id") != self._configuration.owner_id
             or owner.get("type") != "User"
@@ -577,6 +660,29 @@ def _safe_app(body: JsonValue) -> dict[str, JsonValue]:
         "owner": {key: owner[key] for key in ("login", "id", "type")},
         "permissions": value["permissions"],
         "events": value["events"],
+        "public_state": _optional_false_state(value, "public"),
+        "webhook_active_state": _optional_false_state(value, "webhook_active"),
+    }
+
+
+def _optional_false_state(value: dict[str, JsonValue], key: str) -> str:
+    """Return a safe presence-aware state for optional documented App fields."""
+    if key not in value:
+        return "missing"
+    if type(value[key]) is not bool or value[key] is not False:
+        raise ValueError("observer App optional state differs")
+    return "false"
+
+
+def _safe_mint(body: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    repositories = body["repositories"]
+    if type(repositories) is not list or len(repositories) != 1:
+        raise ValueError("installation token repository scope differs")
+    return {
+        "expires_at": body["expires_at"],
+        "permissions": body["permissions"],
+        "repository_selection": body["repository_selection"],
+        "repositories": [_safe_repository(repositories[0])],
     }
 
 
