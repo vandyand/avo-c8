@@ -6,14 +6,15 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from avo_correlate.adapters.artifacts import (
+    CandidatePublicationAuthorityResolutionError,
+    MainGraduationJournal,
     MainPersonalExactCasCandidatePublicationAuthorityJournal,
     MainPersonalExactCasCandidatePublicationAuthorityResolver,
     MainPersonalExactCasCandidatePublicationJournal,
+    MainPersonalExactCasControllerCompositionJournal,
+    MainPersonalExactCasHostedIdentityJournal,
 )
 from avo_correlate.adapters.artifacts.durable_backend_gate import DurableBackendQualification
-from avo_correlate.adapters.artifacts.main_personal_exact_cas_candidate_publication_authority import (
-    CandidatePublicationAuthorityResolutionError,
-)
 from avo_correlate.adapters.hosted_git import (
     GitHubCandidatePublisherConfiguration,
     GitHubCandidatePublisherCredentials,
@@ -114,7 +115,8 @@ def _authority_root():
         owner_id=99,
         composition_digest=composition.digest,
         composition_artifact=composition,
-        preparation_authorization_digest=preparation.digest,
+        preparation_authorization_record_digest=preparation.digest,
+        preparation_authorization_digest="sha256:" + "f" * 64,
         preparation_authorization_artifact=preparation,
         hosted_identity_root_digest=identity.digest,
         hosted_identity_root_artifact=identity,
@@ -339,7 +341,9 @@ def test_controller_boundary_is_fail_closed_until_authority_root(
 
 def test_authority_root_binds_exact_refs_and_rejects_tampering() -> None:
     root = _authority_root()
-    assert root.candidate_publication_authorized is True
+    assert root.dependencies_bound is True
+    assert root.candidate_publication_authorized is False
+    assert root.offline_only is True
     assert root.is_authoritative is False
     assert root.receipt_issued is False
     assert root.mutation_performed is False
@@ -347,6 +351,17 @@ def test_authority_root_binds_exact_refs_and_rejects_tampering() -> None:
     with pytest.raises(ValueError):
         MainPersonalExactCasCandidatePublicationAuthorityRoot.model_validate_json(
             canonical_bytes(tampered)
+        )
+    created_at_tampered = root.preparation_authorization_artifact.model_copy(
+        update={"created_at": root.preparation_authorization_artifact.created_at + timedelta(seconds=1)}
+    )
+    with pytest.raises(ValueError):
+        MainPersonalExactCasCandidatePublicationAuthorityRoot.model_validate_json(
+            canonical_bytes(
+                root.model_copy(
+                    update={"preparation_authorization_artifact": created_at_tampered}
+                )
+            )
         )
 
 
@@ -361,6 +376,51 @@ def test_authority_resolver_rejects_protocol_or_dto_dependencies() -> None:
             hosted_identity_journal=object(),  # type: ignore[arg-type]
             configuration=configuration,
         )
+
+
+def test_resolver_uses_real_concrete_journals_and_fails_closed_without_closure(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    def qualified(path):
+        return DurableBackendQualification(
+            root=path.resolve(),
+            qualified=True,
+            reason="test-qualified",
+            filesystem_type="ext4",
+            mount_id=1,
+            device="8:1",
+        )
+
+    monkeypatch.setattr(
+        "avo_correlate.adapters.artifacts.main_personal_exact_cas_controller_composition.require_durable_backend",
+        qualified,
+    )
+    monkeypatch.setattr(
+        "avo_correlate.adapters.artifacts.main_personal_exact_cas_hosted_identity_journal.require_durable_backend",
+        qualified,
+    )
+    monkeypatch.setattr(
+        "avo_correlate.adapters.artifacts.main_personal_exact_cas_controller_composition._fsync_directory",
+        lambda _path: None,
+    )
+    monkeypatch.setattr(
+        "avo_correlate.adapters.artifacts.main_personal_exact_cas_hosted_identity_journal._fsync_directory",
+        lambda _path: None,
+    )
+    composition = MainPersonalExactCasControllerCompositionJournal(tmp_path / "composition")
+    graduation = MainGraduationJournal(tmp_path / "graduation")
+    identity = MainPersonalExactCasHostedIdentityJournal(tmp_path / "identity")
+    configuration = GitHubCandidatePublisherConfiguration(
+        app_id=77, installation_id=88, owner_id=99
+    )
+    resolver = MainPersonalExactCasCandidatePublicationAuthorityResolver(
+        composition_journal=composition,
+        graduation_journal=graduation,
+        hosted_identity_journal=identity,
+        configuration=configuration,
+    )
+    with pytest.raises(CandidatePublicationAuthorityResolutionError):
+        resolver.resolve("sha256:" + "1" * 64)
 
 
 def test_authority_journal_reopens_and_rejects_tampered_root(
@@ -406,5 +466,9 @@ def test_authority_journal_reopens_and_rejects_tampered_root(
     current[0] = root
     tampered = root.model_copy(update={"owner_id": root.owner_id + 1})
     journal._path(root.operation_id).write_bytes(canonical_bytes(tampered))  # pyright: ignore[reportPrivateUsage]
+    with pytest.raises(CandidatePublicationAuthorityResolutionError):
+        reopened.read(root.operation_id)
+    reopened.close()
+    reopened.close()
     with pytest.raises(CandidatePublicationAuthorityResolutionError):
         reopened.read(root.operation_id)

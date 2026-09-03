@@ -11,6 +11,9 @@ import hashlib
 import os
 import re
 import stat
+import sys
+from contextlib import suppress
+from datetime import datetime
 from pathlib import Path
 
 from avo_correlate.adapters.artifacts.durable_backend_gate import (
@@ -97,6 +100,12 @@ class MainPersonalExactCasCandidatePublicationAuthorityResolver:
             preparation, preparation_ref = preparation_result
             if type(preparation) is not MainPreparationAuthorization:
                 raise ValueError("preparation authorization type differs")
+            _require_record_ref(
+                preparation_ref,
+                preparation,
+                "main-graduation-preparation-authorization",
+                "application/vnd.avo.main-graduation-preparation-authorization+json",
+            )
             identity_result = self._identity.read()
             if identity_result is None:
                 raise ValueError("hosted identity root is missing")
@@ -133,6 +142,7 @@ class MainPersonalExactCasCandidatePublicationAuthorityResolver:
                 owner_id=diagnostic.owner_id,
                 composition_digest=composition.source_composition_artifact.digest,
                 composition_artifact=composition.source_composition_artifact,
+                preparation_authorization_record_digest=preparation_ref.digest,
                 preparation_authorization_digest=preparation.authorization_digest,
                 preparation_authorization_artifact=preparation_ref,
                 hosted_identity_root_digest=composition.hosted_identity_root_artifact.digest,
@@ -186,6 +196,7 @@ class MainPersonalExactCasCandidatePublicationAuthorityResolver:
             or preparation.operation_id != operation_id
             or preparation.plan_digest != composition.source_plan_digest
             or preparation.composition_digest != composition.source_composition_digest
+            or preparation.policy_epoch != composition.policy_digest
             or preparation.base_commit != composition.base_commit
             or preparation.base_tree != composition.base_tree
             or preparation.candidate_commit != composition.candidate_commit
@@ -195,7 +206,10 @@ class MainPersonalExactCasCandidatePublicationAuthorityResolver:
             or preparation.lease_digest != composition.lease_digest
             or preparation.authorized is not True
             or not _artifact_matches(
-                composition.hosted_identity_root_artifact, identity_root_artifact(identity_root)
+                composition.hosted_identity_root_artifact,
+                identity_root_artifact(
+                    identity_root, composition.hosted_identity_root_artifact.created_at
+                ),
             )
             or identity_root.bundle_digest != bundle.bundle_digest
             or identity_root.writer_diagnostic_artifact.digest != diagnostic_ref_digest(diagnostic)
@@ -238,6 +252,10 @@ class MainPersonalExactCasCandidatePublicationAuthorityJournal:
     ) -> None:
         if type(resolver) is not MainPersonalExactCasCandidatePublicationAuthorityResolver:
             raise TypeError("exact authority resolver is required")
+        self._closed = False
+        self._descriptor_mode = False
+        self._root_fd: int | None = None
+        self._index_fd: int | None = None
         self._qualification = require_durable_backend(root)
         self._root = _prepare(self._qualification.root)
         self._indexes = _prepare(self._root / "main-personal-exact-cas-candidate-authority-index")
@@ -245,23 +263,65 @@ class MainPersonalExactCasCandidatePublicationAuthorityJournal:
         _same_backend(self._qualification, self._index_qualification)
         self._root_identity = _directory_identity(self._root)
         self._index_identity = _directory_identity(self._indexes)
+        self._descriptor_mode = _supports_descriptor_backend(self._qualification)
+        if self._descriptor_mode:
+            try:
+                self._root_fd = _open_directory(self._root)
+                self._index_fd = _open_dir_at(self._root_fd, self._indexes.name)
+                self._verify_retained_directories()
+            except BaseException:
+                self.close()
+                raise
         self._resolver = resolver
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        for descriptor in (self._index_fd, self._root_fd):
+            if descriptor is not None:
+                with suppress(OSError):
+                    os.close(descriptor)
+        self._index_fd = None
+        self._root_fd = None
+
+    def __enter__(self) -> MainPersonalExactCasCandidatePublicationAuthorityJournal:
+        self._ensure_open()
+        return self
+
+    def __exit__(self, _type: object, _value: object, _traceback: object) -> bool:
+        self.close()
+        return False
+
+    def _ensure_open(self) -> None:
+        if self._closed:
+            raise CandidatePublicationAuthorityResolutionError()
 
     def bind(self, operation_id: str) -> MainPersonalExactCasCandidatePublicationAuthorityRoot:
         try:
+            self._ensure_open()
             self._check_layout()
             authority = self._resolver.resolve(operation_id)
             data = canonical_bytes(authority)
-            path = self._path(operation_id)
-            _prepare(path.parent)
-            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW, 0o600)
+            descriptor, operation_descriptor, path = self._open_record(
+                operation_id, write=True
+            )
             try:
                 _write_all(descriptor, data)
                 os.fsync(descriptor)
             finally:
                 os.close(descriptor)
-            _fsync_directory(path.parent)
-            _fsync_directory(self._root)
+            if operation_descriptor is None:
+                _fsync_directory(path.parent)
+                _fsync_directory(self._root)
+            else:
+                try:
+                    os.fsync(operation_descriptor)
+                    if self._index_fd is not None and self._root_fd is not None:
+                        os.fsync(self._index_fd)
+                        os.fsync(self._root_fd)
+                finally:
+                    os.close(operation_descriptor)
             return authority
         except FileExistsError:
             authority = self._resolver.resolve(operation_id)
@@ -280,24 +340,30 @@ class MainPersonalExactCasCandidatePublicationAuthorityJournal:
         self, operation_id: str
     ) -> MainPersonalExactCasCandidatePublicationAuthorityRoot | None:
         try:
+            self._ensure_open()
             self._check_layout()
-            path = self._path(operation_id)
-            if not path.is_file() or path.is_symlink():
-                return None
-            descriptor = os.open(path, os.O_RDONLY | _NOFOLLOW)
+            descriptor, operation_descriptor, path = self._open_record(
+                operation_id, write=False
+            )
             try:
                 _check_regular(descriptor)
                 raw = _read_bounded(descriptor, _MAX)
             finally:
                 os.close(descriptor)
+                if operation_descriptor is not None:
+                    os.close(operation_descriptor)
             stored = MainPersonalExactCasCandidatePublicationAuthorityRoot.model_validate_json(raw)
             if canonical_bytes(stored) != raw:
                 raise ValueError("authority root is not canonical")
             current = self._resolver.resolve(operation_id)
             if current != stored:
                 raise ValueError("authority root dependencies changed")
-            _fsync_directory(path.parent)
-            _fsync_directory(self._root)
+            if operation_descriptor is None:
+                _fsync_directory(path.parent)
+                _fsync_directory(self._root)
+            elif self._index_fd is not None and self._root_fd is not None:
+                os.fsync(self._index_fd)
+                os.fsync(self._root_fd)
             return stored
         except FileNotFoundError:
             return None
@@ -310,6 +376,7 @@ class MainPersonalExactCasCandidatePublicationAuthorityJournal:
         return self._indexes / operation_id.removeprefix("sha256:") / "root.json"
 
     def _check_layout(self) -> None:
+        self._verify_retained_directories()
         _same_backend(self._qualification, require_durable_backend(self._root))
         _same_backend(self._qualification, require_durable_backend(self._indexes))
         if _directory_identity(self._root) != self._root_identity:
@@ -317,20 +384,85 @@ class MainPersonalExactCasCandidatePublicationAuthorityJournal:
         if _directory_identity(self._indexes) != self._index_identity:
             raise CandidatePublicationAuthorityResolutionError()
 
+    def _verify_retained_directories(self) -> None:
+        if not self._descriptor_mode:
+            return
+        if self._root_fd is None or self._index_fd is None:
+            raise CandidatePublicationAuthorityResolutionError()
+        current_root = _open_directory(self._root)
+        current_index: int | None = None
+        try:
+            _compare_directory_identity(self._root_fd, current_root)
+            current_index = _open_dir_at(current_root, self._indexes.name)
+            _compare_directory_identity(self._index_fd, current_index)
+        finally:
+            if current_index is not None:
+                os.close(current_index)
+            os.close(current_root)
 
-def identity_root_artifact(value: MainPersonalExactCasHostedIdentityEvidenceRoot) -> ArtifactRef:
+    def _open_record(
+        self, operation_id: str, *, write: bool
+    ) -> tuple[int, int | None, Path]:
+        path = self._path(operation_id)
+        if self._descriptor_mode:
+            if self._index_fd is None:
+                raise CandidatePublicationAuthorityResolutionError()
+            operation_name = operation_id.removeprefix("sha256:")
+            if write:
+                with suppress(FileExistsError):
+                    os.mkdir(operation_name, 0o700, dir_fd=self._index_fd)
+            operation_descriptor = _open_dir_at(
+                self._index_fd, operation_name, create=False
+            )
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL if write else os.O_RDONLY
+            try:
+                descriptor = os.open(
+                    "root.json", flags | _NOFOLLOW, 0o600, dir_fd=operation_descriptor
+                )
+            except BaseException:
+                os.close(operation_descriptor)
+                raise
+            return descriptor, operation_descriptor, path
+        if write:
+            _prepare(path.parent)
+        elif not path.is_file() or path.is_symlink():
+            raise FileNotFoundError(path)
+        return os.open(
+            path,
+            (os.O_WRONLY | os.O_CREAT | os.O_EXCL if write else os.O_RDONLY) | _NOFOLLOW,
+            0o600,
+        ), None, path
+
+
+def identity_root_artifact(
+    value: MainPersonalExactCasHostedIdentityEvidenceRoot, created_at: datetime
+) -> ArtifactRef:
     data = canonical_bytes(value)
     return ArtifactRef(
         digest="sha256:" + hashlib.sha256(data).hexdigest(),
         size_bytes=len(data),
         role="main-personal-exact-cas-hosted-identity-root",
         media_type="application/vnd.avo.main-personal-exact-cas-hosted-identity-root+json",
-        created_at=value.writer_diagnostic_artifact.created_at,
+        created_at=created_at,
     )
 
 
 def diagnostic_ref_digest(value: MainPersonalExactCasHostedConfigurationDiagnostic) -> str:
     return "sha256:" + hashlib.sha256(canonical_bytes(value)).hexdigest()
+
+
+def _require_record_ref(
+    reference: ArtifactRef, value: object, role: str, media_type: str
+) -> None:
+    raw = canonical_bytes(value)
+    if (
+        type(reference) is not ArtifactRef
+        or reference.digest != "sha256:" + hashlib.sha256(raw).hexdigest()
+        or reference.size_bytes != len(raw)
+        or reference.role != role
+        or reference.media_type != media_type
+    ):
+        raise ValueError("record artifact reference differs")
 
 
 def _artifact_matches(left: ArtifactRef, right: ArtifactRef) -> bool:
@@ -339,6 +471,7 @@ def _artifact_matches(left: ArtifactRef, right: ArtifactRef) -> bool:
         and left.size_bytes == right.size_bytes
         and left.role == right.role
         and left.media_type == right.media_type
+        and left.created_at == right.created_at
     )
 
 
@@ -359,6 +492,61 @@ def _directory_identity(path: Path) -> tuple[int, int]:
     if not stat.S_ISDIR(info.st_mode):
         raise CandidatePublicationAuthorityResolutionError()
     return info.st_dev, info.st_ino
+
+
+def _supports_descriptor_backend(qualification: object) -> bool:
+    if sys.platform == "linux":
+        if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
+            raise CandidatePublicationAuthorityResolutionError()
+        return True
+    if str(getattr(qualification, "reason", "")).startswith("test-"):
+        return False
+    raise CandidatePublicationAuthorityResolutionError()
+
+
+def _open_directory(path: Path) -> int:
+    descriptor = os.open(path, os.O_RDONLY | _DIRECTORY | _NOFOLLOW)
+    if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
+        os.close(descriptor)
+        raise CandidatePublicationAuthorityResolutionError()
+    return descriptor
+
+
+def _open_dir_at(parent: int, name: str, *, create: bool = False) -> int:
+    if create:
+        with suppress(FileExistsError):
+            os.mkdir(name, 0o700, dir_fd=parent)
+    descriptor = os.open(name, os.O_RDONLY | _DIRECTORY | _NOFOLLOW, dir_fd=parent)
+    if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
+        os.close(descriptor)
+        raise CandidatePublicationAuthorityResolutionError()
+    return descriptor
+
+
+def _compare_directory_identity(expected: int, current: int) -> None:
+    expected_stat = os.fstat(expected)
+    current_stat = os.fstat(current)
+    if (expected_stat.st_dev, expected_stat.st_ino) != (
+        current_stat.st_dev,
+        current_stat.st_ino,
+    ):
+        raise CandidatePublicationAuthorityResolutionError()
+    if _fd_mount_id(expected) != _fd_mount_id(current):
+        raise CandidatePublicationAuthorityResolutionError()
+
+
+def _fd_mount_id(descriptor: int) -> int:
+    try:
+        raw = Path(f"/proc/self/fdinfo/{descriptor}").read_text(encoding="ascii")
+    except (OSError, UnicodeError):
+        raise CandidatePublicationAuthorityResolutionError() from None
+    for line in raw.splitlines():
+        if line.startswith("mnt_id:"):
+            value = line.partition(":")[2].strip()
+            if value.isdigit():
+                return int(value)
+            break
+    raise CandidatePublicationAuthorityResolutionError()
 
 
 def _same_backend(left: object, right: object) -> None:

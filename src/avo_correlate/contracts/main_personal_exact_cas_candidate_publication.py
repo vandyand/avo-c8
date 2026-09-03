@@ -301,12 +301,13 @@ class MainPersonalExactCasCandidatePublicationReconciliation(StrictModel):
 
 
 class MainPersonalExactCasCandidatePublicationAuthorityRoot(StrictModel):
-    """Resolved, operation-specific authority for one candidate publication.
+    """Resolved, operation-specific offline dependency closure.
 
     This root is only buildable by the resolver after it has reopened every
-    required journal.  It is intentionally separate from the generic
-    composition evidence and carries complete canonical references to each
-    preparation authorization and hosted policy identity leaves.
+    required journal.  It carries complete canonical references to each
+    preparation authorization and hosted policy identity leaf, but it is not
+    publication authority: a future controller must perform a fresh hosted
+    policy/readiness check and trusted-clock lease check before dispatch.
     """
 
     schema_version: Literal[1] = 1
@@ -328,6 +329,7 @@ class MainPersonalExactCasCandidatePublicationAuthorityRoot(StrictModel):
     owner_id: StrictInt = Field(gt=0)
     composition_digest: Sha256Digest
     composition_artifact: ArtifactRef
+    preparation_authorization_record_digest: Sha256Digest
     preparation_authorization_digest: Sha256Digest
     preparation_authorization_artifact: ArtifactRef
     hosted_identity_root_digest: Sha256Digest
@@ -336,7 +338,9 @@ class MainPersonalExactCasCandidatePublicationAuthorityRoot(StrictModel):
     candidate_policy_digest: Sha256Digest
     candidate_policy_artifact: ArtifactRef
     candidate_policy_ruleset_digests: tuple[Sha256Digest, ...]
-    candidate_publication_authorized: Literal[True] = True
+    dependencies_bound: Literal[True] = True
+    candidate_publication_authorized: Literal[False] = False
+    offline_only: Literal[True] = True
     is_authoritative: Literal[False] = False
     readiness_authorized: Literal[False] = False
     is_terminal: Literal[False] = False
@@ -382,8 +386,8 @@ class MainPersonalExactCasCandidatePublicationAuthorityRoot(StrictModel):
                 raise ValueError("authority root artifact reference is not exact")
         if self.composition_artifact.digest != self.composition_digest:
             raise ValueError("authority root composition artifact digest differs")
-        if self.preparation_authorization_artifact.digest != self.preparation_authorization_digest:
-            raise ValueError("authority root preparation artifact digest differs")
+        if self.preparation_authorization_record_digest != self.preparation_authorization_artifact.digest:
+            raise ValueError("authority root preparation record digest differs")
         if self.hosted_identity_root_artifact.digest != self.hosted_identity_root_digest:
             raise ValueError("authority root identity artifact digest differs")
         if self.candidate_ref != candidate_ref_for_operation(self.operation_id):

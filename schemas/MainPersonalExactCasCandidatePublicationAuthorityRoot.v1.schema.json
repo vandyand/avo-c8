@@ -47,7 +47,7 @@
     }
   },
   "additionalProperties": false,
-  "description": "Resolved, operation-specific authority for one candidate publication.\n\nThis root is only buildable by the resolver after it has reopened every\nrequired journal.  It is intentionally separate from the generic\ncomposition evidence and carries complete canonical references to each\npreparation authorization and hosted policy identity leaves.",
+  "description": "Resolved, operation-specific offline dependency closure.\n\nThis root is only buildable by the resolver after it has reopened every\nrequired journal.  It carries complete canonical references to each\npreparation authorization and hosted policy identity leaf, but it is not\npublication authority: a future controller must perform a fresh hosted\npolicy/readiness check and trusted-clock lease check before dispatch.",
   "properties": {
     "base_commit": {
       "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
@@ -89,8 +89,8 @@
       "type": "array"
     },
     "candidate_publication_authorized": {
-      "const": true,
-      "default": true,
+      "const": false,
+      "default": false,
       "title": "Candidate Publication Authorized",
       "type": "boolean"
     },
@@ -122,6 +122,12 @@
       "pattern": "^sha256:[0-9a-f]{64}$",
       "title": "Configuration Digest",
       "type": "string"
+    },
+    "dependencies_bound": {
+      "const": true,
+      "default": true,
+      "title": "Dependencies Bound",
+      "type": "boolean"
     },
     "deploy_performed": {
       "const": false,
@@ -175,6 +181,12 @@
       "title": "Mutation Performed",
       "type": "boolean"
     },
+    "offline_only": {
+      "const": true,
+      "default": true,
+      "title": "Offline Only",
+      "type": "boolean"
+    },
     "operation_id": {
       "pattern": "^sha256:[0-9a-f]{64}$",
       "title": "Operation Id",
@@ -191,6 +203,11 @@
     "preparation_authorization_digest": {
       "pattern": "^sha256:[0-9a-f]{64}$",
       "title": "Preparation Authorization Digest",
+      "type": "string"
+    },
+    "preparation_authorization_record_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Preparation Authorization Record Digest",
       "type": "string"
     },
     "publisher_app_id": {
@@ -256,6 +273,7 @@
     "owner_id",
     "composition_digest",
     "composition_artifact",
+    "preparation_authorization_record_digest",
     "preparation_authorization_digest",
     "preparation_authorization_artifact",
     "hosted_identity_root_digest",
