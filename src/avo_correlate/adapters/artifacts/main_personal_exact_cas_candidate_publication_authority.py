@@ -414,6 +414,14 @@ class MainPersonalExactCasCandidatePublicationAuthorityJournal:
             operation_descriptor = _open_dir_at(
                 self._index_fd, operation_name, create=False
             )
+            try:
+                if self._root_fd is None:
+                    raise CandidatePublicationAuthorityResolutionError()
+                _compare_directory_mount(self._index_fd, operation_descriptor)
+                _compare_directory_mount(self._root_fd, operation_descriptor)
+            except BaseException:
+                os.close(operation_descriptor)
+                raise
             flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL if write else os.O_RDONLY
             try:
                 descriptor = os.open(
@@ -530,6 +538,15 @@ def _compare_directory_identity(expected: int, current: int) -> None:
         current_stat.st_dev,
         current_stat.st_ino,
     ):
+        raise CandidatePublicationAuthorityResolutionError()
+    if _fd_mount_id(expected) != _fd_mount_id(current):
+        raise CandidatePublicationAuthorityResolutionError()
+
+
+def _compare_directory_mount(expected: int, current: int) -> None:
+    expected_stat = os.fstat(expected)
+    current_stat = os.fstat(current)
+    if expected_stat.st_dev != current_stat.st_dev:
         raise CandidatePublicationAuthorityResolutionError()
     if _fd_mount_id(expected) != _fd_mount_id(current):
         raise CandidatePublicationAuthorityResolutionError()
