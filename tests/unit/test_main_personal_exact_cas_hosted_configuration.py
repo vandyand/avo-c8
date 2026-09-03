@@ -16,7 +16,10 @@ from pathlib import Path
 import pytest
 
 from avo_correlate.adapters.hosted_git.github import JsonBody, JsonObject, JsonValue
-from avo_correlate.adapters.hosted_git.github_read_provenance import GitHubReadRequest
+from avo_correlate.adapters.hosted_git.github_read_provenance import (
+    GitHubReadRequest,
+    GitHubReadWithProvenance,
+)
 from avo_correlate.adapters.hosted_git.main_personal_exact_cas_hosted_configuration import (
     MainPersonalExactCasGitHubHostedConfigurationVerifier,
     MainPersonalExactCasHostedConfigurationUnverified,
@@ -448,7 +451,9 @@ def test_authenticated_configuration_provenance_is_canonical_and_secret_free() -
 
     rotated = _responses()
     for index, token in ((4, "rotated-first-secret"), (14, "rotated-second-secret")):
-        token_body = rotated[index][1]
+        token_response = rotated[index]
+        assert not isinstance(token_response, BaseException)
+        token_body = token_response[1]
         assert isinstance(token_body, dict)
         token_body["token"] = token
     rotated_subject, _ = _subject(rotated)
@@ -486,8 +491,16 @@ def test_same_verifier_concurrent_reads_keep_operation_local_complete_traces() -
         trusted_clock=lambda: NOW,
         transport=ConcurrentTransport(),
     )
+
+    def verify_once(
+        _: int,
+    ) -> GitHubReadWithProvenance[
+        MainPersonalExactCasHostedConfigurationDiagnostic
+    ]:
+        return subject.verify_with_provenance()
+
     with ThreadPoolExecutor(max_workers=2) as pool:
-        results = list(pool.map(lambda _: subject.verify_with_provenance(), (1, 2)))
+        results = list(pool.map(verify_once, (1, 2)))
     assert len(results) == 2
     first, second = results
     assert first.result == second.result
