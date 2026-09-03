@@ -119,7 +119,7 @@ def _responses(
             {
                 "token": "reader-minted-installation-token",
                 "expires_at": "2026-09-02T13:00:00Z",
-                "permissions": {"contents": "read"},
+                "permissions": {"contents": "read", "metadata": "read"},
                 "repository_selection": "selected",
                 "repositories": [
                     {
@@ -400,6 +400,7 @@ def test_repository_identity_fields_are_exact(
     [
         {"token": ""},
         {"permissions": {"contents": "write"}},
+        {"permissions": {"contents": "read"}},
         {"permissions": {"contents": "read", "issues": "read"}},
         {"repository_selection": "all"},
         {"expires_at": "2026-09-02T11:59:59Z"},

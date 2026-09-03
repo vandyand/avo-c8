@@ -30,6 +30,7 @@ _MAX_PAGES = 10
 _PAGE_SIZE = 100
 _MAX_OBSERVATION = timedelta(minutes=5)
 _OBJECT_PATTERN = re.compile(r"^[0-9a-f]{40}(?:[0-9a-f]{24})?$")
+_GITHUB_TIMESTAMP_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 
 
 class MainPersonalExactCasHostedConfigurationUnverified(RuntimeError):
@@ -73,7 +74,6 @@ class MainPersonalExactCasGitHubHostedConfigurationVerifier:
         *,
         owner_admin_token: str,
         app_jwt: str,
-        installation_token: str,
         trusted_clock: Callable[[], datetime],
         transport: Callable[
             [str, str, JsonBody | None, Mapping[str, str]], tuple[int, JsonValue]
@@ -84,13 +84,10 @@ class MainPersonalExactCasGitHubHostedConfigurationVerifier:
             raise ValueError("GitHub owner/admin read token is required")
         if type(app_jwt) is not str or not app_jwt.strip():
             raise ValueError("GitHub App JWT is required")
-        if type(installation_token) is not str or not installation_token.strip():
-            raise ValueError("GitHub installation token is required")
         if not callable(trusted_clock):
             raise ValueError("trusted clock is required")
         self._owner_admin_token = owner_admin_token
         self._app_jwt = app_jwt
-        self._installation_token = installation_token
         self._clock = trusted_clock
         self._transport = transport or GitHubJsonTransport(origin=_API_ORIGIN)
 
@@ -178,9 +175,10 @@ class MainPersonalExactCasGitHubHostedConfigurationVerifier:
             raise ValueError("App installation is not exclusive")
         installation = self._object(installations[0])
         installation_id = self._verify_installation(installation, app_id, owner_id)
+        installation_token = self._mint_read_token(installation_id, owner_id)
 
         repositories, selected_raw = self._read_object_pages(
-            "/installation/repositories", "repositories", self._installation_token
+            "/installation/repositories", "repositories", installation_token
         )
         raw["selected_repositories"] = selected_raw
         if len(repositories) != 1:
@@ -229,6 +227,54 @@ class MainPersonalExactCasGitHubHostedConfigurationVerifier:
             selected_repositories_digest=canonical_digest(selected_raw),
             raw_digest=canonical_digest(raw),
         )
+
+    def _mint_read_token(self, installation_id: int, owner_id: int) -> str:
+        """Mint and validate the exact read-scoped token for this pass."""
+
+        body: JsonBody = {
+            "repository_ids": [_REPOSITORY_ID],
+            "permissions": {"contents": "read"},
+        }
+        status, value = self._transport(
+            "POST",
+            _API_ORIGIN + f"/app/installations/{installation_id}/access_tokens",
+            body,
+            {
+                "Accept": "application/vnd.github+json",
+                "Authorization": "Bearer " + self._app_jwt,
+                "Content-Type": "application/json",
+                "X-GitHub-Api-Version": _API_VERSION,
+            },
+        )
+        if type(status) is not int or status != 201:
+            raise ValueError("installation token mint failed")
+        result = self._object(value)
+        token = self._string(result, "token")
+        expires_at = self._string(result, "expires_at")
+        if _GITHUB_TIMESTAMP_PATTERN.fullmatch(expires_at) is None:
+            raise ValueError("installation token expiry is malformed")
+        if (
+            result.get("permissions") != {"contents": "read", "metadata": "read"}
+            or result.get("repository_selection") != "selected"
+        ):
+            raise ValueError("installation token scope is not exact")
+        repositories = result.get("repositories")
+        if type(repositories) is not list or len(repositories) != 1:
+            raise ValueError("installation token repository scope is not exact")
+        self._verify_selected_repository(self._object(repositories[0]), owner_id)
+        try:
+            expiry = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            raise ValueError("installation token expiry is malformed") from None
+        now = self._now()
+        if (
+            expiry.tzinfo is None
+            or expiry.utcoffset() is None
+            or expiry.utcoffset() != timedelta(0)
+            or not (now < expiry <= now + timedelta(minutes=65))
+        ):
+            raise ValueError("installation token expiry is not exact")
+        return token
 
     def _read_main_ref(self) -> tuple[GitObject, str]:
         value = self._object(
