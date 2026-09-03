@@ -7,14 +7,18 @@ from __future__ import annotations
 import copy
 import inspect
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import cast
 
 import pytest
 
+from avo_correlate.adapters.hosted_git import (
+    main_personal_exact_cas_hosted_configuration as hosted_configuration_module,
+)
 from avo_correlate.adapters.hosted_git.github import JsonBody, JsonObject, JsonValue
 from avo_correlate.adapters.hosted_git.github_read_provenance import (
     GitHubReadRequest,
@@ -982,6 +986,262 @@ def test_minted_installation_token_requires_exact_utc_timestamp_format(
     token = copy.deepcopy(_minted_token())
     token["expires_at"] = expires_at
     responses[4] = (201, token)
+    subject, _ = _subject(responses)
+    with pytest.raises(MainPersonalExactCasHostedConfigurationUnverified):
+        subject.verify()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("owner_admin_token", ""),
+        ("app_jwt", ""),
+        ("candidate_publisher_app_jwt", ""),
+        ("candidate_publisher_app_id", 0),
+        ("candidate_publisher_installation_id", 0),
+        ("trusted_clock", None),
+    ],
+)
+def test_constructor_rejects_unusable_authentication_inputs(field: str, value: object) -> None:
+    kwargs: dict[str, object] = {
+        "owner_admin_token": OWNER_ADMIN_TOKEN,
+        "app_jwt": APP_TOKEN,
+        "candidate_publisher_app_jwt": CANDIDATE_APP_TOKEN,
+        "candidate_publisher_app_id": CANDIDATE_APP_ID,
+        "candidate_publisher_installation_id": CANDIDATE_INSTALLATION_ID,
+        "trusted_clock": lambda: NOW,
+        "transport": FakeTransport([]),
+    }
+    kwargs[field] = value
+    with pytest.raises(ValueError):
+        MainPersonalExactCasGitHubHostedConfigurationVerifier(**kwargs)  # type: ignore[arg-type]
+
+
+def test_small_validation_helpers_reject_malformed_provider_values() -> None:
+    subject, _ = _subject([])
+    malformed_objects: tuple[object, ...] = (None, [], "not-an-object")
+    for value in malformed_objects:
+        with pytest.raises(ValueError, match="object"):
+            subject._object(value)
+    for value in (None, "", "bad\x00value", 4):
+        with pytest.raises(ValueError, match="string"):
+            subject._string({"x": value}, "x")
+    for value in (None, True, 0, -1, "1"):
+        with pytest.raises(ValueError, match="identity"):
+            subject._positive_int({"x": value}, "x")
+    for value in (None, True, -1, "0"):
+        with pytest.raises(ValueError, match="count"):
+            subject._nonnegative_int({"x": value}, "x")
+
+
+def test_private_ref_and_transport_fences_reject_bad_shapes() -> None:
+    subject, _ = _subject([(200, _ref("z" * 40))])
+    with pytest.raises(ValueError, match="object"):
+        subject._read_main_ref([])
+    subject, _ = _subject(
+        [(200, {"ref": "refs/heads/dev", "object": {"type": "commit", "sha": SHA}})]
+    )
+    with pytest.raises(ValueError, match="malformed"):
+        subject._read_main_ref([])
+    subject, _ = _subject([(201, {})])
+    with pytest.raises(ValueError, match="read failed"):
+        subject._get("/probe", "token", [])
+
+
+def test_pagination_readers_reject_malformed_and_drifting_pages() -> None:
+    subject, _ = _subject([(200, {})])
+    with pytest.raises(ValueError, match="paginated"):
+        subject._read_array_pages("/probe", "token", [])
+    subject, _ = _subject([(200, {"total_count": 0, "repositories": [_repository()]})])
+    with pytest.raises(ValueError, match="ambiguous"):
+        subject._read_object_pages("/probe", "repositories", "token", [])
+    responses: list[tuple[int, JsonValue] | BaseException] = [
+        (200, cast(JsonValue, {"total_count": 101, "repositories": [_repository()] * 100})),
+        (200, cast(JsonValue, {"total_count": 102, "repositories": []})),
+    ]
+    subject, _ = _subject(responses)
+    with pytest.raises(ValueError, match="drifted"):
+        subject._read_object_pages("/probe", "repositories", "token", [])
+
+
+def test_ruleset_and_protection_helpers_cover_rejection_boundaries() -> None:
+    subject, _ = _subject([])
+    assert subject._update_rule_is_restrictive({"type": "update"})
+    assert subject._update_rule_is_restrictive(
+        {"type": "update", "parameters": {"update_allows_fetch_and_merge": False}}
+    )
+    assert not subject._update_rule_is_restrictive(
+        {"type": "update", "parameters": {"update_allows_fetch_and_merge": True}}
+    )
+    assert not subject._update_rule_is_restrictive({"type": "update", "unexpected": False})
+    with pytest.raises(ValueError, match="required rulesets"):
+        subject._classify_rulesets([_writer()], APP_ID)
+    duplicated = _writer()
+    duplicated["id"] = 102
+    with pytest.raises(ValueError, match="required rulesets"):
+        subject._classify_rulesets([_writer(), duplicated], APP_ID)
+    extra_protection: JsonObject = _protection()
+    extra_protection["required_status_checks"] = {}
+    protections: tuple[JsonObject, ...] = (
+        {},
+        cast(JsonObject, {"enforce_admins": {"enabled": "yes"}}),
+        extra_protection,
+    )
+    for protection in protections:
+        with pytest.raises(ValueError, match="branch protection"):
+            subject._verify_branch_protection(protection)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "naive-start",
+        "backwards-time",
+        "ruleset-overlap",
+        "app-overlap",
+        "installation-overlap",
+        "selected-repository",
+        "events",
+        "publisher-identity-digest",
+        "publisher-installation-digest",
+        "pass-drift",
+        "protection-digest",
+        "configuration-digest",
+        "source-digest",
+        "observation-digest",
+    ],
+)
+def test_hosted_configuration_contract_rejects_semantic_tampering(mutation: str) -> None:
+    subject, _ = _subject()
+    result = subject.verify()
+    payload = result.model_dump(mode="json")
+    if mutation == "naive-start":
+        payload["started_at"] = "2026-09-02T12:00:00"
+    elif mutation == "backwards-time":
+        payload["finished_at"] = "2026-09-02T11:59:59Z"
+    elif mutation == "ruleset-overlap":
+        payload["safety_ruleset_id"] = payload["writer_ruleset_id"]
+    elif mutation == "app-overlap":
+        payload["candidate_publisher_app_id"] = payload["writer_app_id"]
+    elif mutation == "installation-overlap":
+        payload["candidate_publisher_installation_id"] = payload["writer_installation_id"]
+    elif mutation == "selected-repository":
+        payload["selected_repository_ids"] = [123]
+    elif mutation == "events":
+        payload["subscribed_events"] = ["push"]
+    elif mutation == "publisher-identity-digest":
+        payload["candidate_publisher_identity_digest"] = "sha256:" + "f" * 64
+    elif mutation == "publisher-installation-digest":
+        payload["candidate_publisher_installation_digest"] = "sha256:" + "f" * 64
+    elif mutation == "pass-drift":
+        payload["second_pass_digest"] = "sha256:" + "f" * 64
+    elif mutation == "protection-digest":
+        payload["protection_ruleset_digest"] = "sha256:" + "f" * 64
+    elif mutation == "configuration-digest":
+        payload["configuration_digest"] = "sha256:" + "f" * 64
+    elif mutation == "source-digest":
+        payload["source_digest"] = "sha256:" + "f" * 64
+    else:
+        payload["observation_digest"] = "sha256:" + "f" * 64
+    with pytest.raises(ValueError):
+        MainPersonalExactCasHostedConfigurationDiagnostic.model_validate(payload)
+
+
+def test_verifier_rejects_trace_mismatch_even_when_reads_are_valid(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    subject, _ = _subject()
+    def empty_trace(_first: object, _second: object) -> tuple[GitHubReadRequest, ...]:
+        return ()
+
+    monkeypatch.setattr(hosted_configuration_module, "_expected_trace", empty_trace)
+    with pytest.raises(MainPersonalExactCasHostedConfigurationUnverified):
+        subject.verify()
+
+
+def test_verifier_rejects_installation_and_selection_cardinality() -> None:
+    for indexes, mutation in (
+        ((3,), "wrong-installation-app"),
+        ((5,), "wrong-selected-repository"),
+    ):
+        responses = _mutated(indexes, mutation)
+        response = responses[indexes[0]]
+        assert not isinstance(response, BaseException)
+        status, value = response
+        if mutation == "wrong-installation-app":
+            responses[indexes[0]] = (status, [])
+        else:
+            payload = _as_object(value)
+            payload["repositories"] = []
+            responses[indexes[0]] = (status, payload)
+        subject, _ = _subject(responses)
+        with pytest.raises(MainPersonalExactCasHostedConfigurationUnverified):
+            subject.verify()
+
+
+def test_verifier_rejects_invalid_token_timestamp_and_rule_detail_shapes() -> None:
+    responses = _responses()
+    token = copy.deepcopy(_minted_token())
+    token["expires_at"] = "2026-99-99T99:99:99Z"
+    responses[4] = (201, token)
+    subject, _ = _subject(responses)
+    with pytest.raises(MainPersonalExactCasHostedConfigurationUnverified):
+        subject.verify()
+
+    responses = _responses()
+    detail = copy.deepcopy(_writer())
+    detail["conditions"] = {
+        "ref_name": {"include": ["refs/heads/main"], "exclude": [], "extra": []}
+    }
+    responses[11] = (200, detail)
+    subject, _ = _subject(responses)
+    with pytest.raises(MainPersonalExactCasHostedConfigurationUnverified):
+        subject.verify()
+
+
+def test_verifier_rejects_classification_name_and_actor_cardinality_errors() -> None:
+    cases: tuple[tuple[int, Callable[[], dict[str, JsonValue]], str, JsonValue], ...] = (
+        (11, _writer, "name", "wrong"),
+        (12, _safety, "name", "wrong"),
+        (13, _rollback, "bypass_actors", []),
+        (14, _candidate_creation, "bypass_actors", []),
+        (15, _candidate_immutable, "name", "wrong"),
+    )
+    for index, detail_factory, field, value in cases:
+        responses = _responses()
+        detail = detail_factory()
+        detail[field] = value
+        responses[index] = (200, detail)
+        subject, _ = _subject(responses)
+        with pytest.raises(MainPersonalExactCasHostedConfigurationUnverified):
+            subject.verify()
+
+
+def test_verifier_rejects_ambiguous_ruleset_page_bound() -> None:
+    full_page: JsonValue = [_summary(900, "unclassified") for _ in range(100)]
+    responses: list[tuple[int, JsonValue] | BaseException] = [
+        (200, _ref()),
+        (200, _repository()),
+        (200, _app()),
+        (200, [_installation()]),
+        (201, _minted_token()),
+        (200, {"total_count": 1, "repositories": [_repository()]}),
+        (200, _candidate_app()),
+        (200, _candidate_installation()),
+        (201, _candidate_minted_token()),
+        (200, {"total_count": 1, "repositories": [_repository()]}),
+        *[(200, full_page) for _ in range(10)],
+    ]
+    subject, _ = _subject(responses)
+    with pytest.raises(MainPersonalExactCasHostedConfigurationUnverified):
+        subject.verify()
+
+
+def test_verifier_rejects_malformed_branch_protection_flag() -> None:
+    responses = _responses()
+    protection = copy.deepcopy(_protection())
+    protection["enforce_admins"] = {"enabled": "yes"}
+    responses[16] = (200, protection)
     subject, _ = _subject(responses)
     with pytest.raises(MainPersonalExactCasHostedConfigurationUnverified):
         subject.verify()

@@ -5,12 +5,15 @@
 from __future__ import annotations
 
 import copy
-from dataclasses import FrozenInstanceError, replace
+from dataclasses import FrozenInstanceError, fields, replace
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
+from avo_correlate.adapters.hosted_git import (
+    main_personal_exact_cas_hosted_identity_bundle as identity_module,
+)
 from avo_correlate.adapters.hosted_git.github import JsonValue, github_repository_digest
 from avo_correlate.adapters.hosted_git.github_main_base_reader import (
     GitHubMainBaseReaderConfiguration,
@@ -608,3 +611,92 @@ def test_builder_has_no_io_or_mutating_surface() -> None:
         assert forbidden not in source
     public = {name for name in dir(_bundle()) if not name.startswith("_")}
     assert "dispatch" not in public and "mutate" not in public and "receipt" not in public
+
+
+@pytest.mark.parametrize("value", [None, "", "sha256:" + "g" * 64, 4])
+def test_private_digest_and_object_guards_reject_untrusted_values(value: object) -> None:
+    with pytest.raises(ValueError):
+        identity_module._digest(value, "digest")
+    with pytest.raises(ValueError):
+        identity_module._object(value, "object")
+
+
+def test_canonical_payload_must_be_an_object() -> None:
+    with pytest.raises(ValueError, match="object"):
+        identity_module._canonical_json(["not", "an", "object"])
+
+
+def test_snapshot_round_trip_rejects_wrong_type_parent_shape_and_target() -> None:
+    from avo_correlate.adapters.git.main_composition import MainBaseSnapshot
+
+    observer, _ = _observer()
+    with pytest.raises(TypeError):
+        identity_module._snapshot_payload(object())  # type: ignore[arg-type]
+    snapshot = observer.result
+    object.__setattr__(snapshot, "parents", [COMMIT])
+    with pytest.raises(ValueError, match="immutable"):
+        identity_module._snapshot_payload(snapshot)
+    snapshot = MainBaseSnapshot(snapshot.repository_digest, snapshot.commit, snapshot.tree)
+    object.__setattr__(snapshot, "target_ref", "refs/heads/dev")
+    with pytest.raises(ValueError, match="target ref"):
+        identity_module._snapshot_payload(snapshot)
+
+
+def test_provenance_round_trip_rejects_nonconcrete_requests_and_endpoint_shapes() -> None:
+    observer, _ = _observer()
+    provenance = observer.provenance
+    object.__setattr__(provenance, "requests", [object()])
+    with pytest.raises(ValueError, match="immutable"):
+        identity_module._revalidate_provenance(provenance)
+    observer, _ = _observer()
+    provenance = observer.provenance
+    object.__setattr__(provenance, "requests", (object(),))
+    with pytest.raises(ValueError, match="concrete"):
+        identity_module._revalidate_provenance(provenance)
+    observer, _ = _observer()
+    provenance = observer.provenance
+    object.__setattr__(provenance, "endpoint_observation_digests", (("only-one",),))
+    with pytest.raises(ValueError, match="endpoint"):
+        identity_module._revalidate_provenance(provenance)
+
+
+@pytest.mark.parametrize("field", ["reader_identity", "initial_ref_digest", "commit_digest"])
+def test_main_base_provenance_binding_failures_are_explicit(field: str) -> None:
+    observer, configuration = _observer()
+    value = "foreign-reader" if field == "reader_identity" else "sha256:" + "f" * 64
+    tampered = replace(observer.provenance, **{field: value})
+    with pytest.raises(ValueError):
+        identity_module.validate_main_base_provenance(configuration, observer.result, tampered)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "schema_version",
+        "repository_digest",
+        "target_ref",
+        "writer_app_id",
+        "writer_installation_id",
+        "owner",
+        "repository",
+        "observer_identity",
+        "writer_rollback_ruleset_name",
+        "is_authoritative",
+    ],
+)
+def test_identity_bundle_scalar_invariants_fail_closed(field: str) -> None:
+    bundle = _bundle()
+    values = {item.name: getattr(bundle, item.name) for item in fields(bundle)}
+    if field == "schema_version":
+        values[field] = 2
+    elif field in {"repository_digest", "writer_app_id", "writer_installation_id"}:
+        values[field] = "bad" if field == "repository_digest" else 0
+    elif field == "target_ref":
+        values[field] = "refs/heads/dev"
+    elif field == "is_authoritative":
+        values[field] = True
+    else:
+        values[field] = ""
+    values["bundle_digest"] = "sha256:" + "0" * 64
+    with pytest.raises(ValueError):
+        identity_module.MainPersonalExactCasHostedIdentityEvidenceBundle(**values)

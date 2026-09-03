@@ -49,7 +49,6 @@
     },
     "candidate_publisher_app_homepage": {
       "const": "https://github.com/vandyand/avo-c8",
-      "default": "https://github.com/vandyand/avo-c8",
       "title": "Candidate Publisher App Homepage",
       "type": "string"
     },
@@ -60,14 +59,17 @@
     },
     "candidate_publisher_app_name": {
       "const": "avo-c8-candidate-publisher-vandyand",
-      "default": "avo-c8-candidate-publisher-vandyand",
       "title": "Candidate Publisher App Name",
       "type": "string"
     },
     "candidate_publisher_app_slug": {
       "const": "avo-c8-candidate-publisher-vandyand",
-      "default": "avo-c8-candidate-publisher-vandyand",
       "title": "Candidate Publisher App Slug",
+      "type": "string"
+    },
+    "candidate_publisher_identity_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Candidate Publisher Identity Digest",
       "type": "string"
     },
     "candidate_publisher_installation_configuration_digest": {
@@ -78,11 +80,6 @@
     "candidate_publisher_installation_digest": {
       "pattern": "^sha256:[0-9a-f]{64}$",
       "title": "Candidate Publisher Installation Digest",
-      "type": "string"
-    },
-    "candidate_publisher_identity_digest": {
-      "pattern": "^sha256:[0-9a-f]{64}$",
-      "title": "Candidate Publisher Identity Digest",
       "type": "string"
     },
     "candidate_publisher_installation_id": {
