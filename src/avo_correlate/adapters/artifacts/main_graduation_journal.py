@@ -6,10 +6,13 @@ import asyncio
 import errno
 import hashlib
 import json
+import math
 import os
 import re
-import shutil
+import stat
 import tempfile
+import time
+from collections.abc import Callable
 from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -99,6 +102,36 @@ class MainGraduationJournalError(RuntimeError):
 
 class MainGraduationRecordConflictError(MainGraduationJournalError):
     """A create-once key was already bound to different canonical bytes."""
+
+
+@dataclass(frozen=True)
+class MainTargetSlotReadinessPolicy:
+    """Bounded policy for waiting on an in-flight target-slot publication."""
+
+    max_attempts: int = 8
+    delay_seconds: float = 0.005
+    sleeper: Callable[[float], None] = time.sleep
+
+    def __post_init__(self) -> None:
+        if type(self.max_attempts) is not int or self.max_attempts <= 0:
+            raise ValueError(
+                "target slot readiness max_attempts must be an exact positive integer"
+            )
+        if type(self.delay_seconds) not in (int, float):
+            raise ValueError(
+                "target slot readiness delay_seconds must be a finite nonnegative number"
+            )
+        normalized_delay = float(self.delay_seconds)
+        if not math.isfinite(normalized_delay) or normalized_delay < 0:
+            raise ValueError(
+                "target slot readiness delay_seconds must be a finite nonnegative number"
+            )
+        object.__setattr__(self, "delay_seconds", normalized_delay)
+
+    def wait(self, path: Path, attempt: int) -> None:
+        """Wait once before the next bounded readiness observation."""
+        del path, attempt
+        self.sleeper(self.delay_seconds)
 
 
 _ExecutionOwner = tuple[int, int | None]
@@ -476,6 +509,7 @@ class MainGraduationJournal:
         base_reader: _MainBaseReader | None = None,
         phase_a_authority_verifier: MainPhaseAAuthorityVerifier | None = None,
         rollback_authority_verifier: MainRollbackAuthorityVerifier | None = None,
+        target_slot_readiness_policy: MainTargetSlotReadinessPolicy | None = None,
         max_record_bytes: int = 32 * 1024 * 1024,
     ) -> None:
         if max_record_bytes <= 0:
@@ -509,6 +543,9 @@ class MainGraduationJournal:
         self._composition_base_reader = base_reader
         self._phase_a_authority_verifier = phase_a_authority_verifier
         self._rollback_authority_verifier = rollback_authority_verifier
+        self._target_slot_readiness_policy = (
+            target_slot_readiness_policy or MainTargetSlotReadinessPolicy()
+        )
         # Cache validated models only for the current read traversal. A
         # ContextVar keeps independent threads/tasks from sharing a cache,
         # while nested reads in one traversal still share it.
@@ -1435,6 +1472,60 @@ class MainGraduationJournal:
             self._target_lease_path(record), envelope, record, "target lease"
         )
 
+    @staticmethod
+    def _target_slot_is_reparse(path: Path) -> bool:
+        try:
+            metadata = os.lstat(path)
+        except FileNotFoundError:
+            return False
+        except OSError as exc:
+            raise MainGraduationJournalError(
+                "target mutation slot cannot be inspected safely"
+            ) from exc
+        return stat.S_ISLNK(metadata.st_mode) or bool(
+            (getattr(metadata, "st_file_attributes", 0) or 0) & 0x400
+        )
+
+    def _wait_for_target_fence_readiness(self, path: Path) -> None:
+        """Re-read a controlled empty slot while another writer publishes it.
+
+        An empty directory is not evidence of a valid fence.  It is only
+        given a bounded opportunity to acquire its readiness marker; after the
+        policy expires, the slot remains fail-closed as malformed.
+        """
+        policy = self._target_slot_readiness_policy
+        for attempt in range(policy.max_attempts):
+            if self._target_slot_is_reparse(path):
+                raise MainGraduationJournalError(
+                    "target mutation slot is a symlink or reparse point"
+                )
+            if not path.is_dir():
+                raise MainGraduationJournalError("target mutation slot is malformed")
+            record_path = self._target_fence_record_path(path)
+            reservation_path = self._target_reservation_record_path(path)
+            if self._target_slot_is_reparse(record_path) or self._target_slot_is_reparse(
+                reservation_path
+            ):
+                raise MainGraduationJournalError(
+                    "target mutation slot contains a symlink or reparse point"
+                )
+            if record_path.is_file() or reservation_path.is_file():
+                return
+            try:
+                if any(path.iterdir()):
+                    raise MainGraduationJournalError("target mutation slot is malformed")
+            except MainGraduationJournalError:
+                raise
+            except OSError as exc:
+                raise MainGraduationJournalError(
+                    "target mutation slot cannot be inspected safely"
+                ) from exc
+            if attempt + 1 == policy.max_attempts:
+                raise MainGraduationJournalError(
+                    "target mutation slot readiness timed out"
+                )
+            policy.wait(path, attempt + 1)
+
     def _cas_target_fence(
         self, record: MainUnresolvedMutationFence, reference: ArtifactRef
     ) -> None:
@@ -1447,8 +1538,19 @@ class MainGraduationJournal:
             raise MainGraduationRecordConflictError(
                 "resolved target mutation fence cannot be reopened"
             )
-        if path.exists():
+        if path.exists() or path.is_symlink():
+            if self._target_slot_is_reparse(path):
+                raise MainGraduationJournalError(
+                    "target mutation slot is a symlink or reparse point"
+                )
             record_path = self._target_fence_record_path(path)
+            reservation_path = self._target_reservation_record_path(path)
+            if self._target_slot_is_reparse(record_path) or self._target_slot_is_reparse(
+                reservation_path
+            ):
+                raise MainGraduationJournalError(
+                    "target mutation slot contains a symlink or reparse point"
+                )
             if record_path.is_file():
                 current = self._read_target_fence_envelope(path, record)
                 if current.fence_digest == record.fence_digest:
@@ -1464,7 +1566,9 @@ class MainGraduationJournal:
                     raise MainGraduationRecordConflictError(
                         "resolved target mutation fence cannot be reopened"
                     )
-            elif not self._target_reservation_record_path(path).is_file():
+            elif reservation_path.is_file():
+                pass
+            elif not path.is_dir():
                 raise MainGraduationJournalError("target mutation slot is malformed")
         envelope = _TargetFenceEnvelope(
             target_scope_digest=main_target_scope_digest(
@@ -1502,20 +1606,31 @@ class MainGraduationJournal:
         # atomic create-only link.  The directory itself can briefly be empty
         # after a crash, but no reader can mistake that for a durable fence:
         # record.json is the readiness marker and is never written in place.
+        created = False
         try:
             path.mkdir()
+            created = True
         except FileExistsError:
             pass
         except OSError as exc:
             raise MainGraduationJournalError(
                 "target mutation fence was not durably indexed"
             ) from exc
-        if not path.is_dir():
+        if self._target_slot_is_reparse(path) or not path.is_dir():
             raise MainGraduationJournalError("target mutation fence slot is malformed")
         if record_path.is_file():
             classify_existing()
             return
         reservation_path = self._target_reservation_record_path(path)
+        if not created and not reservation_path.is_file():
+            self._wait_for_target_fence_readiness(path)
+            if record_path.is_file():
+                classify_existing()
+                return
+            if self._target_slot_is_reparse(reservation_path):
+                raise MainGraduationJournalError(
+                    "target mutation slot contains a symlink or reparse point"
+                )
         if reservation_path.is_file():
             # A mutation reservation may already own this target.  It is safe
             # to add this fence only when the durable reservation names the
@@ -1578,108 +1693,95 @@ class MainGraduationJournal:
             reference=reference,
         )
         path.parent.mkdir(parents=True, exist_ok=True)
-        if path.is_dir():
-            # An exact replay after a terminal receipt is already safe; an
-            # active fence or different reservation is a target conflict.
-            if self._target_fence_record_path(path).is_file():
-                try:
-                    active = self._read_target_fence_envelope(
-                        path,
-                        MainBound(
-                            repository_digest=intent.repository_digest,
-                            target_ref=intent.target_ref,
-                        ),
-                    )
-                    active_record = MainUnresolvedMutationFence.model_validate_json(
-                        self._store.read_bytes(active.reference)
-                    )
-                except MainGraduationRecordConflictError:
-                    raise
-                except (
-                    OSError,
-                    ValueError,
-                    TypeError,
-                    UnicodeError,
-                    json.JSONDecodeError,
-                ) as exc:
-                    # Avoid trusting a caller DTO while still returning a
-                    # useful conflict for an occupied target.
-                    raise MainGraduationJournalError(
-                        "target mutation fence is unverifiable"
-                    ) from exc
-                if (
-                    active_record.operation_id == intent.operation_id
-                    and active_record.intent_digest == intent.intent_digest
-                ):
-                    return
-                raise MainGraduationRecordConflictError("target has an unresolved mutation fence")
-            if not reservation_path.is_file():
-                # A process can die after creating the directory but before
-                # publishing its reservation file.  An empty directory has no
-                # evidence of a competing dispatch and may be repaired from
-                # this exact, already-CAS'd intent; anything else is opaque
-                # and remains fail-closed.
-                try:
-                    if any(path.iterdir()):
-                        raise MainGraduationJournalError("target mutation slot is malformed")
-                    path.rmdir()
-                except OSError as exc:
-                    raise MainGraduationJournalError("target mutation slot is malformed") from exc
-            else:
-                current = self._read_target_reservation(path)
-                if (
-                    current.operation_id == intent.operation_id
-                    and current.intent_digest == intent.intent_digest
-                    and self._store.read_bytes(current.reference) == canonical_bytes(intent)
-                ):
-                    return
-                raise MainGraduationRecordConflictError("target mutation reservation differs")
-        temporary: Path | None = None
-        published = False
+        payload = canonical_bytes(envelope)
+
+        def classify_existing_fence() -> None:
+            try:
+                active = self._read_target_fence_envelope(
+                    path,
+                    MainBound(
+                        repository_digest=intent.repository_digest,
+                        target_ref=intent.target_ref,
+                    ),
+                )
+                active_record = MainUnresolvedMutationFence.model_validate_json(
+                    self._store.read_bytes(active.reference)
+                )
+            except MainGraduationRecordConflictError:
+                raise
+            except (
+                OSError,
+                ValueError,
+                TypeError,
+                UnicodeError,
+                json.JSONDecodeError,
+            ) as exc:
+                raise MainGraduationJournalError(
+                    "target mutation fence is unverifiable"
+                ) from exc
+            if (
+                active_record.operation_id == intent.operation_id
+                and active_record.intent_digest == intent.intent_digest
+            ):
+                return
+            raise MainGraduationRecordConflictError("target has an unresolved mutation fence")
+
+        def classify_existing_reservation() -> None:
+            current = self._read_target_reservation(path)
+            if (
+                current.operation_id == intent.operation_id
+                and current.intent_digest == intent.intent_digest
+                and self._store.read_bytes(current.reference) == canonical_bytes(intent)
+            ):
+                return
+            raise MainGraduationRecordConflictError("target mutation reservation differs")
+
+        created = False
         try:
-            temporary = Path(tempfile.mkdtemp(prefix=".tmp-", dir=str(path.parent)))
-            temporary_reservation = self._target_reservation_record_path(temporary)
-            with temporary_reservation.open("xb") as handle:
-                handle.write(canonical_bytes(envelope))
-                handle.flush()
-                os.fsync(handle.fileno())
-            _sync_directory(temporary)
-            os.replace(temporary, path)
-            published = True
-            _sync_directory(path.parent)
+            path.mkdir()
+            created = True
+        except FileExistsError:
+            pass
         except OSError as exc:
-            if temporary is not None:
-                with suppress(OSError):
-                    shutil.rmtree(temporary)
-            # On Windows, replacing a directory which appeared concurrently
-            # can surface as a generic OSError rather than FileExistsError.
-            # Inspect the winner before classifying the race, but never remove
-            # or overwrite it.  An exact winner is safe to reuse; an occupied
-            # or unverifiable slot remains fail-closed.
-            if not published and path.is_dir() and reservation_path.is_file():
-                try:
-                    current = self._read_target_reservation(path)
-                    exact = (
-                        current.operation_id == intent.operation_id
-                        and current.intent_digest == intent.intent_digest
-                        and self._store.read_bytes(current.reference) == canonical_bytes(intent)
-                    )
-                except (
-                    MainGraduationJournalError,
-                    OSError,
-                    ValueError,
-                    TypeError,
-                    UnicodeError,
-                    json.JSONDecodeError,
-                ) as inspect_exc:
-                    raise MainGraduationJournalError(
-                        "target mutation reservation race is unverifiable"
-                    ) from inspect_exc
-                if exact:
-                    return
-                raise MainGraduationRecordConflictError(
-                    "target mutation reservation raced"
-                ) from None
+            raise MainGraduationJournalError(
+                "target mutation reservation was not durably indexed"
+            ) from exc
+        if self._target_slot_is_reparse(path) or not path.is_dir():
+            raise MainGraduationJournalError("target mutation slot is malformed")
+        record_path = self._target_fence_record_path(path)
+        if self._target_slot_is_reparse(record_path):
+            raise MainGraduationJournalError(
+                "target mutation slot contains a symlink or reparse point"
+            )
+        if record_path.is_file():
+            classify_existing_fence()
+            return
+        if self._target_slot_is_reparse(reservation_path):
+            raise MainGraduationJournalError(
+                "target mutation slot contains a symlink or reparse point"
+            )
+        if reservation_path.is_file():
+            classify_existing_reservation()
+            return
+        if not created:
+            self._wait_for_target_fence_readiness(path)
+            if record_path.is_file():
+                classify_existing_fence()
+                return
+            if reservation_path.is_file():
+                classify_existing_reservation()
+                return
+            raise MainGraduationJournalError("target mutation slot readiness timed out")
+        try:
+            _write_exclusive_durable(reservation_path, payload)
+            _sync_directory(path)
+            _sync_directory(path.parent)
+        except FileExistsError:
+            if record_path.is_file():
+                classify_existing_fence()
+                return
+            classify_existing_reservation()
+        except OSError as exc:
             raise MainGraduationJournalError(
                 "target mutation reservation was not durably indexed"
             ) from exc
@@ -2057,7 +2159,10 @@ class MainGraduationJournal:
 
     def _read_target_fence_envelope(self, path: Path, expected: MainBound) -> _TargetFenceEnvelope:
         try:
-            raw = self._target_fence_record_path(path).read_bytes()
+            record_path = self._target_fence_record_path(path)
+            if self._target_slot_is_reparse(path) or self._target_slot_is_reparse(record_path):
+                raise ValueError("target fence path is a symlink or reparse point")
+            raw = record_path.read_bytes()
             envelope = _TargetFenceEnvelope.model_validate(
                 json.loads(raw.decode("utf-8"), object_pairs_hook=_strict_pairs)
             )
@@ -2084,7 +2189,12 @@ class MainGraduationJournal:
 
     def _read_target_reservation(self, path: Path) -> _TargetMutationReservationEnvelope:
         try:
-            raw = self._target_reservation_record_path(path).read_bytes()
+            reservation_path = self._target_reservation_record_path(path)
+            if self._target_slot_is_reparse(path) or self._target_slot_is_reparse(
+                reservation_path
+            ):
+                raise ValueError("target reservation path is a symlink or reparse point")
+            raw = reservation_path.read_bytes()
             envelope = _TargetMutationReservationEnvelope.model_validate(
                 json.loads(raw.decode("utf-8"), object_pairs_hook=_strict_pairs)
             )
@@ -6232,4 +6342,5 @@ __all__ = [
     "MainGraduationRecordConflictError",
     "MainPhaseAAuthorityVerifier",
     "MainRollbackAuthorityVerifier",
+    "MainTargetSlotReadinessPolicy",
 ]

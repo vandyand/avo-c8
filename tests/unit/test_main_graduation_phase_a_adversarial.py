@@ -13,6 +13,7 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import Event, Lock
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -23,6 +24,7 @@ from avo_correlate.adapters.artifacts.main_graduation_journal import (
     MainGraduationJournal,
     MainGraduationJournalError,
     MainGraduationRecordConflictError,
+    MainTargetSlotReadinessPolicy,
 )
 from avo_correlate.contracts import (
     MainClaimedReleaseTransitionReceipt,
@@ -527,6 +529,97 @@ def test_target_fence_has_one_active_winner_under_concurrency(tmp_path: Path) ->
         outcomes = list(pool.map(attempt, (fence_a, fence_b)))
     assert outcomes.count("won") == 1
     assert outcomes.count("lost") == 1
+
+
+@pytest.mark.parametrize("fence_first", [True, False])
+def test_fence_and_reservation_empty_slot_race_never_reuses_slot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fence_first: bool
+) -> None:
+    """A competing slot type cannot replace an in-flight empty directory."""
+    journal = _journal(tmp_path)
+    intent = _intent()
+    competing_intent = _intent(OP2, key="refs/heads/avo/candidate/other")
+    reservation_reference = journal._store.put_bytes(  # pyright: ignore[reportPrivateUsage]
+        canonical_bytes(intent),
+        media_type="application/vnd.avo.main-graduation-mutation-intent+json",
+        role="main-graduation-mutation-intent",
+        max_bytes=journal._max,  # pyright: ignore[reportPrivateUsage]
+    )
+    fence = _fence(_receipt(competing_intent))
+    fence_reference = journal._store.put_bytes(  # pyright: ignore[reportPrivateUsage]
+        canonical_bytes(fence),
+        media_type="application/vnd.avo.main-graduation-unresolved-mutation-fence+json",
+        role="main-graduation-unresolved-mutation-fence",
+        max_bytes=journal._max,  # pyright: ignore[reportPrivateUsage]
+    )
+    active = journal._target_fence_path(intent)  # pyright: ignore[reportPrivateUsage]
+    original_writer = journal_module._write_exclusive_durable  # pyright: ignore[reportPrivateUsage]
+    publication_started = Event()
+    release_publication = Event()
+    publication_finished = Event()
+    readiness_observed = Event()
+    writer_lock = Lock()
+    blocked_name = "record.json" if fence_first else "reservation.json"
+
+    def blocking_writer(path: Path, payload: bytes) -> None:
+        if path.name == blocked_name:
+            with writer_lock:
+                first = not publication_started.is_set()
+                if first:
+                    publication_started.set()
+            if first:
+                if not release_publication.wait(timeout=10):
+                    raise AssertionError("target publication was not released")
+                try:
+                    original_writer(path, payload)
+                finally:
+                    publication_finished.set()
+                return
+        original_writer(path, payload)
+
+    def release_after_readiness(_delay: float) -> None:
+        readiness_observed.set()
+        release_publication.set()
+        if not publication_finished.wait(timeout=10):
+            raise AssertionError("target publication did not finish")
+
+    journal._target_slot_readiness_policy = MainTargetSlotReadinessPolicy(  # type: ignore[assignment]
+        max_attempts=3,
+        delay_seconds=0,
+        sleeper=release_after_readiness,
+    )
+    monkeypatch.setattr(journal_module, "_write_exclusive_durable", blocking_writer)
+
+    def claim_fence() -> str:
+        try:
+            journal._cas_target_fence(fence, fence_reference)  # pyright: ignore[reportPrivateUsage]
+        except MainGraduationRecordConflictError:
+            return "conflict"
+        return "claimed"
+
+    def claim_reservation() -> str:
+        try:
+            journal._cas_target_mutation_reservation(  # pyright: ignore[reportPrivateUsage]
+                intent, reservation_reference
+            )
+        except MainGraduationRecordConflictError:
+            return "conflict"
+        return "claimed"
+
+    first_claim = claim_fence if fence_first else claim_reservation
+    second_claim = claim_reservation if fence_first else claim_fence
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first_future = pool.submit(first_claim)
+        assert publication_started.wait(timeout=10)
+        second_future = pool.submit(second_claim)
+        assert readiness_observed.wait(timeout=10)
+        assert first_future.result() == "claimed"
+        assert second_future.result() == "conflict"
+
+    record_path = journal._target_fence_record_path(active)  # pyright: ignore[reportPrivateUsage]
+    reservation_path = journal._target_reservation_record_path(active)  # pyright: ignore[reportPrivateUsage]
+    assert record_path.is_file() is fence_first
+    assert reservation_path.is_file() is not fence_first
 
 
 def test_closed_fence_replay_does_not_reopen_the_target_fence(tmp_path: Path) -> None:
