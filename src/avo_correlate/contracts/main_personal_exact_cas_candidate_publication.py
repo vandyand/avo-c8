@@ -177,7 +177,6 @@ class MainPersonalExactCasCandidatePublicationResponseEvidence(StrictModel):
     is_authoritative: Literal[False] = False
     readiness_authorized: Literal[False] = False
     is_terminal: Literal[False] = False
-    readiness_authorized: Literal[False] = False
     completion_authorized: Literal[False] = False
     mutation_performed: Literal[False] = False
     deploy_performed: Literal[False] = False

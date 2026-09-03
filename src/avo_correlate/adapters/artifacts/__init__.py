@@ -40,6 +40,11 @@ from avo_correlate.adapters.artifacts.main_graduation_offline_drill_journal impo
     OfflineDrillJournalError,
     OfflineDrillRecordConflictError,
 )
+from avo_correlate.adapters.artifacts.main_personal_exact_cas_candidate_publication_journal import (
+    CandidatePublicationJournalError,
+    CandidatePublicationRecordConflictError,
+    MainPersonalExactCasCandidatePublicationJournal,
+)
 from avo_correlate.adapters.artifacts.main_personal_exact_cas_controller_composition import (
     MainPersonalExactCasControllerCompositionConflictError,
     MainPersonalExactCasControllerCompositionError,
@@ -62,12 +67,6 @@ from avo_correlate.adapters.artifacts.main_personal_exact_cas_journal import (
     MainPersonalExactCasJournal,
     MainPersonalExactCasJournalError,
     MainPersonalExactCasRecordConflictError,
-)
-from avo_correlate.adapters.artifacts.main_personal_exact_cas_candidate_publication_journal import (
-    CandidatePublicationAuthorityVerifier,
-    CandidatePublicationJournalError,
-    CandidatePublicationRecordConflictError,
-    MainPersonalExactCasCandidatePublicationJournal,
 )
 from avo_correlate.adapters.artifacts.main_personal_exact_cas_post_state import (
     MainPersonalExactCasPostStateJournalConflictError,
@@ -103,6 +102,8 @@ from avo_correlate.adapters.artifacts.trusted_main_graduation_source import (
 __all__ = [
     "CampaignCompletionJournal",
     "CampaignJournalError",
+    "CandidatePublicationJournalError",
+    "CandidatePublicationRecordConflictError",
     "FilesystemArtifactStore",
     "LiveRollbackCompletionJournal",
     "LiveRollbackCompletionJournalError",
@@ -124,9 +125,6 @@ __all__ = [
     "MainLedgerJournalError",
     "MainLedgerRecordConflictError",
     "MainPersonalExactCasAuthorityVerifier",
-    "CandidatePublicationAuthorityVerifier",
-    "CandidatePublicationJournalError",
-    "CandidatePublicationRecordConflictError",
     "MainPersonalExactCasCandidatePublicationJournal",
     "MainPersonalExactCasControllerCompositionConflictError",
     "MainPersonalExactCasControllerCompositionError",

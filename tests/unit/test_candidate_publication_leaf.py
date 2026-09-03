@@ -13,13 +13,14 @@ from avo_correlate.adapters.hosted_git import (
     MainPersonalExactCasCandidatePublicationController,
 )
 from avo_correlate.adapters.hosted_git.main_personal_exact_cas_candidate_publisher import (
-    GitHubCandidateRefPublisher,
+    _CandidateRefTransport,
 )
 from avo_correlate.contracts import (
     MainPersonalExactCasCandidatePublicationDispatchStarted,
     MainPersonalExactCasCandidatePublicationIntent,
     candidate_publication_request_digest,
 )
+from tests.unit.test_main_personal_exact_cas_controller_composition import _root
 
 
 def _intent(configuration_digest: str = "sha256:" + "5" * 64):
@@ -70,10 +71,11 @@ def _publisher(monkeypatch: pytest.MonkeyPatch):
                 return 201, {"token": "iat-secret", "permissions": {"contents": "write", "metadata": "read"}, "repository_selection": "selected", "repositories": [repo], "expires_at": (datetime.now(UTC) + timedelta(minutes=20)).strftime("%Y-%m-%dT%H:%M:%SZ")}
             if path == "/repositories/1354880741":
                 return 200, repo
-            return 201, {"ref": "refs/heads/avo/candidate/" + "1" * 64, "object": {"type": "commit", "sha": "1" * 40}}
+            request = body if isinstance(body, dict) else {}
+            return 201, {"ref": request.get("ref"), "object": {"type": "commit", "sha": request.get("sha")}}
 
     monkeypatch.setattr("avo_correlate.adapters.hosted_git.main_personal_exact_cas_candidate_publisher.GitHubJsonTransport", FakeTransport)
-    return GitHubCandidateRefPublisher(config, GitHubCandidatePublisherCredentials("jwt-secret")), intent, marker, calls
+    return _CandidateRefTransport(config, GitHubCandidatePublisherCredentials("jwt-secret")), intent, marker, calls
 
 
 def test_publisher_has_one_exact_post_and_redacts_credentials(monkeypatch: pytest.MonkeyPatch):
@@ -108,14 +110,33 @@ def test_input_configuration_and_request_digest_are_exact(monkeypatch: pytest.Mo
     ).startswith("sha256:")
 
 
-class _Verifier:
-    def verify_intent(self, _: object) -> object:
+def test_present_public_or_webhook_flags_are_fail_closed(monkeypatch: pytest.MonkeyPatch):
+    publisher, _, _, _ = _publisher(monkeypatch)
+    with pytest.raises(ValueError):
+        publisher._verify_app(  # pyright: ignore[reportPrivateUsage]
+            {
+                "id": 77,
+                "slug": "avo-c8-candidate-publisher-vandyand",
+                "name": "avo-c8-candidate-publisher-vandyand",
+                "permissions": {"contents": "write", "metadata": "read"},
+                "events": [],
+                "public": True,
+                "owner": {"login": "vandyand"},
+            }
+        )
+
+
+class _TestAuthority:
+    def __init__(self, *_: object, **__: object) -> None:
+        pass
+
+    def verify_intent(self, _: object) -> bool:
         return True
 
-    def verify_response_evidence(self, *_: object) -> object:
+    def verify_response_evidence(self, *_: object) -> bool:
         return True
 
-    def verify_reconciliation(self, *_: object) -> object:
+    def verify_reconciliation(self, *_: object) -> bool:
         return True
 
 
@@ -140,7 +161,12 @@ def test_journal_owns_dispatch_once_and_reopens_canonical_record(
         "avo_correlate.adapters.artifacts.main_personal_exact_cas_candidate_publication_journal._fsync_directory",
         lambda _: None,
     )
-    intent = _intent()
+    monkeypatch.setattr(
+        "avo_correlate.adapters.artifacts.main_personal_exact_cas_candidate_publication_journal._CandidatePublicationAuthorityRoot",
+        _TestAuthority,
+    )
+    config = GitHubCandidatePublisherConfiguration(app_id=77, installation_id=88)
+    intent = _intent(config.configuration_digest)
     marker = MainPersonalExactCasCandidatePublicationDispatchStarted.build(
         operation_id=intent.operation_id,
         candidate_ref=intent.candidate_ref,
@@ -149,15 +175,32 @@ def test_journal_owns_dispatch_once_and_reopens_canonical_record(
         started_at=datetime.now(UTC),
     )
     journal = MainPersonalExactCasCandidatePublicationJournal(
-        tmp_path, authority_verifier=_Verifier()
+        tmp_path,
+        approved_composition=_root(),
+        configuration_digest=config.configuration_digest,
+        publisher_app_id=77,
+        publisher_installation_id=88,
     )
     journal.record_intent(intent)
     _, first = journal.claim_dispatch_started(marker)
     _, second = journal.claim_dispatch_started(marker)
     assert first is True
     assert second is False
+    later_marker = MainPersonalExactCasCandidatePublicationDispatchStarted.build(
+        operation_id=intent.operation_id,
+        candidate_ref=intent.candidate_ref,
+        intent_digest=intent.intent_digest,
+        configuration_digest=intent.configuration_digest,
+        started_at=marker.started_at + timedelta(seconds=30),
+    )
+    _, race_loser = journal.claim_dispatch_started(later_marker)
+    assert race_loser is False
     reopened = MainPersonalExactCasCandidatePublicationJournal(
-        tmp_path, authority_verifier=_Verifier()
+        tmp_path,
+        approved_composition=_root(),
+        configuration_digest=config.configuration_digest,
+        publisher_app_id=77,
+        publisher_installation_id=88,
     )
     loaded = reopened.read_intent(intent.operation_id)
     assert loaded is not None and loaded[0] == intent
@@ -177,39 +220,36 @@ def test_journal_fails_closed_without_controller_verifier(
             device="8:1",
         ),
     )
-    with pytest.raises(ValueError):
+    with pytest.raises(TypeError):
         MainPersonalExactCasCandidatePublicationJournal(tmp_path, authority_verifier=object())
+    config = GitHubCandidatePublisherConfiguration(app_id=77, installation_id=88)
+    with pytest.raises(ValueError, match="authority root is not provisioned"):
+        MainPersonalExactCasCandidatePublicationJournal(
+            tmp_path,
+            approved_composition=_root(),
+            configuration_digest=config.configuration_digest,
+            publisher_app_id=77,
+            publisher_installation_id=88,
+        )
 
 
-def test_controller_is_only_dispatch_boundary_and_replay_is_read_only(
+def test_raw_transport_is_module_private_and_package_has_no_mutation_alias() -> None:
+    import avo_correlate.adapters.hosted_git as package
+    import avo_correlate.adapters.hosted_git.main_personal_exact_cas_candidate_publisher as module
+
+    assert not hasattr(module, "__all__")
+    assert "GitHubCandidatePublisher" not in module.__dict__
+    assert not hasattr(package, "GitHubCandidateRefPublisher")
+
+
+def test_controller_boundary_is_fail_closed_until_authority_root(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ):
-    _, intent, _, calls = _publisher(monkeypatch)
     config = GitHubCandidatePublisherConfiguration(app_id=77, installation_id=88)
-    monkeypatch.setattr(
-        "avo_correlate.adapters.artifacts.main_personal_exact_cas_candidate_publication_journal.require_durable_backend",
-        lambda root: DurableBackendQualification(
-            root=tmp_path,
-            qualified=True,
-            reason="test-qualified",
-            filesystem_type="ext4",
-            mount_id=1,
-            device="8:1",
-        ),
-    )
-    monkeypatch.setattr(
-        "avo_correlate.adapters.artifacts.main_personal_exact_cas_candidate_publication_journal._fsync_directory",
-        lambda _: None,
-    )
-    controller = MainPersonalExactCasCandidatePublicationController(
-        tmp_path,
-        configuration=config,
-        credentials=GitHubCandidatePublisherCredentials("jwt-secret"),
-        authority_verifier=_Verifier(),
-    )
-    first = controller.execute(intent)
-    assert first is not None and first.response_status == 201
-    call_count = len(calls)
-    second = controller.execute(intent)
-    assert second == first
-    assert len(calls) == call_count
+    with pytest.raises(ValueError, match="authority root is not provisioned"):
+        MainPersonalExactCasCandidatePublicationController(
+            tmp_path,
+            configuration=config,
+            credentials=GitHubCandidatePublisherCredentials("jwt-secret"),
+            approved_composition=_root(),
+        )

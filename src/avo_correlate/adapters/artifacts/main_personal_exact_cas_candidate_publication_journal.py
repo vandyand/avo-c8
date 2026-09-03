@@ -5,9 +5,13 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import stat
+import sys
+from contextlib import suppress
 from pathlib import Path
 from threading import RLock
-from typing import Protocol, TypeVar
+from typing import TypeVar
 
 from avo_correlate.adapters.artifacts.durable_backend_gate import (
     DurableBackendQualification,
@@ -21,9 +25,15 @@ from avo_correlate.contracts.main_personal_exact_cas_candidate_publication impor
     MainPersonalExactCasCandidatePublicationReconciliation,
     MainPersonalExactCasCandidatePublicationResponseEvidence,
 )
+from avo_correlate.contracts.main_personal_exact_cas_controller_composition import (
+    MainPersonalExactCasControllerComposition,
+)
 from avo_correlate.domain.canonical import canonical_bytes, canonical_digest
 
 _LOCK = RLock()
+_DIGEST_KEY = re.compile(r"^sha256:[0-9a-f]{64}$")
+_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
+_DIRECTORY = getattr(os, "O_DIRECTORY", 0)
 _T = TypeVar("_T", bound=StrictModel)
 _RECORDS: dict[str, type[StrictModel]] = {
     "intent": MainPersonalExactCasCandidatePublicationIntent,
@@ -41,22 +51,93 @@ class CandidatePublicationRecordConflictError(CandidatePublicationJournalError):
     """A create-once identity was already bound to other bytes."""
 
 
-class CandidatePublicationAuthorityVerifier(Protocol):
-    def verify_intent(self, intent: MainPersonalExactCasCandidatePublicationIntent) -> object: ...
+class _CandidatePublicationAuthorityRoot:
+    """Reserved exact authority root; unavailable until full closure exists."""
+
+    def __init__(
+        self,
+        composition: MainPersonalExactCasControllerComposition,
+        *,
+        configuration_digest: str,
+        publisher_app_id: int,
+        publisher_installation_id: int,
+    ) -> None:
+        if type(composition) is not MainPersonalExactCasControllerComposition:
+            raise ValueError("approved composition root is required")
+        if (
+            not _DIGEST_KEY.fullmatch(configuration_digest)
+            or publisher_app_id <= 0
+            or publisher_installation_id <= 0
+        ):
+            raise ValueError("candidate publication authority identity is malformed")
+        composition.model_validate(composition.model_dump(mode="python"), strict=True)
+        self._composition: MainPersonalExactCasControllerComposition = composition
+        self._configuration_digest: str = configuration_digest
+        self._app_id: int = publisher_app_id
+        self._installation_id: int = publisher_installation_id
+        # The existing composition root is deliberately non-authoritative and
+        # does not yet close over the fresh policy/identity/authorization
+        # journals required to authorize this distinct publisher.  Keep the
+        # transport unreachable until that exact durable authority root is
+        # composed and reopen-validated; a caller-supplied verifier is never
+        # accepted as a substitute.
+        raise ValueError("candidate publication authority root is not provisioned")
+
+    def verify_intent(self, intent: MainPersonalExactCasCandidatePublicationIntent) -> bool:
+        if (
+            intent.operation_id != self._composition.operation_id
+            or intent.repository_digest != self._composition.repository_digest
+            or intent.candidate_ref != self._composition.candidate_ref
+            or intent.base_commit != self._composition.base_commit
+            or intent.candidate_commit != self._composition.candidate_commit
+            or intent.candidate_tree != self._composition.candidate_tree
+            or intent.candidate_parents != self._composition.candidate_parents
+            or intent.source_composition_digest != self._composition.source_composition_digest
+            or intent.verified_policy_digest != self._composition.policy_digest
+            or intent.configuration_digest != self._configuration_digest
+            or intent.publisher_app_id != self._app_id
+            or intent.publisher_installation_id != self._installation_id
+        ):
+            raise ValueError("candidate intent is not rooted in approved composition")
+        return True
 
     def verify_response_evidence(
         self,
         evidence: MainPersonalExactCasCandidatePublicationResponseEvidence,
         intent: MainPersonalExactCasCandidatePublicationIntent,
         marker: MainPersonalExactCasCandidatePublicationDispatchStarted,
-    ) -> object: ...
+    ) -> bool:
+        if (
+            evidence.operation_id != intent.operation_id
+            or evidence.repository_digest != intent.repository_digest
+            or evidence.candidate_ref != intent.candidate_ref
+            or evidence.candidate_commit != intent.candidate_commit
+            or evidence.intent_digest != intent.intent_digest
+            or evidence.dispatch_marker_digest != marker.dispatch_marker_digest
+            or evidence.publisher_app_id != self._app_id
+            or evidence.publisher_installation_id != self._installation_id
+            or evidence.publisher_identity != intent.publisher_identity
+            or evidence.configuration_digest != intent.configuration_digest
+        ):
+            raise ValueError("response evidence is not rooted in approved composition")
+        return True
 
     def verify_reconciliation(
         self,
         reconciliation: MainPersonalExactCasCandidatePublicationReconciliation,
         intent: MainPersonalExactCasCandidatePublicationIntent,
         marker: MainPersonalExactCasCandidatePublicationDispatchStarted,
-    ) -> object: ...
+    ) -> bool:
+        if (
+            reconciliation.operation_id != intent.operation_id
+            or reconciliation.repository_digest != intent.repository_digest
+            or reconciliation.candidate_ref != intent.candidate_ref
+            or reconciliation.candidate_commit != intent.candidate_commit
+            or reconciliation.candidate_tree != intent.candidate_tree
+            or reconciliation.candidate_parents != intent.candidate_parents
+        ):
+            raise ValueError("reconciliation is not rooted in approved composition")
+        return True
 
 
 class MainPersonalExactCasCandidatePublicationJournal:
@@ -66,17 +147,31 @@ class MainPersonalExactCasCandidatePublicationJournal:
         self,
         root: Path,
         *,
-        authority_verifier: CandidatePublicationAuthorityVerifier,
+        approved_composition: MainPersonalExactCasControllerComposition,
+        configuration_digest: str,
+        publisher_app_id: int,
+        publisher_installation_id: int,
         artifact_store: FilesystemArtifactStore | None = None,
         max_record_bytes: int = 8 * 1024 * 1024,
     ) -> None:
         if max_record_bytes <= 0:
             raise ValueError("max_record_bytes must be positive")
-        required = ("verify_intent", "verify_response_evidence", "verify_reconciliation")
-        if any(not callable(getattr(authority_verifier, name, None)) for name in required):
-            raise ValueError("controller-owned candidate publication verifier is required")
+        authority = _CandidatePublicationAuthorityRoot(
+            approved_composition,
+            configuration_digest=configuration_digest,
+            publisher_app_id=publisher_app_id,
+            publisher_installation_id=publisher_installation_id,
+        )
         self._qualification = require_durable_backend(root)
         self._root = self._qualification.root
+        self._descriptor_mode = bool(
+            sys.platform == "linux"
+            and hasattr(os, "O_NOFOLLOW")
+            and hasattr(os, "O_DIRECTORY")
+            and not self._qualification.reason.startswith("test-")
+        )
+        self._root_fd: int | None = None
+        self._index_fd: int | None = None
         artifacts = self._prepare(self._root / "artifacts")
         if artifact_store is not None:
             if type(artifact_store) is not FilesystemArtifactStore:
@@ -91,8 +186,18 @@ class MainPersonalExactCasCandidatePublicationJournal:
             self._root / "main-personal-exact-cas-candidate-publication-index"
         )
         self._same_backend(self._indexes, "index directory")
-        self._authority = authority_verifier
+        self._authority = authority
         self._max = max_record_bytes
+        if self._descriptor_mode:
+            try:
+                self._root_fd = _open_directory(self._root)
+                self._index_fd = _open_dir_at(
+                    self._root_fd, "main-personal-exact-cas-candidate-publication-index", create=False
+                )
+                self._check_descriptors()
+            except BaseException:
+                self.close()
+                raise
 
     @property
     def root(self) -> Path:
@@ -101,6 +206,29 @@ class MainPersonalExactCasCandidatePublicationJournal:
     @property
     def artifact_store(self) -> FilesystemArtifactStore:
         return self._store
+
+    def close(self) -> None:
+        for descriptor in (self._index_fd, self._root_fd):
+            if descriptor is not None:
+                with suppress(OSError):
+                    os.close(descriptor)
+        self._index_fd = None
+        self._root_fd = None
+
+    def _check_descriptors(self) -> None:
+        if self._root_fd is None or self._index_fd is None:
+            raise CandidatePublicationJournalError("journal descriptors unavailable")
+        root_stat = os.fstat(self._root_fd)
+        index_stat = os.fstat(self._index_fd)
+        if not stat.S_ISDIR(root_stat.st_mode) or not stat.S_ISDIR(index_stat.st_mode):
+            raise CandidatePublicationJournalError("journal descriptor is not a directory")
+        if (root_stat.st_dev, _mount_id(self._root_fd)) != (
+            index_stat.st_dev,
+            _mount_id(self._index_fd),
+        ):
+            raise CandidatePublicationJournalError("journal descriptor backend changed")
+        if self._qualification.mount_id is None or _mount_id(self._root_fd) != self._qualification.mount_id:
+            raise CandidatePublicationJournalError("journal backend qualification changed")
 
     @property
     def backend_qualification(self) -> DurableBackendQualification:
@@ -122,9 +250,22 @@ class MainPersonalExactCasCandidatePublicationJournal:
             self._bind_marker(existing[0], intent)
             return existing[1], False
         created: list[bool] = []
-        reference = self._record(
-            "dispatch-started", marker.operation_id, marker, created_out=created
-        )
+        try:
+            reference = self._record(
+                "dispatch-started", marker.operation_id, marker, created_out=created
+            )
+        except CandidatePublicationRecordConflictError:
+            # A competing process may have won O_EXCL after our initial read.
+            # Its timestamp is intentionally irrelevant: adopt only the valid
+            # durable winner and never issue a second dispatch.
+            existing = self.read_dispatch_started(marker.operation_id)
+            if existing is None:
+                raise CandidatePublicationJournalError("dispatch winner disappeared") from None
+            self._bind_marker(existing[0], intent)
+            if created:
+                created.clear()
+            created.append(False)
+            return existing[1], False
         return reference, created[0]
 
     def record_response_evidence(
@@ -278,15 +419,8 @@ class MainPersonalExactCasCandidatePublicationJournal:
         try:
             self._prepare(index.parent)
             self._same_backend(index.parent, "index directory")
-            _fsync_directory(index.parent)
             with _LOCK:
-                descriptor = os.open(index, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
-                with os.fdopen(descriptor, "wb") as handle:
-                    payload = canonical_bytes(reference)
-                    handle.write(payload)
-                    handle.flush()
-                    os.fsync(handle.fileno())
-                _fsync_directory(index.parent)
+                self._write_index(index, kind, canonical_bytes(reference))
             if created_out is not None:
                 created_out.append(True)
             return reference
@@ -310,7 +444,7 @@ class MainPersonalExactCasCandidatePublicationJournal:
 
     def _read_raw(self, kind: str, key: str, expected: type[_T]) -> tuple[_T, ArtifactRef] | None:
         index = self._index_path(kind, key)
-        if not index.is_file():
+        if not self._index_exists(index, kind):
             return None
         try:
             reference = self._read_reference(index, kind)
@@ -331,16 +465,82 @@ class MainPersonalExactCasCandidatePublicationJournal:
             raise CandidatePublicationJournalError(f"malformed {kind}") from None
 
     def _read_reference(self, index: Path, kind: str) -> ArtifactRef:
-        reference = ArtifactRef.model_validate(json.loads(index.read_text(encoding="utf-8")))
+        data = self._read_index(index, kind)
+        reference = ArtifactRef.model_validate(json.loads(data))
         if (
-            canonical_bytes(reference) != index.read_bytes()
+            canonical_bytes(reference) != data
             or reference.role != f"candidate-publication-{kind}"
             or reference.media_type != f"application/vnd.avo.candidate-publication-{kind}+json"
         ):
             raise ValueError("index is not canonical")
         return reference
 
+    def _index_exists(self, index: Path, kind: str) -> bool:
+        if self._descriptor_mode:
+            try:
+                self._read_index(index, kind)
+            except FileNotFoundError:
+                return False
+            return True
+        return index.is_file() and not index.is_symlink()
+
+    def _read_index(self, index: Path, kind: str) -> bytes:
+        if self._descriptor_mode:
+            self._check_descriptors()
+            if self._index_fd is None:
+                raise CandidatePublicationJournalError("journal index descriptor unavailable")
+            kind_fd = _open_dir_at(self._index_fd, kind, create=False)
+            try:
+                descriptor = os.open(index.name, os.O_RDONLY | _NOFOLLOW, dir_fd=kind_fd)
+                try:
+                    _check_regular(descriptor)
+                    result = _read_bounded(descriptor, self._max)
+                    os.fsync(descriptor)
+                    return result
+                finally:
+                    os.close(descriptor)
+            finally:
+                os.close(kind_fd)
+        return _read_no_follow(index)
+
+    def _write_index(self, index: Path, kind: str, payload: bytes) -> None:
+        if self._descriptor_mode:
+            self._check_descriptors()
+            if self._index_fd is None:
+                raise CandidatePublicationJournalError("journal index descriptor unavailable")
+            kind_fd = _open_dir_at(self._index_fd, kind, create=True)
+            try:
+                descriptor = os.open(
+                    index.name,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW,
+                    mode=0o600,
+                    dir_fd=kind_fd,
+                )
+                try:
+                    _write_all(descriptor, payload)
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
+                os.fsync(kind_fd)
+                os.fsync(self._index_fd)
+                if self._root_fd is not None:
+                    os.fsync(self._root_fd)
+                return
+            finally:
+                os.close(kind_fd)
+        descriptor = os.open(
+            index, os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW, 0o600
+        )
+        try:
+            _write_all(descriptor, payload)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        _fsync_directory(index.parent)
+
     def _index_path(self, kind: str, key: str) -> Path:
+        if kind not in _RECORDS or not _DIGEST_KEY.fullmatch(key):
+            raise CandidatePublicationJournalError("journal key is malformed")
         return self._indexes / kind / f"{key.removeprefix('sha256:')}.json"
 
     def _same_backend(self, path: Path, label: str) -> DurableBackendQualification:
@@ -370,11 +570,83 @@ class MainPersonalExactCasCandidatePublicationJournal:
 
 
 def _fsync_directory(path: Path) -> None:
-    descriptor = os.open(path, os.O_RDONLY)
+    descriptor = os.open(path, os.O_RDONLY | _DIRECTORY | _NOFOLLOW)
     try:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+def _read_no_follow(path: Path) -> bytes:
+    descriptor = os.open(path, os.O_RDONLY | _NOFOLLOW)
+    try:
+        _check_regular(descriptor)
+        return _read_bounded(descriptor, 1024 * 1024)
+    finally:
+        os.close(descriptor)
+
+
+def _check_regular(descriptor: int) -> None:
+    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+        raise ValueError("journal index is not a regular file")
+
+
+def _read_bounded(descriptor: int, maximum: int) -> bytes:
+    chunks: list[bytes] = []
+    remaining = maximum + 1
+    while remaining:
+        chunk = os.read(descriptor, min(1024 * 1024, remaining))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    data = b"".join(chunks)
+    if len(data) > maximum:
+        raise ValueError("journal index exceeds bound")
+    return data
+
+
+def _write_all(descriptor: int, data: bytes) -> None:
+    offset = 0
+    while offset < len(data):
+        offset += os.write(descriptor, data[offset:])
+
+
+def _open_directory(path: Path) -> int:
+    descriptor = os.open(path, os.O_RDONLY | _DIRECTORY | _NOFOLLOW)
+    if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
+        os.close(descriptor)
+        raise ValueError("journal path is not a directory")
+    return descriptor
+
+
+def _open_dir_at(parent: int, name: str, *, create: bool) -> int:
+    if create:
+        with suppress(FileExistsError):
+            os.mkdir(name, 0o700, dir_fd=parent)
+    return _open_directory_at(parent, name)
+
+
+def _open_directory_at(parent: int, name: str) -> int:
+    descriptor = os.open(name, os.O_RDONLY | _DIRECTORY | _NOFOLLOW, dir_fd=parent)
+    if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
+        os.close(descriptor)
+        raise ValueError("journal path is not a directory")
+    return descriptor
+
+
+def _mount_id(descriptor: int) -> int:
+    if sys.platform != "linux":
+        raise ValueError("descriptor mount IDs require Linux")
+    fdinfo = os.open(f"/proc/self/fdinfo/{descriptor}", os.O_RDONLY | _NOFOLLOW)
+    try:
+        text = _read_bounded(fdinfo, 4096).decode("ascii")
+    finally:
+        os.close(fdinfo)
+    values = [line.split(":", 1)[1].strip() for line in text.splitlines() if line.startswith("mnt_id:")]
+    if len(values) != 1 or not re.fullmatch(r"[1-9][0-9]*", values[0]):
+        raise ValueError("fdinfo mount identity is malformed")
+    return int(values[0])
 
 
 def _fsync_ancestors(path: Path, root: Path) -> None:
@@ -386,7 +658,6 @@ def _fsync_ancestors(path: Path, root: Path) -> None:
 
 
 __all__ = [
-    "CandidatePublicationAuthorityVerifier",
     "CandidatePublicationJournalError",
     "CandidatePublicationRecordConflictError",
     "MainPersonalExactCasCandidatePublicationJournal",

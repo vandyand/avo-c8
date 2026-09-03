@@ -3,7 +3,7 @@
 This adapter has exactly one mutating operation: POST git/refs.  It emits
 nonterminal evidence and never decides readiness, completion, or deployment.
 """
-# ruff: noqa: E501
+# pyright: reportUnusedClass=false
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Literal, cast
 
 from avo_correlate.adapters.hosted_git.github import (
     GitHubRejected,
@@ -26,6 +26,9 @@ from avo_correlate.contracts.main_personal_exact_cas_candidate_publication impor
     MainPersonalExactCasCandidatePublicationIntent,
     MainPersonalExactCasCandidatePublicationResponseEvidence,
     candidate_publication_request_digest,
+)
+from avo_correlate.contracts.main_personal_exact_cas_controller_composition import (
+    MainPersonalExactCasControllerComposition,
 )
 from avo_correlate.domain.canonical import canonical_digest
 
@@ -52,6 +55,7 @@ class GitHubCandidatePublisherConfiguration:
     repository_id: int = _REPOSITORY_ID
     app_id: int = 0
     installation_id: int = 0
+    owner_id: int | None = None
     app_name: Literal["avo-c8-candidate-publisher-vandyand"] = _IDENTITY
     timeout_seconds: float = 30.0
     max_response_bytes: int = 4 * 1024 * 1024
@@ -62,6 +66,8 @@ class GitHubCandidatePublisherConfiguration:
             raise ValueError("candidate publisher repository is fixed")
         if self.app_id <= 0 or self.installation_id <= 0:
             raise ValueError("candidate publisher App and installation are not provisioned")
+        if self.owner_id is not None and self.owner_id <= 0:
+            raise ValueError("candidate publisher owner ID is invalid")
         if self.timeout_seconds <= 0 or self.timeout_seconds > 60 or self.max_response_bytes <= 0:
             raise ValueError("candidate publisher bounds are invalid")
         object.__setattr__(self, "configuration_digest", canonical_digest(self._payload()))
@@ -73,6 +79,7 @@ class GitHubCandidatePublisherConfiguration:
             "repository_id": self.repository_id,
             "app_id": self.app_id,
             "installation_id": self.installation_id,
+            "owner_id": self.owner_id,
             "app_name": self.app_name,
             "timeout_seconds": self.timeout_seconds,
             "max_response_bytes": self.max_response_bytes,
@@ -92,7 +99,7 @@ class GitHubCandidatePublisherCredentials:
 
 
 @dataclass(frozen=True, slots=True, repr=False, init=False)
-class GitHubCandidateRefPublisher:
+class _CandidateRefTransport:
     _configuration: GitHubCandidatePublisherConfiguration
     _credentials: GitHubCandidatePublisherCredentials = field(repr=False, compare=False)
     _transport: GitHubJsonTransport = field(repr=False, compare=False)
@@ -303,6 +310,13 @@ class GitHubCandidateRefPublisher:
             or value.get("permissions") != {"contents": "write", "metadata": "read"}
             or value.get("events") != []
             or owner.get("login") != _OWNER
+            or ("type" in owner and owner["type"] != "User")
+            or ("public" in value and value["public"] is not False)
+            or ("webhook_active" in value and value["webhook_active"] is not False)
+            or (
+                self._configuration.owner_id is not None
+                and owner.get("id") != self._configuration.owner_id
+            )
         ):
             raise ValueError("publisher App identity differs")
 
@@ -315,6 +329,15 @@ class GitHubCandidateRefPublisher:
             or value.get("app_slug") != _IDENTITY
             or value.get("repository_selection") != "selected"
             or account.get("login") != _OWNER
+            or ("type" in account and account["type"] != "User")
+            or ("target_type" in value and value["target_type"] != "User")
+            or (
+                self._configuration.owner_id is not None
+                and (
+                    account.get("id") != self._configuration.owner_id
+                    or value.get("target_id") != self._configuration.owner_id
+                )
+            )
         ):
             raise ValueError("publisher installation identity differs")
 
@@ -340,8 +363,7 @@ class GitHubCandidateRefPublisher:
             raise ValueError("publisher token expiry is outside bound")
         return token
 
-    @staticmethod
-    def _verify_repository(body: JsonValue) -> None:
+    def _verify_repository(self, body: JsonValue) -> None:
         value = _object(body)
         owner = _object(value.get("owner"))
         if (
@@ -349,15 +371,22 @@ class GitHubCandidateRefPublisher:
             or value.get("name") != _REPO
             or value.get("full_name") != f"{_OWNER}/{_REPO}"
             or owner.get("login") != _OWNER
+            or ("type" in owner and owner["type"] != "User")
+            or (
+                self._configuration.owner_id is not None
+                and owner.get("id") != self._configuration.owner_id
+            )
         ):
             raise ValueError("publisher repository identity differs")
 
 
 class MainPersonalExactCasCandidatePublicationController:
-    """The only public dispatch boundary for candidate publication.
+    """Reserved public boundary; unavailable until authority composition lands.
 
-    The journal owns the create-once fence.  A caller that loses the fence,
-    restarts after a crash, or finds ambiguous evidence can only read state.
+    The current exact composition record is evidence, not publication
+    authority.  Construction therefore fails closed and cannot reach the
+    private transport.  The future implementation must own the journal fence
+    and adopt existing markers before any dispatch.
     """
 
     def __init__(
@@ -366,68 +395,33 @@ class MainPersonalExactCasCandidatePublicationController:
         *,
         configuration: GitHubCandidatePublisherConfiguration,
         credentials: GitHubCandidatePublisherCredentials,
-        authority_verifier: Any,
+        approved_composition: MainPersonalExactCasControllerComposition,
     ) -> None:
-        from avo_correlate.adapters.artifacts.main_personal_exact_cas_candidate_publication_journal import (
-            MainPersonalExactCasCandidatePublicationJournal,
-        )
-
-        self._publisher = GitHubCandidateRefPublisher(configuration, credentials)
-        self._journal = MainPersonalExactCasCandidatePublicationJournal(
-            root, authority_verifier=authority_verifier
-        )
+        if type(approved_composition) is not MainPersonalExactCasControllerComposition:
+            raise TypeError("approved composition root is required")
+        # A composition DTO is not a publication authority.  Until the
+        # operation-specific authority root resolves the exact fresh policy,
+        # identity, and authorization journals, this public boundary is
+        # deliberately non-constructible and cannot reach the transport.
+        del root, configuration, credentials, approved_composition
+        raise ValueError("candidate publication authority root is not provisioned")
 
     def execute(
         self, intent: MainPersonalExactCasCandidatePublicationIntent
     ) -> MainPersonalExactCasCandidatePublicationResponseEvidence | None:
-        if type(intent) is not MainPersonalExactCasCandidatePublicationIntent:
-            raise TypeError("candidate publication intent is required")
-        checked = MainPersonalExactCasCandidatePublicationIntent.model_validate(
-            intent.model_dump(mode="python"), strict=True
-        )
-        if checked != intent or intent.configuration_digest != self._publisher.configuration_digest:
-            raise ValueError("candidate publication intent is not runtime-bound")
-        self._journal.record_intent(checked)
-        marker = MainPersonalExactCasCandidatePublicationDispatchStarted.build(
-            operation_id=checked.operation_id,
-            candidate_ref=checked.candidate_ref,
-            intent_digest=checked.intent_digest,
-            configuration_digest=checked.configuration_digest,
-            started_at=datetime.now(UTC),
-        )
-        _, owner = self._journal.claim_dispatch_started(marker)
-        if not owner:
-            existing = self._journal.read_response_evidence(checked.operation_id)
-            return None if existing is None else existing[0]
-        evidence = self._publisher._create(checked, marker)  # pyright: ignore[reportPrivateUsage]
-        self._journal.record_response_evidence(evidence)
-        return evidence
+        del self, intent
+        raise RuntimeError("candidate publication authority root is not provisioned")
 
     def recover(
         self, operation_id: str
     ) -> MainPersonalExactCasCandidatePublicationResponseEvidence | None:
         """Read existing evidence after restart; never dispatches."""
 
-        existing = self._journal.read_response_evidence(operation_id)
-        return None if existing is None else existing[0]
+        del self, operation_id
+        raise RuntimeError("candidate publication authority root is not provisioned")
 
 
 def _object(value: object) -> dict[str, JsonValue]:
     if type(value) is not dict:
         raise ValueError("GitHub response object is malformed")
     return cast(dict[str, JsonValue], value)
-
-
-GitHubCandidatePublisher = GitHubCandidateRefPublisher
-GitHubCandidatePublisherConfig = GitHubCandidatePublisherConfiguration
-
-
-__all__ = [
-    "GitHubCandidatePublisher",
-    "GitHubCandidatePublisherConfig",
-    "GitHubCandidatePublisherConfiguration",
-    "GitHubCandidatePublisherCredentials",
-    "GitHubCandidatePublisherError",
-    "GitHubCandidateRefPublisher",
-    "MainPersonalExactCasCandidatePublicationController",
-]
