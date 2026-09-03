@@ -10,6 +10,9 @@ from avo_correlate.adapters.artifacts.durable_backend_gate import DurableBackend
 from avo_correlate.adapters.hosted_git import (
     GitHubCandidatePublisherConfiguration,
     GitHubCandidatePublisherCredentials,
+    MainPersonalExactCasCandidatePublicationController,
+)
+from avo_correlate.adapters.hosted_git.main_personal_exact_cas_candidate_publisher import (
     GitHubCandidateRefPublisher,
 )
 from avo_correlate.contracts import (
@@ -75,7 +78,7 @@ def _publisher(monkeypatch: pytest.MonkeyPatch):
 
 def test_publisher_has_one_exact_post_and_redacts_credentials(monkeypatch: pytest.MonkeyPatch):
     publisher, intent, marker, calls = _publisher(monkeypatch)
-    evidence = publisher.create(intent, marker)
+    evidence = publisher._create(intent, marker)
     assert evidence.response_status == 201
     assert evidence.response_ref == intent.candidate_ref
     assert [(method, path) for method, path, _, _ in calls] == [
@@ -94,7 +97,7 @@ def test_input_configuration_and_request_digest_are_exact(monkeypatch: pytest.Mo
     publisher, intent, marker, _ = _publisher(monkeypatch)
     wrong_marker = marker.model_copy(update={"configuration_digest": "sha256:" + "9" * 64})
     with pytest.raises(ValueError):
-        publisher.create(intent, wrong_marker)
+        publisher._create(intent, wrong_marker)
     assert intent.configuration_digest == publisher.configuration_digest
     assert intent.intent_digest.startswith("sha256:")
     assert candidate_publication_request_digest(
@@ -176,3 +179,37 @@ def test_journal_fails_closed_without_controller_verifier(
     )
     with pytest.raises(ValueError):
         MainPersonalExactCasCandidatePublicationJournal(tmp_path, authority_verifier=object())
+
+
+def test_controller_is_only_dispatch_boundary_and_replay_is_read_only(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+):
+    _, intent, _, calls = _publisher(monkeypatch)
+    config = GitHubCandidatePublisherConfiguration(app_id=77, installation_id=88)
+    monkeypatch.setattr(
+        "avo_correlate.adapters.artifacts.main_personal_exact_cas_candidate_publication_journal.require_durable_backend",
+        lambda root: DurableBackendQualification(
+            root=tmp_path,
+            qualified=True,
+            reason="test-qualified",
+            filesystem_type="ext4",
+            mount_id=1,
+            device="8:1",
+        ),
+    )
+    monkeypatch.setattr(
+        "avo_correlate.adapters.artifacts.main_personal_exact_cas_candidate_publication_journal._fsync_directory",
+        lambda _: None,
+    )
+    controller = MainPersonalExactCasCandidatePublicationController(
+        tmp_path,
+        configuration=config,
+        credentials=GitHubCandidatePublisherCredentials("jwt-secret"),
+        authority_verifier=_Verifier(),
+    )
+    first = controller.execute(intent)
+    assert first is not None and first.response_status == 201
+    call_count = len(calls)
+    second = controller.execute(intent)
+    assert second == first
+    assert len(calls) == call_count

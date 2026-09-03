@@ -107,6 +107,21 @@
       "title": "Operation Id",
       "type": "string"
     },
+    "publisher_app_id": {
+      "exclusiveMinimum": 0,
+      "title": "Publisher App Id",
+      "type": "integer"
+    },
+    "publisher_identity": {
+      "const": "avo-c8-candidate-publisher-vandyand",
+      "title": "Publisher Identity",
+      "type": "string"
+    },
+    "publisher_installation_id": {
+      "exclusiveMinimum": 0,
+      "title": "Publisher Installation Id",
+      "type": "integer"
+    },
     "readiness_authorized": {
       "const": false,
       "default": false,
@@ -220,6 +235,9 @@
     "candidate_commit",
     "intent_digest",
     "dispatch_marker_digest",
+    "publisher_app_id",
+    "publisher_installation_id",
+    "publisher_identity",
     "configuration_digest",
     "request_digest",
     "response_status",

@@ -1,4 +1,5 @@
 """Fail-closed durable journal for the isolated candidate publisher leaf."""
+# ruff: noqa: E501
 
 from __future__ import annotations
 
@@ -116,6 +117,10 @@ class MainPersonalExactCasCandidatePublicationJournal:
             "intent", marker.operation_id, MainPersonalExactCasCandidatePublicationIntent
         )
         self._bind_marker(marker, intent)
+        existing = self.read_dispatch_started(marker.operation_id)
+        if existing is not None:
+            self._bind_marker(existing[0], intent)
+            return existing[1], False
         created: list[bool] = []
         reference = self._record(
             "dispatch-started", marker.operation_id, marker, created_out=created
@@ -129,10 +134,13 @@ class MainPersonalExactCasCandidatePublicationJournal:
         if (
             evidence.intent_digest != intent.intent_digest
             or evidence.dispatch_marker_digest != marker.dispatch_marker_digest
+            or evidence.publisher_app_id != intent.publisher_app_id
+            or evidence.publisher_installation_id != intent.publisher_installation_id
+            or evidence.publisher_identity != intent.publisher_identity
         ):
             raise CandidatePublicationJournalError("response evidence binding differs")
         self._verify("response-evidence", evidence, intent, marker)
-        return self._record("response-evidence", evidence.evidence_digest, evidence)
+        return self._record("response-evidence", evidence.operation_id, evidence)
 
     def record_reconciliation(
         self, reconciliation: MainPersonalExactCasCandidatePublicationReconciliation
@@ -146,36 +154,51 @@ class MainPersonalExactCasCandidatePublicationJournal:
     def read_intent(
         self, operation_id: str
     ) -> tuple[MainPersonalExactCasCandidatePublicationIntent, ArtifactRef] | None:
-        return self._read_raw(
+        value = self._read_raw(
             "intent", operation_id, MainPersonalExactCasCandidatePublicationIntent
         )
+        if value is not None:
+            self._verify("intent", value[0])
+        return value
 
     def read_dispatch_started(
         self, operation_id: str
     ) -> tuple[MainPersonalExactCasCandidatePublicationDispatchStarted, ArtifactRef] | None:
-        return self._read_raw(
+        value = self._read_raw(
             "dispatch-started",
             operation_id,
             MainPersonalExactCasCandidatePublicationDispatchStarted,
         )
+        if value is not None:
+            intent = self._require("intent", operation_id, MainPersonalExactCasCandidatePublicationIntent)
+            self._bind_marker(value[0], intent)
+        return value
 
     def read_response_evidence(
-        self, evidence_digest: str
+        self, operation_id: str
     ) -> tuple[MainPersonalExactCasCandidatePublicationResponseEvidence, ArtifactRef] | None:
-        return self._read_raw(
+        value = self._read_raw(
             "response-evidence",
-            evidence_digest,
+            operation_id,
             MainPersonalExactCasCandidatePublicationResponseEvidence,
         )
+        if value is not None:
+            intent, marker = self._scope(operation_id)
+            self._verify("response-evidence", value[0], intent, marker)
+        return value
 
     def read_reconciliation(
         self, reconciliation_digest: str
     ) -> tuple[MainPersonalExactCasCandidatePublicationReconciliation, ArtifactRef] | None:
-        return self._read_raw(
+        value = self._read_raw(
             "reconciliation",
             reconciliation_digest,
             MainPersonalExactCasCandidatePublicationReconciliation,
         )
+        if value is not None:
+            intent, marker = self._scope(value[0].operation_id)
+            self._verify("reconciliation", value[0], intent, marker)
+        return value
 
     def _scope(
         self, operation_id: str
@@ -215,13 +238,16 @@ class MainPersonalExactCasCandidatePublicationJournal:
     def _verify(self, kind: str, record: StrictModel, *args: object) -> None:
         try:
             if kind == "intent":
-                self._authority.verify_intent(record)  # type: ignore[arg-type]
+                result = self._authority.verify_intent(record)  # type: ignore[arg-type]
             elif kind == "response-evidence":
-                self._authority.verify_response_evidence(record, args[0], args[1])  # type: ignore[arg-type]
+                result = self._authority.verify_response_evidence(record, args[0], args[1])  # type: ignore[arg-type]
             else:
-                self._authority.verify_reconciliation(record, args[0], args[1])  # type: ignore[arg-type]
+                result = self._authority.verify_reconciliation(record, args[0], args[1])  # type: ignore[arg-type]
+            if result is not True:
+                raise ValueError("verifier did not accept record")
         except Exception as exc:
-            raise CandidatePublicationJournalError(f"{kind} verification failed") from exc
+            del exc
+            raise CandidatePublicationJournalError(f"{kind} verification failed") from None
 
     def _record(
         self, kind: str, key: str, record: StrictModel, *, created_out: list[bool] | None = None
@@ -246,7 +272,8 @@ class MainPersonalExactCasCandidatePublicationJournal:
         except CandidatePublicationJournalError:
             raise
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
-            raise CandidatePublicationJournalError(f"invalid {kind}") from exc
+            del exc
+            raise CandidatePublicationJournalError(f"invalid {kind}") from None
         index = self._index_path(kind, key)
         try:
             self._prepare(index.parent)
@@ -264,8 +291,12 @@ class MainPersonalExactCasCandidatePublicationJournal:
                 created_out.append(True)
             return reference
         except FileExistsError:
-            old = self._read_reference(index, kind)
-            old_data = self._store.read_bytes(old)
+            try:
+                old = self._read_reference(index, kind)
+                old_data = self._store.read_bytes(old)
+            except (OSError, RuntimeError, TypeError, ValueError, UnicodeError) as exc:
+                del exc
+                raise CandidatePublicationJournalError(f"malformed {kind} index") from None
             if old.digest == reference.digest and old_data == data:
                 if created_out is not None:
                     created_out.append(False)
@@ -274,7 +305,8 @@ class MainPersonalExactCasCandidatePublicationJournal:
         except CandidatePublicationRecordConflictError:
             raise
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
-            raise CandidatePublicationJournalError(f"{kind} index was not durable") from exc
+            del exc
+            raise CandidatePublicationJournalError(f"{kind} index was not durable") from None
 
     def _read_raw(self, kind: str, key: str, expected: type[_T]) -> tuple[_T, ArtifactRef] | None:
         index = self._index_path(kind, key)
@@ -295,7 +327,8 @@ class MainPersonalExactCasCandidatePublicationJournal:
             UnicodeError,
             json.JSONDecodeError,
         ) as exc:
-            raise CandidatePublicationJournalError(f"malformed {kind}") from exc
+            del exc
+            raise CandidatePublicationJournalError(f"malformed {kind}") from None
 
     def _read_reference(self, index: Path, kind: str) -> ArtifactRef:
         reference = ArtifactRef.model_validate(json.loads(index.read_text(encoding="utf-8")))
@@ -325,7 +358,11 @@ class MainPersonalExactCasCandidatePublicationJournal:
 
     @classmethod
     def _prepare(cls, path: Path) -> Path:
-        canonical = cls._canonical(path)
+        candidate = Path(path).absolute()
+        for component in [*reversed(candidate.parents), candidate]:
+            if component.is_symlink():
+                raise CandidatePublicationJournalError("controlled path contains a symlink")
+        canonical = candidate.resolve(strict=False)
         canonical.mkdir(parents=True, exist_ok=True)
         if not canonical.is_dir() or canonical.is_symlink():
             raise CandidatePublicationJournalError("controlled path is not a directory")

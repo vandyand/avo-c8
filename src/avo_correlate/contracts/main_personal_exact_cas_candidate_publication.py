@@ -3,10 +3,10 @@
 The operation-derived ref and commit are immutable inputs.  These records do
 not grant readiness, completion, deployment, or any other authority.
 """
+# ruff: noqa: E501
 
 from __future__ import annotations
 
-import re
 from datetime import datetime
 from typing import Any, Literal, Self, cast
 
@@ -160,6 +160,9 @@ class MainPersonalExactCasCandidatePublicationResponseEvidence(StrictModel):
     candidate_commit: GitObject
     intent_digest: Sha256Digest
     dispatch_marker_digest: Sha256Digest
+    publisher_app_id: StrictInt = Field(gt=0)
+    publisher_installation_id: StrictInt = Field(gt=0)
+    publisher_identity: Literal["avo-c8-candidate-publisher-vandyand"]
     configuration_digest: Sha256Digest
     request_digest: Sha256Digest
     response_status: StrictInt = Field(ge=100, le=599)
@@ -193,19 +196,22 @@ class MainPersonalExactCasCandidatePublicationResponseEvidence(StrictModel):
             candidate_commit=self.candidate_commit,
         ):
             raise ValueError("response request digest mismatch")
-        if any(
-            item.method not in {"GET", "POST"}
-            or not (
-                item.path == "/app"
-                or re.fullmatch(r"/app/installations/[1-9][0-9]*", item.path)
-                or re.fullmatch(r"/app/installations/[1-9][0-9]*/access_tokens", item.path)
-                or item.path == "/repositories/1354880741"
-                or item.path == "/repos/vandyand/avo-c8/git/refs"
-            )
-            or item.credential_role not in {"app_jwt", "installation_token"}
-            for item in self.requests
-        ):
+        if self.publisher_identity != "avo-c8-candidate-publisher-vandyand":
+            raise ValueError("response publisher identity differs")
+        expected_trace = (
+            ("GET", "/app", "app_jwt"),
+            ("GET", f"/app/installations/{self.publisher_installation_id}", "app_jwt"),
+            ("POST", f"/app/installations/{self.publisher_installation_id}/access_tokens", "app_jwt"),
+            ("GET", "/repositories/1354880741", "installation_token"),
+            ("POST", "/repos/vandyand/avo-c8/git/refs", "installation_token"),
+        )
+        actual_trace = tuple(
+            (item.method, item.path, item.credential_role) for item in self.requests
+        )
+        if actual_trace != expected_trace[: len(actual_trace)] or not actual_trace:
             raise ValueError("response request trace is outside fixed publisher surface")
+        if self.response_status == 201 and actual_trace != expected_trace:
+            raise ValueError("successful response trace is not exact")
         expected: CandidatePublicationResponseClass = (
             "created"
             if self.response_status == 201

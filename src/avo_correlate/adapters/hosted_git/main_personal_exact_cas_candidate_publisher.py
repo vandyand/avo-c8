@@ -3,13 +3,15 @@
 This adapter has exactly one mutating operation: POST git/refs.  It emits
 nonterminal evidence and never decides readiness, completion, or deployment.
 """
+# ruff: noqa: E501
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Literal, cast
+from pathlib import Path
+from typing import Any, Literal, cast
 
 from avo_correlate.adapters.hosted_git.github import (
     GitHubRejected,
@@ -126,7 +128,7 @@ class GitHubCandidateRefPublisher:
     def repository_id(self) -> int:
         return self._configuration.repository_id
 
-    def create(
+    def _create(
         self,
         intent: MainPersonalExactCasCandidatePublicationIntent,
         marker: MainPersonalExactCasCandidatePublicationDispatchStarted,
@@ -196,6 +198,9 @@ class GitHubCandidateRefPublisher:
             or marker.intent_digest != intent.intent_digest
             or marker.configuration_digest != self.configuration_digest
             or intent.configuration_digest != self.configuration_digest
+            or intent.publisher_app_id != self._configuration.app_id
+            or intent.publisher_installation_id != self._configuration.installation_id
+            or intent.publisher_identity != self._configuration.app_name
         ):
             raise ValueError("candidate publication inputs are not exactly bound")
         return checked
@@ -257,6 +262,9 @@ class GitHubCandidateRefPublisher:
             candidate_commit=intent.candidate_commit,
             intent_digest=intent.intent_digest,
             dispatch_marker_digest=marker.dispatch_marker_digest,
+            publisher_app_id=intent.publisher_app_id,
+            publisher_installation_id=intent.publisher_installation_id,
+            publisher_identity=intent.publisher_identity,
             configuration_digest=intent.configuration_digest,
             request_digest=candidate_publication_request_digest(
                 repository_digest=intent.repository_digest,
@@ -345,6 +353,65 @@ class GitHubCandidateRefPublisher:
             raise ValueError("publisher repository identity differs")
 
 
+class MainPersonalExactCasCandidatePublicationController:
+    """The only public dispatch boundary for candidate publication.
+
+    The journal owns the create-once fence.  A caller that loses the fence,
+    restarts after a crash, or finds ambiguous evidence can only read state.
+    """
+
+    def __init__(
+        self,
+        root: Path,
+        *,
+        configuration: GitHubCandidatePublisherConfiguration,
+        credentials: GitHubCandidatePublisherCredentials,
+        authority_verifier: Any,
+    ) -> None:
+        from avo_correlate.adapters.artifacts.main_personal_exact_cas_candidate_publication_journal import (
+            MainPersonalExactCasCandidatePublicationJournal,
+        )
+
+        self._publisher = GitHubCandidateRefPublisher(configuration, credentials)
+        self._journal = MainPersonalExactCasCandidatePublicationJournal(
+            root, authority_verifier=authority_verifier
+        )
+
+    def execute(
+        self, intent: MainPersonalExactCasCandidatePublicationIntent
+    ) -> MainPersonalExactCasCandidatePublicationResponseEvidence | None:
+        if type(intent) is not MainPersonalExactCasCandidatePublicationIntent:
+            raise TypeError("candidate publication intent is required")
+        checked = MainPersonalExactCasCandidatePublicationIntent.model_validate(
+            intent.model_dump(mode="python"), strict=True
+        )
+        if checked != intent or intent.configuration_digest != self._publisher.configuration_digest:
+            raise ValueError("candidate publication intent is not runtime-bound")
+        self._journal.record_intent(checked)
+        marker = MainPersonalExactCasCandidatePublicationDispatchStarted.build(
+            operation_id=checked.operation_id,
+            candidate_ref=checked.candidate_ref,
+            intent_digest=checked.intent_digest,
+            configuration_digest=checked.configuration_digest,
+            started_at=datetime.now(UTC),
+        )
+        _, owner = self._journal.claim_dispatch_started(marker)
+        if not owner:
+            existing = self._journal.read_response_evidence(checked.operation_id)
+            return None if existing is None else existing[0]
+        evidence = self._publisher._create(checked, marker)  # pyright: ignore[reportPrivateUsage]
+        self._journal.record_response_evidence(evidence)
+        return evidence
+
+    def recover(
+        self, operation_id: str
+    ) -> MainPersonalExactCasCandidatePublicationResponseEvidence | None:
+        """Read existing evidence after restart; never dispatches."""
+
+        existing = self._journal.read_response_evidence(operation_id)
+        return None if existing is None else existing[0]
+
+
 def _object(value: object) -> dict[str, JsonValue]:
     if type(value) is not dict:
         raise ValueError("GitHub response object is malformed")
@@ -362,4 +429,5 @@ __all__ = [
     "GitHubCandidatePublisherCredentials",
     "GitHubCandidatePublisherError",
     "GitHubCandidateRefPublisher",
+    "MainPersonalExactCasCandidatePublicationController",
 ]
