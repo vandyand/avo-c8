@@ -193,6 +193,9 @@ from avo_correlate.contracts.main_personal_exact_cas import (
 from avo_correlate.contracts.main_personal_exact_cas_response_evidence import (
     MainPersonalExactCasResponseEvidence,
 )
+from avo_correlate.contracts.main_personal_exact_cas_response_reconciliation import (
+    MainPersonalExactCasResponseReconciliationClassification,
+)
 from avo_correlate.contracts.model import ModelInvocationRecord, ModelRequest, ModelResponse
 from avo_correlate.contracts.operations import (
     DryRunReport,
@@ -291,6 +294,7 @@ MODELS: tuple[type[StrictModel], ...] = (
     MainPersonalExactCasReceipt,
     MainPersonalExactCasReconciliation,
     MainPersonalExactCasResponseEvidence,
+    MainPersonalExactCasResponseReconciliationClassification,
     SandboxExecutionSpec,
     SandboxExecutionResult,
     DryRunReport,
