@@ -1,0 +1,137 @@
+{
+  "$defs": {
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Digest",
+          "type": "string"
+        },
+        "media_type": {
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "role": {
+          "minLength": 1,
+          "title": "Role",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "size_bytes": {
+          "minimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "digest",
+        "size_bytes",
+        "media_type",
+        "role",
+        "created_at"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "The singleton, non-authoritative root binding five sanitized leaves.",
+  "properties": {
+    "bundle_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Bundle Digest",
+      "type": "string"
+    },
+    "completion_claimed": {
+      "const": false,
+      "default": false,
+      "title": "Completion Claimed",
+      "type": "boolean"
+    },
+    "deploy_performed": {
+      "const": false,
+      "default": false,
+      "title": "Deploy Performed",
+      "type": "boolean"
+    },
+    "is_authoritative": {
+      "const": false,
+      "default": false,
+      "title": "Is Authoritative",
+      "type": "boolean"
+    },
+    "is_terminal": {
+      "const": false,
+      "default": false,
+      "title": "Is Terminal",
+      "type": "boolean"
+    },
+    "mutation_performed": {
+      "const": false,
+      "default": false,
+      "title": "Mutation Performed",
+      "type": "boolean"
+    },
+    "observer_configuration_artifact": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "observer_provenance_artifact": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "observer_snapshot_artifact": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "readiness_authorized": {
+      "const": false,
+      "default": false,
+      "title": "Readiness Authorized",
+      "type": "boolean"
+    },
+    "receipt_issued": {
+      "const": false,
+      "default": false,
+      "title": "Receipt Issued",
+      "type": "boolean"
+    },
+    "root_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Root Digest",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "writer_diagnostic_artifact": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "writer_provenance_artifact": {
+      "$ref": "#/$defs/ArtifactRef"
+    }
+  },
+  "required": [
+    "writer_diagnostic_artifact",
+    "writer_provenance_artifact",
+    "observer_snapshot_artifact",
+    "observer_provenance_artifact",
+    "observer_configuration_artifact",
+    "bundle_digest",
+    "root_digest"
+  ],
+  "title": "MainPersonalExactCasHostedIdentityEvidenceRoot",
+  "type": "object"
+}

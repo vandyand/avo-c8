@@ -231,6 +231,13 @@ from avo_correlate.contracts.main_personal_exact_cas import (
 from avo_correlate.contracts.main_personal_exact_cas_hosted_configuration import (
     MainPersonalExactCasHostedConfigurationDiagnostic,
 )
+from avo_correlate.contracts.main_personal_exact_cas_hosted_identity import (
+    MainPersonalExactCasHostedIdentityEvidenceBundleRoot,
+    MainPersonalExactCasHostedIdentityEvidenceRecord,
+    MainPersonalExactCasHostedIdentityEvidenceRoot,
+    MainPersonalExactCasHostedIdentityJournalRecord,
+    MainPersonalExactCasHostedIdentityJournalRoot,
+)
 from avo_correlate.contracts.main_personal_exact_cas_post_state import (
     GitHubOwner,
     GitHubRepository,
@@ -447,6 +454,11 @@ __all__ = [
     "MainPersonalExactCasCompletion",
     "MainPersonalExactCasDispatchStarted",
     "MainPersonalExactCasHostedConfigurationDiagnostic",
+    "MainPersonalExactCasHostedIdentityEvidenceBundleRoot",
+    "MainPersonalExactCasHostedIdentityEvidenceRecord",
+    "MainPersonalExactCasHostedIdentityEvidenceRoot",
+    "MainPersonalExactCasHostedIdentityJournalRecord",
+    "MainPersonalExactCasHostedIdentityJournalRoot",
     "MainPersonalExactCasIntent",
     "MainPersonalExactCasPostStateObservation",
     "MainPersonalExactCasReadOnlyPostState",
