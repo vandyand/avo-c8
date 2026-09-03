@@ -229,8 +229,8 @@ from avo_correlate.contracts.main_personal_exact_cas import (
     personal_cas_operation_id,
 )
 from avo_correlate.contracts.main_personal_exact_cas_response_evidence import (
-    MainPersonalExactCasResponseEvidence,
     MainPersonalExactCasResponseClassification,
+    MainPersonalExactCasResponseEvidence,
     SanitizedRequestId,
     main_personal_exact_cas_request_digest,
 )
@@ -436,10 +436,8 @@ __all__ = [
     "MainPersonalExactCasPostStateObservation",
     "MainPersonalExactCasReceipt",
     "MainPersonalExactCasReconciliation",
-    "MainPersonalExactCasResponseEvidence",
     "MainPersonalExactCasResponseClassification",
-    "SanitizedRequestId",
-    "main_personal_exact_cas_request_digest",
+    "MainPersonalExactCasResponseEvidence",
     "MainPreparationAuthorization",
     "MainProtectionManifest",
     "MainProviderPostStateObservation",
@@ -495,6 +493,7 @@ __all__ = [
     "RuntimeEvent",
     "RuntimeInspection",
     "RuntimeSessionRef",
+    "SanitizedRequestId",
     "StrictModel",
     "ThresholdAccumulatorStateV2",
     "ThresholdAccumulatorTransitionV2",
@@ -510,6 +509,7 @@ __all__ = [
     "exact_cas_raw_request_digest",
     "main_ledger_genesis_state",
     "main_operation_id",
+    "main_personal_exact_cas_request_digest",
     "main_record_bytes",
     "main_record_digest",
     "main_release_claim_key",
