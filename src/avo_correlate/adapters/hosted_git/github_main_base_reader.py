@@ -66,6 +66,8 @@ class GitHubMainBaseReaderConfiguration:
     observer_app_name: str
     observer_app_id: int
     observer_installation_id: int
+    writer_app_id: int
+    writer_installation_id: int
     timeout_seconds: float = 30.0
     max_response_bytes: int = _MAX_RESPONSE_BYTES
     configuration_digest: str = field(init=False)
@@ -111,6 +113,17 @@ class GitHubMainBaseReaderConfiguration:
             or self.observer_installation_id <= 0
         ):
             raise ValueError("observer installation ID must be positive")
+        if type(self.writer_app_id) is not int or self.writer_app_id <= 0:
+            raise ValueError("writer App ID must be positive")
+        if (
+            type(self.writer_installation_id) is not int
+            or self.writer_installation_id <= 0
+        ):
+            raise ValueError("writer installation ID must be positive")
+        if self.observer_app_id == self.writer_app_id:
+            raise ValueError("observer and writer Apps must be distinct")
+        if self.observer_installation_id == self.writer_installation_id:
+            raise ValueError("observer and writer installations must be distinct")
         if (
             type(self.timeout_seconds) not in {int, float}
             or not math.isfinite(float(self.timeout_seconds))
@@ -142,6 +155,8 @@ class GitHubMainBaseReaderConfiguration:
                 "repository_id": self.repository_id,
                 "target_ref": _TARGET_REF,
                 "timeout_seconds": float(self.timeout_seconds),
+                "writer_app_id": self.writer_app_id,
+                "writer_installation_id": self.writer_installation_id,
             }
         )
 
@@ -295,6 +310,8 @@ class GitHubMainBaseReader:
             app_slug=self._configuration.observer_identity,
             app_id=self._configuration.observer_app_id,
             installation_id=self._configuration.observer_installation_id,
+            writer_app_id=self._configuration.writer_app_id,
+            writer_installation_id=self._configuration.writer_installation_id,
             requested_repository_id=self._configuration.repository_id,
             requested_permissions=("contents:read",),
             observed_permissions=("contents:read", "metadata:read"),
@@ -440,8 +457,11 @@ class GitHubMainBaseReader:
             or value.get("name") != self._configuration.observer_app_name
             or value.get("permissions") != {"contents": "read", "metadata": "read"}
             or value.get("events") != []
-            or value.get("public") is not False
-            or value.get("webhook_active") is not False
+            or ("public" in value and value.get("public") is not False)
+            or (
+                "webhook_active" in value
+                and value.get("webhook_active") is not False
+            )
             or typed_owner is None
             or typed_owner.get("login") != self._configuration.owner
             or typed_owner.get("id") != self._configuration.owner_id
