@@ -195,6 +195,14 @@ from avo_correlate.contracts.main_personal_exact_cas_candidate_observation impor
     MainPersonalExactCasCandidateObservationRequest,
     MainPersonalExactCasCandidatePolicyEvidence,
 )
+from avo_correlate.contracts.main_personal_exact_cas_candidate_publication import (
+    CandidatePublisherRequestTrace,
+    MainPersonalExactCasCandidatePublicationAuthorityRoot,
+    MainPersonalExactCasCandidatePublicationDispatchStarted,
+    MainPersonalExactCasCandidatePublicationIntent,
+    MainPersonalExactCasCandidatePublicationReconciliation,
+    MainPersonalExactCasCandidatePublicationResponseEvidence,
+)
 from avo_correlate.contracts.main_personal_exact_cas_controller_composition import (
     MainPersonalExactCasControllerComposition,
 )
@@ -319,6 +327,12 @@ MODELS: tuple[type[StrictModel], ...] = (
     MainPersonalExactCasCandidateObservation,
     MainPersonalExactCasCandidateObservationRequest,
     MainPersonalExactCasCandidatePolicyEvidence,
+    CandidatePublisherRequestTrace,
+    MainPersonalExactCasCandidatePublicationIntent,
+    MainPersonalExactCasCandidatePublicationDispatchStarted,
+    MainPersonalExactCasCandidatePublicationAuthorityRoot,
+    MainPersonalExactCasCandidatePublicationResponseEvidence,
+    MainPersonalExactCasCandidatePublicationReconciliation,
     SandboxExecutionSpec,
     SandboxExecutionResult,
     DryRunReport,

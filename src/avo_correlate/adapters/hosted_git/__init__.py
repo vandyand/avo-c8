@@ -73,6 +73,12 @@ from .main_personal_exact_cas_candidate_observer import (
     GitHubCandidateRefObserver,
     MainPersonalExactCasCandidateObservationError,
 )
+from .main_personal_exact_cas_candidate_publisher import (
+    GitHubCandidatePublisherConfiguration,
+    GitHubCandidatePublisherCredentials,
+    GitHubCandidatePublisherError,
+    MainPersonalExactCasCandidatePublicationController,
+)
 from .main_personal_exact_cas_hosted_configuration import (
     MainPersonalExactCasGitHubHostedConfigurationVerifier,
     MainPersonalExactCasHostedConfigurationUnverified,
@@ -128,6 +134,9 @@ __all__ = [
     "GitHubCampaignProvider",
     "GitHubCandidateObserver",
     "GitHubCandidateObserverError",
+    "GitHubCandidatePublisherConfiguration",
+    "GitHubCandidatePublisherCredentials",
+    "GitHubCandidatePublisherError",
     "GitHubCandidateReadProvenance",
     "GitHubCandidateReadWithProvenance",
     "GitHubCandidateRefObserver",
@@ -156,6 +165,7 @@ __all__ = [
     "MainGraduationAttester",
     "MainMergeGroupObservation",
     "MainPersonalExactCasCandidateObservationError",
+    "MainPersonalExactCasCandidatePublicationController",
     "MainPersonalExactCasGitHubHostedConfigurationVerifier",
     "MainPersonalExactCasGitHubPostStateReader",
     "MainPersonalExactCasHostedConfigurationUnverified",

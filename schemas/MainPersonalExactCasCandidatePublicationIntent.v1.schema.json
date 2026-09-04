@@ -1,0 +1,157 @@
+{
+  "additionalProperties": false,
+  "description": "Create-once intent for exactly one candidate namespace ref.",
+  "properties": {
+    "base_commit": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Base Commit",
+      "type": "string"
+    },
+    "candidate_commit": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Candidate Commit",
+      "type": "string"
+    },
+    "candidate_parents": {
+      "items": {
+        "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+        "type": "string"
+      },
+      "title": "Candidate Parents",
+      "type": "array"
+    },
+    "candidate_ref": {
+      "minLength": 1,
+      "title": "Candidate Ref",
+      "type": "string"
+    },
+    "candidate_tree": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Candidate Tree",
+      "type": "string"
+    },
+    "completion_authorized": {
+      "const": false,
+      "default": false,
+      "title": "Completion Authorized",
+      "type": "boolean"
+    },
+    "configuration_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Configuration Digest",
+      "type": "string"
+    },
+    "deploy_performed": {
+      "const": false,
+      "default": false,
+      "title": "Deploy Performed",
+      "type": "boolean"
+    },
+    "intent_created_at": {
+      "format": "date-time",
+      "title": "Intent Created At",
+      "type": "string"
+    },
+    "intent_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Intent Digest",
+      "type": "string"
+    },
+    "is_authoritative": {
+      "const": false,
+      "default": false,
+      "title": "Is Authoritative",
+      "type": "boolean"
+    },
+    "is_terminal": {
+      "const": false,
+      "default": false,
+      "title": "Is Terminal",
+      "type": "boolean"
+    },
+    "mutation_performed": {
+      "const": false,
+      "default": false,
+      "title": "Mutation Performed",
+      "type": "boolean"
+    },
+    "operation_id": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Operation Id",
+      "type": "string"
+    },
+    "publisher_app_id": {
+      "exclusiveMinimum": 0,
+      "title": "Publisher App Id",
+      "type": "integer"
+    },
+    "publisher_identity": {
+      "const": "avo-c8-candidate-publisher-vandyand",
+      "title": "Publisher Identity",
+      "type": "string"
+    },
+    "publisher_installation_id": {
+      "exclusiveMinimum": 0,
+      "title": "Publisher Installation Id",
+      "type": "integer"
+    },
+    "readiness_authorized": {
+      "const": false,
+      "default": false,
+      "title": "Readiness Authorized",
+      "type": "boolean"
+    },
+    "receipt_issued": {
+      "const": false,
+      "default": false,
+      "title": "Receipt Issued",
+      "type": "boolean"
+    },
+    "repository_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Repository Digest",
+      "type": "string"
+    },
+    "repository_id": {
+      "exclusiveMinimum": 0,
+      "title": "Repository Id",
+      "type": "integer"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    },
+    "source_composition_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Source Composition Digest",
+      "type": "string"
+    },
+    "verified_policy_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Verified Policy Digest",
+      "type": "string"
+    }
+  },
+  "required": [
+    "operation_id",
+    "repository_digest",
+    "repository_id",
+    "candidate_ref",
+    "base_commit",
+    "candidate_commit",
+    "candidate_tree",
+    "candidate_parents",
+    "source_composition_digest",
+    "verified_policy_digest",
+    "configuration_digest",
+    "publisher_app_id",
+    "publisher_installation_id",
+    "publisher_identity",
+    "intent_created_at",
+    "intent_digest"
+  ],
+  "title": "MainPersonalExactCasCandidatePublicationIntent",
+  "type": "object"
+}

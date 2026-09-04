@@ -1,0 +1,289 @@
+{
+  "$defs": {
+    "ArtifactRef": {
+      "additionalProperties": false,
+      "properties": {
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "digest": {
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "title": "Digest",
+          "type": "string"
+        },
+        "media_type": {
+          "minLength": 1,
+          "title": "Media Type",
+          "type": "string"
+        },
+        "role": {
+          "minLength": 1,
+          "title": "Role",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": 1,
+          "default": 1,
+          "title": "Schema Version",
+          "type": "integer"
+        },
+        "size_bytes": {
+          "minimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "digest",
+        "size_bytes",
+        "media_type",
+        "role",
+        "created_at"
+      ],
+      "title": "ArtifactRef",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Resolved, operation-specific offline dependency closure.\n\nThis root is only buildable by the resolver after it has reopened every\nrequired journal.  It carries complete canonical references to each\npreparation authorization and hosted policy identity leaf, but it is not\npublication authority: a future controller must perform a fresh hosted\npolicy/readiness check and trusted-clock lease check before dispatch.",
+  "properties": {
+    "base_commit": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Base Commit",
+      "type": "string"
+    },
+    "base_tree": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Base Tree",
+      "type": "string"
+    },
+    "candidate_commit": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Candidate Commit",
+      "type": "string"
+    },
+    "candidate_parents": {
+      "items": {
+        "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+        "type": "string"
+      },
+      "title": "Candidate Parents",
+      "type": "array"
+    },
+    "candidate_policy_artifact": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "candidate_policy_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Candidate Policy Digest",
+      "type": "string"
+    },
+    "candidate_policy_ruleset_digests": {
+      "items": {
+        "pattern": "^sha256:[0-9a-f]{64}$",
+        "type": "string"
+      },
+      "title": "Candidate Policy Ruleset Digests",
+      "type": "array"
+    },
+    "candidate_publication_authorized": {
+      "const": false,
+      "default": false,
+      "title": "Candidate Publication Authorized",
+      "type": "boolean"
+    },
+    "candidate_ref": {
+      "minLength": 1,
+      "title": "Candidate Ref",
+      "type": "string"
+    },
+    "candidate_tree": {
+      "pattern": "^[0-9a-f]{40}(?:[0-9a-f]{24})?$",
+      "title": "Candidate Tree",
+      "type": "string"
+    },
+    "completion_claimed": {
+      "const": false,
+      "default": false,
+      "title": "Completion Claimed",
+      "type": "boolean"
+    },
+    "composition_artifact": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "composition_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Composition Digest",
+      "type": "string"
+    },
+    "configuration_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Configuration Digest",
+      "type": "string"
+    },
+    "dependencies_bound": {
+      "const": true,
+      "default": true,
+      "title": "Dependencies Bound",
+      "type": "boolean"
+    },
+    "deploy_performed": {
+      "const": false,
+      "default": false,
+      "title": "Deploy Performed",
+      "type": "boolean"
+    },
+    "hosted_identity_bundle_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Hosted Identity Bundle Digest",
+      "type": "string"
+    },
+    "hosted_identity_root_artifact": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "hosted_identity_root_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Hosted Identity Root Digest",
+      "type": "string"
+    },
+    "is_authoritative": {
+      "const": false,
+      "default": false,
+      "title": "Is Authoritative",
+      "type": "boolean"
+    },
+    "is_terminal": {
+      "const": false,
+      "default": false,
+      "title": "Is Terminal",
+      "type": "boolean"
+    },
+    "lease_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Lease Digest",
+      "type": "string"
+    },
+    "lease_expires_at": {
+      "format": "date-time",
+      "title": "Lease Expires At",
+      "type": "string"
+    },
+    "lease_identity": {
+      "minLength": 1,
+      "title": "Lease Identity",
+      "type": "string"
+    },
+    "mutation_performed": {
+      "const": false,
+      "default": false,
+      "title": "Mutation Performed",
+      "type": "boolean"
+    },
+    "offline_only": {
+      "const": true,
+      "default": true,
+      "title": "Offline Only",
+      "type": "boolean"
+    },
+    "operation_id": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Operation Id",
+      "type": "string"
+    },
+    "owner_id": {
+      "exclusiveMinimum": 0,
+      "title": "Owner Id",
+      "type": "integer"
+    },
+    "preparation_authorization_artifact": {
+      "$ref": "#/$defs/ArtifactRef"
+    },
+    "preparation_authorization_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Preparation Authorization Digest",
+      "type": "string"
+    },
+    "preparation_authorization_record_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Preparation Authorization Record Digest",
+      "type": "string"
+    },
+    "publisher_app_id": {
+      "exclusiveMinimum": 0,
+      "title": "Publisher App Id",
+      "type": "integer"
+    },
+    "publisher_identity": {
+      "const": "avo-c8-candidate-publisher-vandyand",
+      "title": "Publisher Identity",
+      "type": "string"
+    },
+    "publisher_installation_id": {
+      "exclusiveMinimum": 0,
+      "title": "Publisher Installation Id",
+      "type": "integer"
+    },
+    "readiness_authorized": {
+      "const": false,
+      "default": false,
+      "title": "Readiness Authorized",
+      "type": "boolean"
+    },
+    "receipt_issued": {
+      "const": false,
+      "default": false,
+      "title": "Receipt Issued",
+      "type": "boolean"
+    },
+    "repository_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Repository Digest",
+      "type": "string"
+    },
+    "root_digest": {
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "title": "Root Digest",
+      "type": "string"
+    },
+    "schema_version": {
+      "const": 1,
+      "default": 1,
+      "title": "Schema Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "operation_id",
+    "repository_digest",
+    "candidate_ref",
+    "base_commit",
+    "base_tree",
+    "candidate_commit",
+    "candidate_tree",
+    "candidate_parents",
+    "lease_identity",
+    "lease_digest",
+    "lease_expires_at",
+    "configuration_digest",
+    "publisher_app_id",
+    "publisher_installation_id",
+    "publisher_identity",
+    "owner_id",
+    "composition_digest",
+    "composition_artifact",
+    "preparation_authorization_record_digest",
+    "preparation_authorization_digest",
+    "preparation_authorization_artifact",
+    "hosted_identity_root_digest",
+    "hosted_identity_root_artifact",
+    "hosted_identity_bundle_digest",
+    "candidate_policy_digest",
+    "candidate_policy_artifact",
+    "candidate_policy_ruleset_digests",
+    "root_digest"
+  ],
+  "title": "MainPersonalExactCasCandidatePublicationAuthorityRoot",
+  "type": "object"
+}
