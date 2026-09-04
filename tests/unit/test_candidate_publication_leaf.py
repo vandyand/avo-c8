@@ -1809,4 +1809,5 @@ def test_publisher_sanitizes_authoritative_and_transport_exceptions(
 
     object.__setattr__(publisher, "_transport", raising_transport)
     evidence = publisher._create(intent, marker)  # pyright: ignore[reportPrivateUsage]
-    assert evidence.response_status == 422 if isinstance(error, GitHubRejected) else 599
+    expected_status = 422 if isinstance(error, GitHubRejected) else 599
+    assert evidence.response_status == expected_status
