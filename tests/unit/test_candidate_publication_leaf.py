@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import stat
+import sys
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -710,7 +711,9 @@ def test_authority_filesystem_guards_cover_invalid_layout_and_bounds(
         mount_id=1,
         device="8:1",
     )
-    assert authority_module._supports_descriptor_backend(qualified) is False  # pyright: ignore[reportPrivateUsage]
+    assert authority_module._supports_descriptor_backend(qualified) is (  # pyright: ignore[reportPrivateUsage]
+        sys.platform == "linux"
+    )
     authority_module._same_backend(qualified, qualified)  # pyright: ignore[reportPrivateUsage]
     with pytest.raises(CandidatePublicationAuthorityResolutionError):
         authority_module._same_backend(qualified, qualified.__class__(  # pyright: ignore[reportPrivateUsage]
